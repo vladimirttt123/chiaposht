@@ -8,6 +8,16 @@
 [![Language grade: Python](https://img.shields.io/lgtm/grade/python/g/Chia-Network/chiapos.svg?logo=lgtm&logoWidth=18)](https://lgtm.com/projects/g/Chia-Network/chiapos/context:python)
 [![Language grade: C/C++](https://img.shields.io/lgtm/grade/cpp/g/Chia-Network/chiapos.svg?logo=lgtm&logoWidth=18)](https://lgtm.com/projects/g/Chia-Network/chiapos/context:cpp)
 
+With this fork of chiapos I try to add some threads.
+I added threads to sorts and added new sort BSort.
+This is type of union sort used here but with bigger buckets.
+For enough threads BSort works as fast as union sort with much less memory use.
+
+Some threads also added to phase 2 of calculations.
+
+For me overall process of plot creation improved in time by about 20-40%.
+It is still not madmax, but madmax cannot create k35+.
+
 Chia's proof of space is written in C++. Includes a plotter, prover, and
 verifier. It exclusively runs on 64 bit architectures. Read the
 [Proof of Space document](https://www.chia.net/assets/Chia_Proof_of_Space_Construction_v1.1.pdf) to
