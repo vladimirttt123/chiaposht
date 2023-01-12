@@ -39,7 +39,7 @@ struct Phase2Results
 };
 
 
-inline void ScanTable( FileDisk* const disk, int table_index, const int64_t &table_size, int16_t const &entry_size,
+inline void ScanTableOld( FileDisk* const disk, int table_index, const int64_t &table_size, int16_t const &entry_size,
 											 bitfield &current_bitfield, bitfield &next_bitfield, const uint32_t &num_threads,
 											 uint8_t const pos_offset_size, uint8_t const k ){
 	Timer scan_timer;
@@ -114,7 +114,7 @@ inline void ScanTable( FileDisk* const disk, int table_index, const int64_t &tab
 
 
 
-inline void ScanTableNextTry( FileDisk* const disk, int table_index, const int64_t &table_size, int16_t const &entry_size,
+inline void ScanTable( FileDisk* const disk, int table_index, const int64_t &table_size, int16_t const &entry_size,
 											 bitfield &current_bitfield, bitfield &next_bitfield, const uint32_t &num_threads,
 											 uint8_t const pos_offset_size, uint8_t const k ){
 	Timer scan_timer;
@@ -129,7 +129,7 @@ inline void ScanTableNextTry( FileDisk* const disk, int table_index, const int64
 	auto max_threads = std::max((uint32_t)1, num_threads);
 	auto threads = std::make_unique<std::thread[]>( max_threads );
 	std::mutex read_mutex, union_mutex;
-	const uint32_t processed_buf_size = 4096;
+	const uint32_t processed_buf_size = 16384;
 	// Run the threads
 	for( uint32_t i = 0; i < max_threads; i++ ){
 		threads[i] = std::thread( [table_index, table_size, entry_size, pos_offset_size, k]
@@ -433,59 +433,12 @@ Phase2Results RunPhase2(
 					bitfield_index const index(next_bitfield);
 
 
-#define DO_THREADED
-#ifndef DO_THREADED
-					uint8_t const write_counter_shift = 128 - k;
-					uint8_t const pos_offset_shift = write_counter_shift - pos_offset_size;
-
-					BufferedDisk disk(&tmp_1_disks[table_index], table_size * entry_size);
-
-					int64_t read_cursor = 0;
-					int64_t write_counter = 0;
-					for (int64_t read_index = 0; read_index < table_size; ++read_index, read_cursor += entry_size)
-					{
-							if (!current_bitfield.get(read_index)) continue;
-
-							uint8_t const* entry = disk.Read(read_cursor, entry_size);
-
-							uint64_t entry_pos_offset = Util::SliceInt64FromBytes(entry, 0, pos_offset_size);
-							uint64_t entry_pos = entry_pos_offset >> kOffsetSize;
-							uint64_t entry_offset = entry_pos_offset & ((1U << kOffsetSize) - 1);
-
-							// assemble the new entry and write it to the sort manager
-
-							// map the pos and offset to the new, compacted, positions and
-							// offsets
-							std::tie(entry_pos, entry_offset) = index.lookup(entry_pos, entry_offset);
-							entry_pos_offset = (entry_pos << kOffsetSize) | entry_offset;
-
-
-							// The new entry is slightly different. Metadata is dropped, to
-							// save space, and the counter of the entry is written (sort_key). We
-							// use this instead of (y + pos + offset) since its smaller.
-							uint8_t bytes[16];
-							uint128_t new_entry = (uint128_t)write_counter << write_counter_shift;
-							new_entry |= (uint128_t)entry_pos_offset << pos_offset_shift;
-							Util::IntTo16Bytes(bytes, new_entry);
-
-							sort_manager->AddToCache(bytes);
-
-							++write_counter;
-					}
-
-					sort_manager->FlushCache();
-
-					// clear disk caches
-					disk.FreeMemory();
-#else // DO_THREADED
-					//int64_t read_cursor = 0;
 					uint64_t buf_size = num_threads*(BUF_SIZE/entry_size)*entry_size;
 					int64_t write_counter = 0;
 					BufferedReader reader( &tmp_1_disks[table_index], 0, buf_size, table_size*entry_size );
 					auto threads = std::make_unique<std::thread[]>( num_threads - 1 );
 					std::thread write_thread;
 					while( (buf_size = reader.MoveNextBuffer()) > 0 ){
-						//auto result = std::make_unique<uint8_t[]>(buf_size/entry_size*new_entry_size);
 						uint8_t * result = new uint8_t[buf_size/entry_size*new_entry_size];
 
 						// Run threads
@@ -500,13 +453,7 @@ Phase2Results RunPhase2(
 						for( uint64_t t = 0; t < num_threads - 1; t++ )
 							threads[t].join();
 
-						// Now write results to sort manager
-
-						// Without threads
-//						for( int64_t i = 0; i < (new_write_counter - write_counter); i++ )
-//							sort_manager->AddToCache( result.get() + i*new_entry_size );
-
-						// Write without wait in independent thread
+						// Write results to sort manager without wait in independent thread
 						if( write_counter > 0 ) write_thread.join();
 						write_thread = std::thread( [new_entry_size](SortManager* srt_mngr, uint8_t * res, int64_t num_entries ){
 								for( int64_t i = 0; i < num_entries; i++ )
@@ -515,42 +462,13 @@ Phase2Results RunPhase2(
 						}, sort_manager.get(), result, new_write_counter - write_counter );
 
 
-						// many threads
-
-//						uint32_t max_threads = std::min( num_threads, num_buckets );
-//						uint64_t buckets_per_thread = num_buckets / max_threads;
-//						uint64_t from_bucket = 0;
-//						for( uint32_t t = 0; t < max_threads - 1; t++, from_bucket += buckets_per_thread )
-//							threads[t] = std::thread( [write_counter, new_write_counter, new_entry_size, k, log_num_buckets](
-//																				SortManager *srt_mngr, uint8_t *result,
-//																				uint64_t from_bucket, uint64_t to_bucket){
-//										for( int64_t i = 0; i < (new_write_counter - write_counter); i++ ){
-//											uint64_t const bucket_index =
-//													Util::ExtractNum( result + i*new_entry_size, new_entry_size, k, log_num_buckets );
-//											if( bucket_index >= from_bucket && bucket_index < to_bucket )
-//												srt_mngr->AddToCache( result + i*new_entry_size, bucket_index );
-//										}
-//									}, sort_manager.get(), result.get(), from_bucket, from_bucket + buckets_per_thread );
-
-//						for( int64_t i = 0; i < (new_write_counter - write_counter); i++ ){
-//							uint64_t const bucket_index =
-//									Util::ExtractNum( result.get() + i*new_entry_size, new_entry_size, k, log_num_buckets );
-//							if( bucket_index >= from_bucket )
-//								sort_manager->AddToCache( result.get() + i*new_entry_size, bucket_index );
-//						}
-
-//						for( uint32_t t = 0; t < max_threads - 1; t++ )
-//							threads[t].join();
-
-
 						write_counter = new_write_counter;
 					}
 
 					if( write_counter > 0 ) write_thread.join();
 
+					// clear disk caches and memory
 					sort_manager->FlushCache();
-#endif // DO_THREADED
-					// clear disk caches
 					sort_manager->FreeMemory();
 
 					output_files[table_index - 2] = std::move(sort_manager);
