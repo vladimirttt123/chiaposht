@@ -15,6 +15,8 @@
 #ifndef SRC_CPP_PHASE2_HPP_
 #define SRC_CPP_PHASE2_HPP_
 
+#include <mutex>
+
 #include "disk.hpp"
 #include "entry_sizes.hpp"
 #include "sort_manager.hpp"
@@ -36,6 +38,299 @@ struct Phase2Results
     std::vector<uint64_t> table_sizes;
 };
 
+
+inline void ScanTable( FileDisk* const disk, int table_index, const int64_t &table_size, int16_t const &entry_size,
+											 bitfield &current_bitfield, bitfield &next_bitfield, const uint32_t &num_threads,
+											 uint8_t const pos_offset_size, uint8_t const k ){
+	Timer scan_timer;
+
+	next_bitfield.clear();
+
+	// read_index is the number of entries we've processed so far (in the
+	// current table) i.e. the index to the current entry. This is not used
+	// for table 7
+
+	int64_t read_cursor = 0;
+	auto threads = std::make_unique<std::thread[]>( num_threads );
+	std::mutex read_mutex, union_mutex;
+	// Run the threads
+	for( uint32_t i = 0; i < num_threads; i++ ){
+		threads[i] = std::thread( [table_index, table_size, entry_size, pos_offset_size, k]
+															(FileDisk* disk, int64_t *read_cursor, std::mutex *read_mutex,
+																std::mutex *union_mutex,  bitfield * const current_bitfield, bitfield *next_bitfield){
+			bitfield th_bitfield( next_bitfield->size() );
+			const int64_t cur_bufsize = (BUF_SIZE/entry_size)*entry_size; // allign size to entry length
+			auto buffer = std::make_unique<uint8_t[]>(cur_bufsize);
+			while( true ){
+				int64_t buf_size = 0, buf_start = 0;
+				{	// Read next buffer
+					const std::lock_guard<std::mutex> lk(*read_mutex);
+					buf_start = *read_cursor;
+					buf_size = std::min( cur_bufsize, (table_size*(int64_t)entry_size) - *read_cursor );
+					if( buf_size > 0 )
+						disk->Read( *read_cursor, buffer.get(), buf_size );
+					*read_cursor += buf_size;
+				}
+				// Nothing read => end of work
+				if( buf_size == 0 ){
+					const std::lock_guard<std::mutex> lk(*union_mutex);
+					next_bitfield->Union( th_bitfield );
+					return;
+				}
+				// Do normal work
+				for( int64_t buf_ptr = 0; buf_ptr < buf_size; buf_ptr += entry_size ){
+					uint64_t entry_pos_offset = 0;
+					if (table_index == 7) {
+							// table 7 is special, we never drop anything, so just build
+							// next_bitfield
+							entry_pos_offset = Util::SliceInt64FromBytes( buffer.get() + buf_ptr, k, pos_offset_size);
+					} else {
+							if( !current_bitfield->get( (buf_start+buf_ptr)/entry_size ) )
+							{
+									// This entry should be dropped.
+									continue;
+							}
+							entry_pos_offset = Util::SliceInt64FromBytes( buffer.get() + buf_ptr, 0, pos_offset_size);
+					}
+
+					uint64_t entry_pos = entry_pos_offset >> kOffsetSize;
+					uint64_t entry_offset = entry_pos_offset & ((1U << kOffsetSize) - 1);
+					// mark the two matching entries as used (pos and pos+offset)
+					th_bitfield.set(entry_pos);
+					th_bitfield.set(entry_pos + entry_offset);
+
+				}
+			}
+		}, disk, &read_cursor, &read_mutex, &union_mutex, &current_bitfield, &next_bitfield );
+	}
+
+	// Wait for job done
+	for( uint32_t i = 0; i < num_threads; i++ )
+		threads[i].join();
+
+	std::cout << "scanned table " << table_index << std::endl;
+	scan_timer.PrintElapsed("scanned time = ");
+}
+
+
+
+inline void ScanTableNextTry( FileDisk* const disk, int table_index, const int64_t &table_size, int16_t const &entry_size,
+											 bitfield &current_bitfield, bitfield &next_bitfield, const uint32_t &num_threads,
+											 uint8_t const pos_offset_size, uint8_t const k ){
+	Timer scan_timer;
+
+	next_bitfield.clear();
+
+	// read_index is the number of entries we've processed so far (in the
+	// current table) i.e. the index to the current entry. This is not used
+	// for table 7
+
+	int64_t read_cursor = 0;
+	auto max_threads = std::max((uint32_t)1, num_threads);
+	auto threads = std::make_unique<std::thread[]>( max_threads );
+	std::mutex read_mutex, union_mutex;
+	const uint32_t processed_buf_size = 4096;
+	// Run the threads
+	for( uint32_t i = 0; i < max_threads; i++ ){
+		threads[i] = std::thread( [table_index, table_size, entry_size, pos_offset_size, k]
+															(FileDisk* disk, int64_t *read_cursor, std::mutex *read_mutex,
+																std::mutex *union_mutex,  bitfield * const current_bitfield, bitfield *next_bitfield){
+			uint64_t processed[processed_buf_size + (processed_buf_size&1)];
+			uint32_t processed_count = 0;
+			const int64_t read_bufsize = (BUF_SIZE/entry_size)*entry_size; // allign size to entry length
+			auto buffer = std::make_unique<uint8_t[]>(read_bufsize);
+			while( true ){
+				int64_t buf_size = 0, buf_start = 0;
+				{	// Read next buffer
+					const std::lock_guard<std::mutex> lk(*read_mutex);
+					buf_start = *read_cursor;
+					buf_size = std::min( read_bufsize, (table_size*(int64_t)entry_size) - *read_cursor );
+					if( buf_size > 0 )
+						disk->Read( *read_cursor, buffer.get(), buf_size );
+					*read_cursor += buf_size;
+				}
+				// Nothing to read => end of work
+				if( buf_size == 0 ){
+					if( processed_count > 0 ){
+						const std::lock_guard<std::mutex> lk(*union_mutex);
+						for( uint32_t i = 0; i < processed_count; i++ )
+							next_bitfield->set( processed[i] );
+					}
+					return;
+				}
+
+				// Do normal work
+				for( int64_t buf_ptr = 0, entry_pos_offset = 0; buf_ptr < buf_size; buf_ptr += entry_size ){
+					if (table_index == 7) {
+							// table 7 is special, we never drop anything, so just build
+							// next_bitfield
+							entry_pos_offset = Util::SliceInt64FromBytes( buffer.get() + buf_ptr, k, pos_offset_size);
+					} else {
+							if( !current_bitfield->get( (buf_start+buf_ptr)/entry_size ) )
+							{
+									// This entry should be dropped.
+									continue;
+							}
+							entry_pos_offset = Util::SliceInt64FromBytes( buffer.get() + buf_ptr, 0, pos_offset_size);
+					}
+
+					// Check if buffer is full or half full and we can processed calculated
+					if( processed_count >= processed_buf_size
+							|| (processed_count > (processed_buf_size>>1) && union_mutex->try_lock() ) ) {
+						// Check we need the lock
+						if( processed_count >= processed_buf_size ) union_mutex->lock();
+						for( uint32_t i = 0; i < processed_count; i++ )
+							next_bitfield->set( processed[i] );
+						union_mutex->unlock();
+						processed_count = 0;
+					}
+
+					uint64_t entry_pos = entry_pos_offset >> kOffsetSize;
+					uint64_t entry_offset = entry_pos_offset & ((1U << kOffsetSize) - 1);
+					// mark the two matching entries as used (pos and pos+offset)
+					processed[processed_count++] = entry_pos;
+					processed[processed_count++] = entry_pos + entry_offset;
+
+				}
+			}
+		}, disk, &read_cursor, &read_mutex, &union_mutex, &current_bitfield, &next_bitfield );
+	}
+
+	// Wait for job done
+	for( uint32_t i = 0; i < num_threads; i++ )
+		threads[i].join();
+
+	std::cout << "scanned table " << table_index << std::endl;
+	scan_timer.PrintElapsed("scanned time = ");
+}
+
+inline void SortTable7Thread( const uint8_t *buffer, const uint64_t buf_size,
+															int16_t const &entry_size, bitfield_index const *index,
+															uint64_t from_ptr, uint64_t to_ptr, uint8_t *result,
+															uint8_t const pos_offset_size, uint8_t const k ){
+
+	uint8_t const f7_shift = 128 - k;
+	uint8_t const t7_pos_offset_shift = f7_shift - pos_offset_size;
+
+	for( uint64_t buf_ptr = from_ptr; buf_ptr < to_ptr; buf_ptr += entry_size ){
+
+		uint8_t const* entry = buffer + buf_ptr;
+
+		// table 7 is special, we never drop anything, so just build
+		// next_bitfield
+		uint64_t entry_f7 = Util::SliceInt64FromBytes(entry, 0, k);
+		uint64_t entry_pos_offset = Util::SliceInt64FromBytes(entry, k, pos_offset_size);
+
+		uint64_t entry_pos = entry_pos_offset >> kOffsetSize;
+		uint64_t entry_offset = entry_pos_offset & ((1U << kOffsetSize) - 1);
+
+		// assemble the new entry and write it to the sort manager
+
+		// map the pos and offset to the new, compacted, positions and
+		// offsets
+		std::tie(entry_pos, entry_offset) = index->lookup(entry_pos, entry_offset);
+		entry_pos_offset = (entry_pos << kOffsetSize) | entry_offset;
+
+		// table 7 is already sorted by pos, so we just rewrite the
+		// pos and offset in-place
+		uint8_t tmp[16];
+		uint128_t new_entry = (uint128_t)entry_f7 << f7_shift;
+		new_entry |= (uint128_t)entry_pos_offset << t7_pos_offset_shift;
+		Util::IntTo16Bytes( tmp, new_entry );
+		memcpy( result + buf_ptr, tmp, entry_size );
+	}
+}
+
+
+inline void SortTable7( FileDisk* const disk, bitfield &next_bitfield,
+												const int64_t &table_size, int16_t const &entry_size,
+												uint32_t num_threads,
+												uint8_t const pos_offset_size, uint8_t const k){
+
+	num_threads = std::max( (uint32_t)1, num_threads );
+	const uint64_t MIN_SIZE_PER_THREAD = 256; // NEED TO THINK ABOUT REAL VALUE
+
+	bitfield_index const index(next_bitfield);
+
+	auto threads = std::make_unique<std::thread[]>(num_threads);
+	uint64_t buf_size = ((uint64_t)num_threads)*(BUF_SIZE/entry_size)*entry_size;
+	auto reader = BufferedReader( disk, 0, buf_size , table_size*entry_size );
+	auto result = std::make_unique<uint8_t[]>(buf_size + 16);
+
+	while( (buf_size = reader.MoveNextBuffer() ) > 0 ){
+
+		uint64_t from_ptr = 0, size_per_thread = (buf_size/num_threads/entry_size)*entry_size;
+
+		// Run threads
+		if( size_per_thread > MIN_SIZE_PER_THREAD )
+			for( uint64_t t = 0; t < num_threads-1; t++, from_ptr += size_per_thread )
+				threads[t] = std::thread( SortTable7Thread, reader.GetBuffer(), buf_size, entry_size, &index,
+																	from_ptr, from_ptr+size_per_thread, result.get(), pos_offset_size, k );
+
+		// Do some work in current thread
+		SortTable7Thread( reader.GetBuffer(), buf_size, entry_size, &index, from_ptr, buf_size, result.get(),
+											pos_offset_size, k );
+
+		// Wait for threads
+		if( size_per_thread > MIN_SIZE_PER_THREAD )
+			for( uint32_t t = 0; t < num_threads-1; t++ )
+				threads[t].join();
+
+		disk->Write( reader.GetBufferStart(), result.get(), buf_size );
+	}
+}
+
+
+inline int64_t SortRegularTableThread( const uint8_t *buffer, const uint64_t buf_size,
+																			 int16_t const &entry_size, int16_t const &new_entry_size,
+																			 int64_t start_position, int64_t start_write_counter,
+																			 const bitfield *current_bitfield,  bitfield_index const index,
+																			 uint32_t const log_num_buckets,
+																			 uint64_t thread_no, uint64_t num_threads, uint8_t * const result,
+																			 uint8_t const pos_offset_size, uint8_t const k
+																			 ,SortManager * sort_manager
+																			 ) {
+
+	uint8_t const write_counter_shift = 128 - k;
+	uint8_t const pos_offset_shift = write_counter_shift - pos_offset_size;
+
+	int64_t write_counter = start_write_counter;
+	for( uint64_t buf_ptr = 0, read_index = start_position/entry_size ;
+			 buf_ptr < buf_size;
+			 buf_ptr += entry_size, read_index++ ){
+
+		// skipping
+		if( !current_bitfield->get( read_index ) ) continue;
+		// check is it for current thread.
+		if( (write_counter%num_threads) == thread_no ){
+			uint8_t const* entry = buffer + buf_ptr;
+
+			uint64_t entry_pos_offset = Util::SliceInt64FromBytes( entry, 0, pos_offset_size );
+			uint64_t entry_pos = entry_pos_offset >> kOffsetSize;
+			uint64_t entry_offset = entry_pos_offset & ((1U << kOffsetSize) - 1);
+
+			// assemble the new entry and write it to the sort manager
+
+			// map the pos and offset to the new, compacted, positions and offsets
+			std::tie(entry_pos, entry_offset) = index.lookup(entry_pos, entry_offset);
+			entry_pos_offset = (entry_pos << kOffsetSize) | entry_offset;
+
+			// The new entry is slightly different. Metadata is dropped, to
+			// save space, and the counter of the entry is written (sort_key). We
+			// use this instead of (y + pos + offset) since its smaller.
+			uint8_t bytes[16];
+			uint128_t new_entry = (uint128_t)write_counter << write_counter_shift;
+			new_entry |= (uint128_t)entry_pos_offset << pos_offset_shift;
+			Util::IntTo16Bytes(bytes, new_entry);
+
+			memcpy( result + (write_counter-start_write_counter)*new_entry_size, bytes, new_entry_size );
+	//		sort_manager->AddToCache( bytes );
+		}
+		++write_counter;
+	}
+
+	return write_counter;
+}
 // Backpropagate takes in as input, a file on which forward propagation has been done.
 // The purpose of backpropagate is to eliminate any dead entries that don't contribute
 // to final values in f7, to minimize disk usage. A sort on disk is applied to each table,
@@ -50,16 +345,14 @@ Phase2Results RunPhase2(
     uint64_t memory_size,
     uint32_t const num_buckets,
     uint32_t const log_num_buckets,
-    uint8_t const flags)
+		uint8_t const flags,
+		uint32_t num_threads )
 {
+		num_threads = std::max((uint32_t)1,num_threads);
     // After pruning each table will have 0.865 * 2^k or fewer entries on
     // average
     uint8_t const pos_size = k;
-    uint8_t const pos_offset_size = pos_size + kOffsetSize;
-    uint8_t const write_counter_shift = 128 - k;
-    uint8_t const pos_offset_shift = write_counter_shift - pos_offset_size;
-    uint8_t const f7_shift = 128 - k;
-    uint8_t const t7_pos_offset_shift = f7_shift - pos_offset_size;
+		uint8_t const pos_offset_size = pos_size + kOffsetSize;
     uint8_t const new_entry_size = EntrySizes::GetKeyPosOffsetSize(k);
 
     std::vector<uint64_t> new_table_sizes(8, 0);
@@ -79,8 +372,7 @@ Phase2Results RunPhase2(
     // At the end of the iteration, we transfer the next_bitfield to the current bitfield
     // to use it to prune the next table to scan.
 
-    int64_t const max_table_size = *std::max_element(table_sizes.begin()
-        , table_sizes.end());
+		int64_t const max_table_size = *std::max_element(table_sizes.begin(), table_sizes.end());
 
     bitfield next_bitfield(max_table_size);
     bitfield current_bitfield(max_table_size);
@@ -99,47 +391,12 @@ Phase2Results RunPhase2(
 
         std::cout << "Backpropagating on table " << table_index << std::endl;
         std::cout << "Progress update: " << progress_percent[7 - table_index] << std::endl;
-        Timer scan_timer;
 
-        next_bitfield.clear();
+				int64_t const table_size = table_sizes[table_index];
+				int16_t const entry_size = cdiv(k + kOffsetSize + (table_index == 7 ? k : 0), 8);
 
-        int64_t const table_size = table_sizes[table_index];
-        int16_t const entry_size = cdiv(k + kOffsetSize + (table_index == 7 ? k : 0), 8);
-
-        BufferedDisk disk(&tmp_1_disks[table_index], table_size * entry_size);
-
-        // read_index is the number of entries we've processed so far (in the
-        // current table) i.e. the index to the current entry. This is not used
-        // for table 7
-
-        int64_t read_cursor = 0;
-        for (int64_t read_index = 0; read_index < table_size; ++read_index, read_cursor += entry_size)
-        {
-            uint8_t const* entry = disk.Read(read_cursor, entry_size);
-
-            uint64_t entry_pos_offset = 0;
-            if (table_index == 7) {
-                // table 7 is special, we never drop anything, so just build
-                // next_bitfield
-                entry_pos_offset = Util::SliceInt64FromBytes(entry, k, pos_offset_size);
-            } else {
-                if (!current_bitfield.get(read_index))
-                {
-                    // This entry should be dropped.
-                    continue;
-                }
-                entry_pos_offset = Util::SliceInt64FromBytes(entry, 0, pos_offset_size);
-            }
-
-            uint64_t entry_pos = entry_pos_offset >> kOffsetSize;
-            uint64_t entry_offset = entry_pos_offset & ((1U << kOffsetSize) - 1);
-            // mark the two matching entries as used (pos and pos+offset)
-            next_bitfield.set(entry_pos);
-            next_bitfield.set(entry_pos + entry_offset);
-        }
-
-        std::cout << "scanned table " << table_index << std::endl;
-        scan_timer.PrintElapsed("scanned time = ");
+				ScanTable( &tmp_1_disks[table_index], table_index, table_size, entry_size,
+									 current_bitfield, next_bitfield, num_threads, pos_offset_size, k );
 
         std::cout << "sorting table " << table_index << std::endl;
         Timer sort_timer;
@@ -155,100 +412,166 @@ Phase2Results RunPhase2(
         // table 1 is already sorted, so we can use all memory for sorting
         // table 2.
 
-        auto sort_manager = std::make_unique<SortManager>(
-            table_index == 2 ? memory_size : memory_size / 2,
-            num_buckets,
-            log_num_buckets,
-            new_entry_size,
-            tmp_dirname,
-            filename + ".p2.t" + std::to_string(table_index),
-            uint32_t(k),
-            0,
-            strategy_t::quicksort_last);
+				if( table_index == 7 )
+					SortTable7( &tmp_1_disks[table_index], next_bitfield, table_size, entry_size,
+											num_threads, pos_offset_size, k );
+				else{
+					auto sort_manager = std::make_unique<SortManager>(
+							table_index == 2 ? memory_size : memory_size / 2,
+							num_buckets,
+							log_num_buckets,
+							new_entry_size,
+							tmp_dirname,
+							filename + ".p2.t" + std::to_string(table_index),
+							uint32_t(k),
+							0,
+							strategy_t::quicksort_last,
+							num_threads );
 
-        // as we scan the table for the second time, we'll also need to remap
-        // the positions and offsets based on the next_bitfield.
-        bitfield_index const index(next_bitfield);
+					// as we scan the table for the second time, we'll also need to remap
+					// the positions and offsets based on the next_bitfield.
+					bitfield_index const index(next_bitfield);
 
-        read_cursor = 0;
-        int64_t write_counter = 0;
-        for (int64_t read_index = 0; read_index < table_size; ++read_index, read_cursor += entry_size)
-        {
-            uint8_t const* entry = disk.Read(read_cursor, entry_size);
 
-            uint64_t entry_f7 = 0;
-            uint64_t entry_pos_offset;
-            if (table_index == 7) {
-                // table 7 is special, we never drop anything, so just build
-                // next_bitfield
-                entry_f7 = Util::SliceInt64FromBytes(entry, 0, k);
-                entry_pos_offset = Util::SliceInt64FromBytes(entry, k, pos_offset_size);
-            } else {
-                // skipping
-                if (!current_bitfield.get(read_index)) continue;
+#define DO_THREADED
+#ifndef DO_THREADED
+					uint8_t const write_counter_shift = 128 - k;
+					uint8_t const pos_offset_shift = write_counter_shift - pos_offset_size;
 
-                entry_pos_offset = Util::SliceInt64FromBytes(entry, 0, pos_offset_size);
-            }
+					BufferedDisk disk(&tmp_1_disks[table_index], table_size * entry_size);
 
-            uint64_t entry_pos = entry_pos_offset >> kOffsetSize;
-            uint64_t entry_offset = entry_pos_offset & ((1U << kOffsetSize) - 1);
+					int64_t read_cursor = 0;
+					int64_t write_counter = 0;
+					for (int64_t read_index = 0; read_index < table_size; ++read_index, read_cursor += entry_size)
+					{
+							if (!current_bitfield.get(read_index)) continue;
 
-            // assemble the new entry and write it to the sort manager
+							uint8_t const* entry = disk.Read(read_cursor, entry_size);
 
-            // map the pos and offset to the new, compacted, positions and
-            // offsets
-            std::tie(entry_pos, entry_offset) = index.lookup(entry_pos, entry_offset);
-            entry_pos_offset = (entry_pos << kOffsetSize) | entry_offset;
+							uint64_t entry_pos_offset = Util::SliceInt64FromBytes(entry, 0, pos_offset_size);
+							uint64_t entry_pos = entry_pos_offset >> kOffsetSize;
+							uint64_t entry_offset = entry_pos_offset & ((1U << kOffsetSize) - 1);
 
-            uint8_t bytes[16];
-            if (table_index == 7) {
-                // table 7 is already sorted by pos, so we just rewrite the
-                // pos and offset in-place
-                uint128_t new_entry = (uint128_t)entry_f7 << f7_shift;
-                new_entry |= (uint128_t)entry_pos_offset << t7_pos_offset_shift;
-                Util::IntTo16Bytes(bytes, new_entry);
+							// assemble the new entry and write it to the sort manager
 
-                disk.Write(read_index * entry_size, bytes, entry_size);
-            }
-            else {
-                // The new entry is slightly different. Metadata is dropped, to
-                // save space, and the counter of the entry is written (sort_key). We
-                // use this instead of (y + pos + offset) since its smaller.
-                uint128_t new_entry = (uint128_t)write_counter << write_counter_shift;
-                new_entry |= (uint128_t)entry_pos_offset << pos_offset_shift;
-                Util::IntTo16Bytes(bytes, new_entry);
+							// map the pos and offset to the new, compacted, positions and
+							// offsets
+							std::tie(entry_pos, entry_offset) = index.lookup(entry_pos, entry_offset);
+							entry_pos_offset = (entry_pos << kOffsetSize) | entry_offset;
 
-                sort_manager->AddToCache(bytes);
-            }
-            ++write_counter;
-        }
 
-        if (table_index != 7) {
-            sort_manager->FlushCache();
-            sort_timer.PrintElapsed("sort time = ");
+							// The new entry is slightly different. Metadata is dropped, to
+							// save space, and the counter of the entry is written (sort_key). We
+							// use this instead of (y + pos + offset) since its smaller.
+							uint8_t bytes[16];
+							uint128_t new_entry = (uint128_t)write_counter << write_counter_shift;
+							new_entry |= (uint128_t)entry_pos_offset << pos_offset_shift;
+							Util::IntTo16Bytes(bytes, new_entry);
 
-            // clear disk caches
-            disk.FreeMemory();
-            sort_manager->FreeMemory();
+							sort_manager->AddToCache(bytes);
 
-            output_files[table_index - 2] = std::move(sort_manager);
-            new_table_sizes[table_index] = write_counter;
-        }
-        current_bitfield.swap(next_bitfield);
-        next_bitfield.clear();
+							++write_counter;
+					}
 
-        // The files for Table 1 and 7 are re-used, overwritten and passed on to
-        // the next phase. However, table 2 through 6 are all written to sort
-        // managers that are passed on to the next phase. At this point, we have
-        // to delete the input files for table 2-6 to save disk space.
-        // This loop doesn't cover table 1, it's handled below with the
-        // FilteredDisk wrapper.
-        if (table_index != 7) {
-            tmp_1_disks[table_index].Truncate(0);
-        }
-        if (flags & SHOW_PROGRESS) {
-            progress(2, 8 - table_index, 6);
-        }
+					sort_manager->FlushCache();
+
+					// clear disk caches
+					disk.FreeMemory();
+#else // DO_THREADED
+					//int64_t read_cursor = 0;
+					uint64_t buf_size = num_threads*(BUF_SIZE/entry_size)*entry_size;
+					int64_t write_counter = 0;
+					BufferedReader reader( &tmp_1_disks[table_index], 0, buf_size, table_size*entry_size );
+					auto threads = std::make_unique<std::thread[]>( num_threads - 1 );
+					std::thread write_thread;
+					while( (buf_size = reader.MoveNextBuffer()) > 0 ){
+						//auto result = std::make_unique<uint8_t[]>(buf_size/entry_size*new_entry_size);
+						uint8_t * result = new uint8_t[buf_size/entry_size*new_entry_size];
+
+						// Run threads
+						for( uint64_t t = 0; t < num_threads - 1; t++ )
+							threads[t] = std::thread(SortRegularTableThread, reader.GetBuffer(), buf_size, entry_size,
+																			 new_entry_size, reader.GetBufferStart(), write_counter, &current_bitfield, index,
+																			 log_num_buckets, t, num_threads, result, pos_offset_size, k, sort_manager.get() );
+
+						auto new_write_counter = SortRegularTableThread( reader.GetBuffer(), buf_size, entry_size, new_entry_size, reader.GetBufferStart(), write_counter,
+																	&current_bitfield, index, log_num_buckets, num_threads-1, num_threads, result, pos_offset_size, k, sort_manager.get() );
+
+						for( uint64_t t = 0; t < num_threads - 1; t++ )
+							threads[t].join();
+
+						// Now write results to sort manager
+
+						// Without threads
+//						for( int64_t i = 0; i < (new_write_counter - write_counter); i++ )
+//							sort_manager->AddToCache( result.get() + i*new_entry_size );
+
+						// Write without wait in independent thread
+						if( write_counter > 0 ) write_thread.join();
+						write_thread = std::thread( [new_entry_size](SortManager* srt_mngr, uint8_t * res, int64_t num_entries ){
+								for( int64_t i = 0; i < num_entries; i++ )
+									srt_mngr->AddToCache( res + i*new_entry_size );
+								delete [] res;
+						}, sort_manager.get(), result, new_write_counter - write_counter );
+
+
+						// many threads
+
+//						uint32_t max_threads = std::min( num_threads, num_buckets );
+//						uint64_t buckets_per_thread = num_buckets / max_threads;
+//						uint64_t from_bucket = 0;
+//						for( uint32_t t = 0; t < max_threads - 1; t++, from_bucket += buckets_per_thread )
+//							threads[t] = std::thread( [write_counter, new_write_counter, new_entry_size, k, log_num_buckets](
+//																				SortManager *srt_mngr, uint8_t *result,
+//																				uint64_t from_bucket, uint64_t to_bucket){
+//										for( int64_t i = 0; i < (new_write_counter - write_counter); i++ ){
+//											uint64_t const bucket_index =
+//													Util::ExtractNum( result + i*new_entry_size, new_entry_size, k, log_num_buckets );
+//											if( bucket_index >= from_bucket && bucket_index < to_bucket )
+//												srt_mngr->AddToCache( result + i*new_entry_size, bucket_index );
+//										}
+//									}, sort_manager.get(), result.get(), from_bucket, from_bucket + buckets_per_thread );
+
+//						for( int64_t i = 0; i < (new_write_counter - write_counter); i++ ){
+//							uint64_t const bucket_index =
+//									Util::ExtractNum( result.get() + i*new_entry_size, new_entry_size, k, log_num_buckets );
+//							if( bucket_index >= from_bucket )
+//								sort_manager->AddToCache( result.get() + i*new_entry_size, bucket_index );
+//						}
+
+//						for( uint32_t t = 0; t < max_threads - 1; t++ )
+//							threads[t].join();
+
+
+						write_counter = new_write_counter;
+					}
+
+					if( write_counter > 0 ) write_thread.join();
+
+					sort_manager->FlushCache();
+#endif // DO_THREADED
+					// clear disk caches
+					sort_manager->FreeMemory();
+
+					output_files[table_index - 2] = std::move(sort_manager);
+					new_table_sizes[table_index] = write_counter;
+			}
+			sort_timer.PrintElapsed("sort time = ");
+			current_bitfield.swap(next_bitfield);
+			next_bitfield.clear();
+
+			// The files for Table 1 and 7 are re-used, overwritten and passed on to
+			// the next phase. However, table 2 through 6 are all written to sort
+			// managers that are passed on to the next phase. At this point, we have
+			// to delete the input files for table 2-6 to save disk space.
+			// This loop doesn't cover table 1, it's handled below with the
+			// FilteredDisk wrapper.
+			if (table_index != 7) {
+					tmp_1_disks[table_index].Truncate(0);
+			}
+			if (flags & SHOW_PROGRESS) {
+					progress(2, 8 - table_index, 6);
+			}
     }
 
     // lazy-compact table 1 based on current_bitfield

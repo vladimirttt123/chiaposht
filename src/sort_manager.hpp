@@ -21,6 +21,8 @@
 #include <string>
 #include <vector>
 
+#include <chrono>
+
 #include "chia_filesystem.hpp"
 
 #include "./bits.hpp"
@@ -28,6 +30,7 @@
 #include "./disk.hpp"
 #include "./quicksort.hpp"
 #include "./uniformsort.hpp"
+#include "./bucketsort.hpp"
 #include "disk.hpp"
 #include "exceptions.hpp"
 
@@ -53,7 +56,9 @@ public:
         const std::string &filename,
         uint32_t begin_bits,
         uint64_t const stripe_size,
-        strategy_t const sort_strategy = strategy_t::uniform)
+				strategy_t const sort_strategy = strategy_t::uniform,
+				uint32_t num_threads = 2)
+
         : memory_size_(memory_size)
         , entry_size_(entry_size)
         , begin_bits_(begin_bits)
@@ -63,6 +68,7 @@ public:
         // 7 bytes head-room for SliceInt64FromBytes()
         , entry_buf_(new uint8_t[entry_size + 7])
         , strategy_(sort_strategy)
+				, num_threads( num_threads )
     {
         // Cross platform way to concatenate paths, gulrak library.
         std::vector<fs::path> bucket_filenames = std::vector<fs::path>();
@@ -82,25 +88,30 @@ public:
         }
     }
 
-    void AddToCache(const Bits &entry)
+		inline void AddToCache(const Bits &entry)
     {
         entry.ToBytes(entry_buf_.get());
-        return AddToCache(entry_buf_.get());
+				AddToCache(entry_buf_.get());
     }
 
-    void AddToCache(const uint8_t *entry)
+		inline void AddToCache(const uint8_t *entry)
     {
-        if (this->done) {
-            throw InvalidValueException("Already finished.");
-        }
         uint64_t const bucket_index =
             Util::ExtractNum(entry, entry_size_, begin_bits_, log_num_buckets_);
-        bucket_t& b = buckets_[bucket_index];
-        b.file.Write(b.write_pointer, entry, entry_size_);
-        b.write_pointer += entry_size_;
+				AddToCache( entry, bucket_index );
     }
 
-    uint8_t const* Read(uint64_t begin, uint64_t length) override
+		inline void AddToCache(const uint8_t *entry, uint64_t const bucket_index )
+		{
+				if (this->done) {
+						throw InvalidValueException("Already finished.");
+				}
+				bucket_t& b = buckets_[bucket_index];
+				b.file.Write(b.write_pointer, entry, entry_size_);
+				b.write_pointer += entry_size_;
+		}
+
+		uint8_t const* Read(uint64_t begin, uint64_t length) override
     {
         assert(length <= entry_size_);
         return ReadEntry(begin);
@@ -259,6 +270,7 @@ private:
     uint64_t next_bucket_to_sort = 0;
     std::unique_ptr<uint8_t[]> entry_buf_;
     strategy_t strategy_;
+		uint32_t num_threads;
 
     void SortBucket()
     {
@@ -296,30 +308,56 @@ private:
 
         // Do SortInMemory algorithm if it fits in the memory
         // (number of entries required * entry_size_) <= total memory available
-        if (!force_quicksort &&
-            Util::RoundSize(bucket_entries) * entry_size_ <= memory_size_) {
-            std::cout << "\tBucket " << bucket_i << " uniform sort. Ram: " << std::fixed
-                      << std::setprecision(3) << have_ram << "GiB, u_sort min: " << u_ram
-                      << "GiB, qs min: " << qs_ram << "GiB." << std::endl;
-            UniformSort::SortToMemory(
+				auto start_time = std::chrono::high_resolution_clock::now();
+				std::cout << "\tBucket " << bucket_i << " Ram: " << std::fixed
+									<< std::setprecision(3) << have_ram << "GiB, needs GiB: (USort: " << u_ram
+									<< ", BSort: " << (bucket_entries*1.1)*entry_size_/1024/1024/1024.0
+									<< ", QS: " << qs_ram << ")" << (force_quicksort ? ", force_qs" : "" ) << " ===> ";
+
+				if (!force_quicksort
+						&& Util::RoundSize(bucket_entries) * entry_size_ <= memory_size_) {
+
+						std::cout << "UNI" << std::flush;
+						UniformSort::SortToMemory(
                 b.underlying_file,
                 0,
                 memory_start_.get(),
                 entry_size_,
                 bucket_entries,
-                begin_bits_ + log_num_buckets_);
-        } else {
+								begin_bits_ + log_num_buckets_,
+								num_threads );
+				} else if( !force_quicksort //&& bucket_entries > 4096
+									 && (bucket_entries*1.1)*entry_size_ <= memory_size_ ){
+					// We are here because the input is uniform but we do not have memory for full uniform sort
+					// Bucket sort is a type of uniform sort but with bigger bucket and can use less memory
+					// The performance of bucket sort with enought threads (more than 4) is almost as good as uniform sort.
+					std::cout << "BSort" << std::flush;
+
+					BucketSort::SortToMemory(
+								b.underlying_file,
+								0,
+								memory_start_.get(),
+								memory_size_,
+								entry_size_,
+								bucket_entries,
+								begin_bits_ + log_num_buckets_,
+								num_threads );
+				} else {
             // Are we in Compress phrase 1 (quicksort=1) or is it the last bucket (quicksort=2)?
             // Perform quicksort if so (SortInMemory algorithm won't always perform well), or if we
             // don't have enough memory for uniform sort
-            std::cout << "\tBucket " << bucket_i << " QS. Ram: " << std::fixed
-                      << std::setprecision(3) << have_ram << "GiB, u_sort min: " << u_ram
-                      << "GiB, qs min: " << qs_ram << "GiB. force_qs: " << force_quicksort
-                      << std::endl;
-            b.underlying_file.Read(0, memory_start_.get(), bucket_entries * entry_size_);
-            QuickSort::Sort(memory_start_.get(), entry_size_, bucket_entries, begin_bits_ + log_num_buckets_);
+						std::cout << "QS" << std::flush;
+    	    
+						if( force_quicksort ){
+							QuickSort::SortToMemory( b.underlying_file, 0, memory_start_.get(), entry_size_, bucket_entries, begin_bits_ + log_num_buckets_, num_threads );
+						} else {
+							QuickSort::SortToMemoryUniform( b.underlying_file, 0, memory_start_.get(), entry_size_, bucket_entries, begin_bits_ + log_num_buckets_, num_threads );
+						}
         }
 
+        auto end_time = std::chrono::high_resolution_clock::now();
+				std::cout << /*", time: " << end_time.time_since_epoch()/std::chrono::milliseconds(1) << */", sort time: " << (end_time - start_time)/std::chrono::milliseconds(1)/1000.0 << "s" << std::endl;
+	
         // Deletes the bucket file
         std::string filename = b.file.GetFileName();
         b.underlying_file.Close();

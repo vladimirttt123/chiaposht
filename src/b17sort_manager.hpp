@@ -28,6 +28,7 @@
 #include "./disk.hpp"
 #include "./quicksort.hpp"
 #include "./uniformsort.hpp"
+#include "./bucketsort.hpp"
 #include "exceptions.hpp"
 
 class b17SortManager {
@@ -41,7 +42,10 @@ public:
         const std::string &tmp_dirname,
         const std::string &filename,
         uint32_t begin_bits,
-        uint64_t stripe_size)
+				uint64_t stripe_size,
+				uint32_t num_threads = 2 )
+
+			:num_threads( num_threads )
     {
         this->memory_start = memory;
         this->memory_size = memory_size;
@@ -215,6 +219,8 @@ private:
     uint64_t next_bucket_to_sort;
     uint8_t *entry_buf;
 
+		uint32_t num_threads;
+
     inline void FlushTable(uint16_t bucket_i)
     {
         uint64_t start_write = this->bucket_write_pointers[bucket_i];
@@ -255,32 +261,58 @@ private:
         bool last_bucket = (bucket_i == this->mem_bucket_pointers.size() - 1) ||
                            this->bucket_write_pointers[bucket_i + 1] == 0;
         bool force_quicksort = (quicksort == 1) || (quicksort == 2 && last_bucket);
-        // Do SortInMemory algorithm if it fits in the memory
+
+				std::cout << "\tBucket " << bucket_i << " Ram: " << std::fixed
+									<< std::setprecision(3) << have_ram << "GiB, needs GiB: ( USort: " << u_ram
+									<< ", BSort: " << (bucket_entries*1.1)*entry_size/1024/1024/1024.0
+									<< ", QS: " << qs_ram << ")" << ( force_quicksort ? ", force_qs" : "" ) << " ===> ";
+				// Do SortInMemory algorithm if it fits in the memory
         // (number of entries required * entry_len_memory) <= total memory available
+				auto start_time = std::chrono::high_resolution_clock::now();
+
         if (!force_quicksort &&
             Util::RoundSize(bucket_entries) * entry_len_memory <= this->memory_size) {
-            std::cout << "\tBucket " << bucket_i << " uniform sort. Ram: " << std::fixed
-                      << std::setprecision(3) << have_ram << "GiB, u_sort min: " << u_ram
-                      << "GiB, qs min: " << qs_ram << "GiB." << std::endl;
-            UniformSort::SortToMemory(
+
+						std::cout << "UNI" << std::flush;
+						UniformSort::SortToMemory(
                 this->bucket_files[bucket_i],
                 0,
                 memory_start,
                 this->entry_size,
                 bucket_entries,
-                this->begin_bits + this->log_num_buckets);
-        } else {
+								this->begin_bits + this->log_num_buckets,
+								this->num_threads );
+				} else if( !force_quicksort //&& bucket_entries > 4096
+									 && (bucket_entries*1.1)*entry_size <= memory_size ){
+
+					std::cout << "BSort" << std::flush;
+
+					BucketSort::SortToMemory(
+								this->bucket_files[bucket_i],
+								0,
+								memory_start,
+								memory_size,
+								this->entry_size,
+								bucket_entries,
+								this->begin_bits + this->log_num_buckets,
+								this->num_threads );
+				} else {
             // Are we in Compress phrase 1 (quicksort=1) or is it the last bucket (quicksort=2)?
             // Perform quicksort if so (SortInMemory algorithm won't always perform well), or if we
             // don't have enough memory for uniform sort
-            std::cout << "\tBucket " << bucket_i << " QS. Ram: " << std::fixed
-                      << std::setprecision(3) << have_ram << "GiB, u_sort min: " << u_ram
-                      << "GiB, qs min: " << qs_ram << "GiB. force_qs: " << force_quicksort
-                      << std::endl;
-            this->bucket_files[bucket_i].Read(
-                0, this->memory_start, bucket_entries * this->entry_size);
-            QuickSort::Sort(this->memory_start, this->entry_size, bucket_entries, this->begin_bits);
-        }
+						std::cout << "QS" << std::flush;
+
+
+						// Forced quicksort suppose non uniform distribution.
+						if( force_quicksort ){
+							QuickSort::SortToMemory( this->bucket_files[bucket_i], 0, memory_start, this->entry_size, bucket_entries, this->begin_bits, num_threads );
+						} else {
+							QuickSort::SortToMemoryUniform( this->bucket_files[bucket_i], 0, memory_start, this->entry_size, bucket_entries,
+																							this->begin_bits /* + this->log_num_buckets */, num_threads );
+						}
+				}
+				auto end_time = std::chrono::high_resolution_clock::now();
+				std::cout << /* ", time " << end_time.time_since_epoch()/std::chrono::milliseconds(1) << */ ", sort time: " << (end_time - start_time)/std::chrono::milliseconds(1)/1000.0 << "s" << std::endl;
 
         // Deletes the bucket file
         std::string filename = this->bucket_files[bucket_i].GetFileName();

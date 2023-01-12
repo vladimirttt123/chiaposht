@@ -15,6 +15,7 @@
 #ifndef SRC_CPP_PHASE1_HPP_
 #define SRC_CPP_PHASE1_HPP_
 
+#include "phases.hpp"
 #ifndef _WIN32
 #include <semaphore.h>
 #include <unistd.h>
@@ -614,7 +615,9 @@ std::vector<uint64_t> RunPhase1(
         tmp_dirname,
         filename + ".p1.t1",
         0,
-        globals.stripe_size);
+				globals.stripe_size,
+				strategy_t::uniform,
+				num_threads );
 
     // These are used for sorting on disk. The sort on disk code needs to know how
     // many elements are in each bucket.
@@ -685,7 +688,9 @@ std::vector<uint64_t> RunPhase1(
             tmp_dirname,
             filename + ".p1.t" + std::to_string(table_index + 1),
             0,
-            globals.stripe_size);
+						globals.stripe_size,
+						strategy_t::uniform,
+						num_threads );
 
         globals.L_sort_manager->TriggerNewBucket(0);
 

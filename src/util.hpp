@@ -30,6 +30,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <functional>
 
 template <typename Int, typename Int2>
 constexpr inline Int cdiv(Int a, Int2 b) { return (a + b - 1) / b; }
@@ -309,18 +310,27 @@ namespace Util {
      * Like memcmp, but only compares starting at a certain bit.
      */
     inline int MemCmpBits(
-        uint8_t *left_arr,
-        uint8_t *right_arr,
+				const uint8_t *left_arr,
+				const uint8_t *right_arr,
         uint32_t len,
         uint32_t bits_begin)
     {
-        uint32_t start_byte = bits_begin / 8;
-        uint8_t mask = ((1 << (8 - (bits_begin % 8))) - 1);
-        if ((left_arr[start_byte] & mask) != (right_arr[start_byte] & mask)) {
-            return (left_arr[start_byte] & mask) - (right_arr[start_byte] & mask);
+	if( bits_begin&7 ){
+    	    uint32_t start_byte = bits_begin >> 3;
+	    uint8_t l = (left_arr[start_byte] << (bits_begin&7)), r = ( right_arr[start_byte] << (bits_begin&7) );
+            if( l != r ) return l - r;
         }
-
-        for (uint32_t i = start_byte + 1; i < len; i++) {
+        //int rn = l - r;
+        //if( rn ) return rn;
+//        uint8_t mask = ((1 << (8 - (bits_begin % 8))) - 1);
+//        if ((left_arr[start_byte] & mask) != (right_arr[start_byte] & mask)) {
+//            return (left_arr[start_byte] & mask) - (right_arr[start_byte] & mask);
+//        }
+        
+        for (uint32_t i = (bits_begin>>3) + ((bits_begin&7)?1:0); i < len; i++) {
+//        for (uint32_t i = start_byte + 1; i < len; i++) {
+//    	    int re = left_arr[i] - right_arr[i];
+//	    if( re ) return re;
             if (left_arr[i] != right_arr[i])
                 return left_arr[i] - right_arr[i];
         }

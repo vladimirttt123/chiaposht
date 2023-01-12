@@ -652,12 +652,13 @@ void PlotAndTestProofOfSpace(
     uint32_t buffer,
     uint32_t num_proofs,
     uint32_t stripe_size,
-    uint8_t num_threads)
+		uint8_t num_threads,
+		uint32_t num_buckets = 0 )
 {
     DiskPlotter plotter = DiskPlotter();
     uint8_t memo[5] = {1, 2, 3, 4, 5};
     plotter.CreatePlotDisk(
-        ".", ".", ".", filename, k, memo, 5, plot_id, 32, buffer, 0, stripe_size, num_threads);
+				".", ".", ".", filename, k, memo, 5, plot_id, 32, buffer, num_buckets, stripe_size, num_threads);
     TestProofOfSpace(filename, iterations, k, plot_id, num_proofs);
     REQUIRE(remove(filename.c_str()) == 0);
 }
@@ -686,6 +687,21 @@ TEST_CASE("Plotting")
     }
     // SECTION("Disk plot k24") { PlotAndTestProofOfSpace("cpp-test-plot.dat", 100, 24, plot_id_3,
     // 100, 107); }
+
+//		SECTION("Disk plot k22 single-thread")
+//		{
+//				PlotAndTestProofOfSpace("cpp-test-plot.dat", 5000, 22, plot_id_3, 100 , 4932, 65536, 1, 16);
+//		}
+
+		SECTION("Disk plot k22 small buffer single-thread")
+		{
+				PlotAndTestProofOfSpace("cpp-test-plot.dat", 5000, 22, plot_id_3, 12 , 4932, 65536, 1, 16);
+		}
+
+		SECTION("Disk plot k21 small buffer multi-thread")
+		{
+				PlotAndTestProofOfSpace("cpp-test-plot.dat", 5000, 22, plot_id_3, 28, 4932, 65536, 6, 16);
+		}
 }
 
 TEST_CASE("Invalid plot")
@@ -894,6 +910,35 @@ TEST_CASE("Sort on disk")
             REQUIRE(memcmp(buf, memory.get() + i * size, size) == 0);
         }
     }
+
+		SECTION("Bucket Sort in Memory")
+		{
+				uint32_t iters = 100000;
+				uint32_t const size = 32;
+				vector<Bits> input;
+				uint32_t begin = 1000;
+				FileDisk disk("test_file.bin");
+
+				for (uint32_t i = 0; i < iters; i++) {
+						vector<unsigned char> hash_input = intToBytes(i, 4);
+						vector<unsigned char> hash(picosha2::k_digest_size);
+						picosha2::hash256(hash_input.begin(), hash_input.end(), hash.begin(), hash.end());
+						hash[0] = hash[1] = 0;
+						disk.Write(begin + i * size, hash.data(), size);
+						input.emplace_back(Bits(hash.data(), size, size * 8));
+				}
+
+				const uint32_t memory_len = Util::RoundSize(iters) * size;
+				auto memory = std::make_unique<uint8_t[]>(memory_len);
+				BucketSort::SortToMemory(disk, begin, memory.get(), memory_len, size, iters, 16);
+
+				sort(input.begin(), input.end());
+				uint8_t buf[size];
+				for (uint32_t i = 0; i < iters; i++) {
+						input[i].ToBytes(buf);
+						REQUIRE(memcmp(buf, memory.get() + i * size, size) == 0);
+				}
+		}
 }
 
 TEST_CASE("bitfield-simple")

@@ -59,7 +59,8 @@ b17Phase3Results b17RunPhase3(
     uint64_t memory_size,
     uint32_t num_buckets,
     uint32_t log_num_buckets,
-    const uint8_t flags)
+		const uint8_t flags,
+		uint32_t num_threads = 2)
 {
     uint8_t pos_size = k;
     uint8_t line_point_size = 2 * k - 1;
@@ -140,7 +141,8 @@ b17Phase3Results b17RunPhase3(
             tmp_dirname,
             filename + ".p3.t" + std::to_string(table_index + 1),
             0,
-            0);
+						0,
+						num_threads);
 
         bool should_read_entry = true;
         std::vector<uint64_t> left_new_pos(kCachedPositionsSize);
@@ -343,7 +345,8 @@ b17Phase3Results b17RunPhase3(
             tmp_dirname,
             filename + ".p3s.t" + std::to_string(table_index + 1),
             0,
-            0);
+						0,
+						num_threads);
 
         std::vector<uint8_t> park_deltas;
         std::vector<uint64_t> park_stubs;

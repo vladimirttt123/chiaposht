@@ -139,7 +139,7 @@ public:
                 throw InvalidValueException("Maximum buckets is " + std::to_string(kMaxBuckets));
             }
             double required_mem =
-                (max_table_size / kMaxBuckets) / kMemSortProportion / (1024 * 1024) + sub_mbytes;
+								(max_table_size / num_buckets) / kMemSortProportion / (1024 * 1024) + sub_mbytes;
             throw InsufficientMemoryException(
                 "Do not have enough memory. Need " + std::to_string(required_mem) + " MiB");
         }
@@ -160,6 +160,7 @@ public:
                   << "Starting plotting progress into temporary dirs: " << tmp_dirname << " and "
                   << tmp2_dirname << std::endl;
         std::cout << "ID: " << Util::HexStr(id, id_len) << std::endl;
+				std::cout << "Memo: " << Util::HexStr( memo, memo_len ) << std:: endl;
         std::cout << "Plot size is: " << static_cast<int>(k) << std::endl;
         std::cout << "Buffer size is: " << buf_megabytes << "MiB" << std::endl;
         std::cout << "Using " << num_buckets << " buckets" << std::endl;
@@ -253,7 +254,8 @@ public:
                     memory_size,
                     num_buckets,
                     log_num_buckets,
-                    phases_flags);
+										phases_flags,
+										num_threads);
                 p2.PrintElapsed("Time for phase 2 =");
 
                 // Now we open a new file, where the final contents of the plot will be stored.
@@ -276,7 +278,8 @@ public:
                     memory_size,
                     num_buckets,
                     log_num_buckets,
-                    phases_flags);
+										phases_flags,
+										num_threads );
                 p3.PrintElapsed("Time for phase 3 =");
 
                 std::cout << std::endl
@@ -303,7 +306,8 @@ public:
                     memory_size,
                     num_buckets,
                     log_num_buckets,
-                    phases_flags);
+										phases_flags,
+										num_threads );
                 p2.PrintElapsed("Time for phase 2 =");
 
                 // Now we open a new file, where the final contents of the plot will be stored.
@@ -324,7 +328,8 @@ public:
                     memory_size,
                     num_buckets,
                     log_num_buckets,
-                    phases_flags);
+										phases_flags,
+										num_threads );
                 p3.PrintElapsed("Time for phase 3 =");
 
                 std::cout << std::endl

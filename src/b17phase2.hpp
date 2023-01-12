@@ -34,7 +34,8 @@ std::vector<uint64_t> b17RunPhase2(
     uint64_t memory_size,
     uint32_t num_buckets,
     uint32_t log_num_buckets,
-    const uint8_t flags)
+		const uint8_t flags,
+		uint32_t num_threads = 2)
 {
     // An extra bit is used, since we may have more than 2^k entries in a table. (After pruning,
     // each table will have 0.8*2^k or less entries).
@@ -98,7 +99,8 @@ std::vector<uint64_t> b17RunPhase2(
             tmp_dirname,
             filename + ".p2.t" + std::to_string(table_index - 1),
             0,
-            0);
+						0,
+						num_threads );
 
         // We will divide by 2, so it must be even.
         assert(kCachedPositionsSize % 2 == 0);

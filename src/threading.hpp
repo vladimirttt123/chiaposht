@@ -52,12 +52,12 @@ namespace Sem {
     using type = sem_t;
     inline void Wait(sem_t *semaphore) { sem_wait(semaphore); }
     inline void Post(sem_t *semaphore) { sem_post(semaphore); }
-    inline sem_t Create() {
+		inline sem_t Create() {
         sem_t ret;
-        sem_init(&ret, 0, 0);
+				sem_init(&ret, 0, 0 );
         return ret;
     }
-    inline void Destroy(sem_t& sem) {
+		inline void Destroy(sem_t& sem) {
         sem_close(&sem);
     }
 #endif

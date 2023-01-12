@@ -18,29 +18,46 @@
 
 struct bitfield
 {
-    explicit bitfield(int64_t size)
+		// Size in bytes need to store provided amount of bits.
+		static int64_t evaluateMemSize(int64_t size){ return ((size + 63) / 64) * 8; }
+
+		explicit bitfield(int64_t size)
         : buffer_(new uint64_t[(size + 63) / 64])
-        , size_((size + 63) / 64)
+				, is_buffer_external( false )
+				, size_((size + 63) / 64)
     {
         clear();
     }
 
-    void set(int64_t const bit)
+		bitfield( uint8_t *buffer, int64_t size )
+						: buffer_((uint64_t*)buffer)
+						, is_buffer_external( false )
+						, size_((size + 63) / 64)
+		{
+				clear();
+		}
+		inline void set(int64_t const bit)
     {
         assert(bit / 64 < size_);
         buffer_[bit / 64] |= uint64_t(1) << (bit % 64);
     }
 
-    bool get(int64_t const bit) const
+		inline bool get(int64_t const bit) const
     {
         assert(bit / 64 < size_);
         return (buffer_[bit / 64] & (uint64_t(1) << (bit % 64))) != 0;
     }
 
-    void clear()
+		inline void clear()
     {
-        std::memset(buffer_.get(), 0, size_ * 8);
+				std::memset(buffer_, 0, size_ * 8);
     }
+
+		inline void Union( const bitfield & other ){
+			assert( size_ == other.size_ );
+			for( int64_t i = 0; i < size_; i++ )
+				buffer_[i] |= other.buffer_[i];
+		}
 
     int64_t size() const { return size_ * 64; }
 
@@ -56,8 +73,8 @@ struct bitfield
         assert((start_bit % 64) == 0);
         assert(start_bit <= end_bit);
 
-        uint64_t const* start = buffer_.get() + start_bit / 64;
-        uint64_t const* end = buffer_.get() + end_bit / 64;
+				uint64_t const* start = buffer_ + start_bit / 64;
+				uint64_t const* end = buffer_ + end_bit / 64;
         int64_t ret = 0;
         while (start != end) {
             ret += Util::PopCount(*start);
@@ -73,11 +90,14 @@ struct bitfield
 
     void free_memory()
     {
-        buffer_.reset();
-        size_ = 0;
+			if( !is_buffer_external )
+				delete [] buffer_;
+			buffer_ = NULL;
+			size_ = 0;
     }
 private:
-    std::unique_ptr<uint64_t[]> buffer_;
+		uint64_t * buffer_;
+		bool is_buffer_external;
 
     // number of 64-bit words
     int64_t size_;
