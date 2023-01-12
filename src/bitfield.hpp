@@ -23,19 +23,11 @@ struct bitfield
 
 		explicit bitfield(int64_t size)
         : buffer_(new uint64_t[(size + 63) / 64])
-				, is_buffer_external( false )
 				, size_((size + 63) / 64)
     {
         clear();
     }
 
-		bitfield( uint8_t *buffer, int64_t size )
-						: buffer_((uint64_t*)buffer)
-						, is_buffer_external( false )
-						, size_((size + 63) / 64)
-		{
-				clear();
-		}
 		inline void set(int64_t const bit)
     {
         assert(bit / 64 < size_);
@@ -50,8 +42,8 @@ struct bitfield
 
 		inline void clear()
     {
-				std::memset(buffer_, 0, size_ * 8);
-    }
+			std::memset(buffer_.get(), 0, size_ * 8);
+		}
 
 		inline void Union( const bitfield & other ){
 			assert( size_ == other.size_ );
@@ -73,9 +65,9 @@ struct bitfield
         assert((start_bit % 64) == 0);
         assert(start_bit <= end_bit);
 
-				uint64_t const* start = buffer_ + start_bit / 64;
-				uint64_t const* end = buffer_ + end_bit / 64;
-        int64_t ret = 0;
+				uint64_t const* start = buffer_.get() + start_bit / 64;
+				uint64_t const* end = buffer_.get() + end_bit / 64;
+				int64_t ret = 0;
         while (start != end) {
             ret += Util::PopCount(*start);
             ++start;
@@ -90,15 +82,11 @@ struct bitfield
 
     void free_memory()
     {
-			if( !is_buffer_external )
-				delete [] buffer_;
-			buffer_ = NULL;
-			size_ = 0;
+				buffer_.reset();
+				size_ = 0;
     }
 private:
-		uint64_t * buffer_;
-		bool is_buffer_external;
-
+		std::unique_ptr<uint64_t[]> buffer_;
     // number of 64-bit words
     int64_t size_;
 };
