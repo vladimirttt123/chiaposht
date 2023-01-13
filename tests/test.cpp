@@ -14,6 +14,7 @@
 
 #include <stdio.h>
 
+#include <cstdlib>
 #include <set>
 
 #include <catch2/catch.hpp>
@@ -1009,6 +1010,37 @@ TEST_CASE("bitfield_index-simple")
     CHECK(idx.lookup(1, 0) == std::pair<uint64_t, uint64_t>{1,0});
     CHECK(idx.lookup(1, 2) == std::pair<uint64_t, uint64_t>{1,1});
     CHECK(idx.lookup(3, 0) == std::pair<uint64_t, uint64_t>{2,0});
+}
+
+TEST_CASE("bitfield-file-flushed")
+{
+		srand (time(NULL));
+		const int64_t size = (1 << 20) + (rand()%100);
+		const int32_t fillness = 85;
+
+		bitfield a( size );
+		bitfield b( size );
+
+		// 1. fill the bitfields
+		for( int64_t i = 0; i < size; i++ )
+			if( rand()%100 < fillness ){
+				a.set( i );
+				b.set( i );
+			}
+
+		// 2. save
+		b.flush_to_disk( "./bitfield.tmp" );
+
+		// 3. check
+		for( int64_t i = 0; i < size; i++ )
+			CHECK( a.get(i) == b.get(i) );
+
+		CHECK( a.count( (size>>7)<<6, (size>>1)+150) == b.count((size>>7)<<6, (size>>1)+150) );
+
+		a.free_memory();
+		b.free_memory();
+
+		// TODO check is underlinying file is deleted?
 }
 
 TEST_CASE("bitfield_index-use index")
