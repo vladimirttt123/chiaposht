@@ -995,23 +995,6 @@ TEST_CASE("bitfield-count-unaligned")
     }
 }
 
-TEST_CASE("bitfield_index-simple")
-{
-    bitfield b(64);
-    b.set(0);
-    b.set(1);
-    b.set(3);
-    bitfield_index const idx(b);
-    CHECK(idx.lookup(0, 0) == std::pair<uint64_t, uint64_t>{0,0});
-    CHECK(idx.lookup(0, 1) == std::pair<uint64_t, uint64_t>{0,1});
-
-    CHECK(idx.lookup(0, 3) == std::pair<uint64_t, uint64_t>{0,2});
-
-    CHECK(idx.lookup(1, 0) == std::pair<uint64_t, uint64_t>{1,0});
-    CHECK(idx.lookup(1, 2) == std::pair<uint64_t, uint64_t>{1,1});
-    CHECK(idx.lookup(3, 0) == std::pair<uint64_t, uint64_t>{2,0});
-}
-
 TEST_CASE("bitfield-file-flushed")
 {
 		srand (time(NULL));
@@ -1031,17 +1014,62 @@ TEST_CASE("bitfield-file-flushed")
 		// 2. save
 		b.flush_to_disk( "./bitfield.tmp" );
 
-		// 3. check
+		// 3. check no change
 		for( int64_t i = 0; i < size; i++ )
 			CHECK( a.get(i) == b.get(i) );
 
+		// 4. check count
 		CHECK( a.count( (size>>7)<<6, (size>>1)+150) == b.count((size>>7)<<6, (size>>1)+150) );
+
+		// 5. check subset
+		auto start_bit = (size>>8)<<6;
+		bitfield bs = bitfield( b, start_bit, size>>3 );
+		for( int64_t i = 0; i < bs.size(); i++ )
+			CHECK( a.get( start_bit + i ) == bs.get(i) );
+
+		start_bit -= 64;
+		bitfield as = bitfield( a, start_bit, (size>>3)+66 );
+		for( int64_t i = 0; i < as.size(); i++ )
+			CHECK( a.get( start_bit + i ) == as.get(i) );
+
+		start_bit += 3;// no align to 64bit
+		bitfieldReader br = bitfieldReader( b );
+		br.setLimits( start_bit, (size>>3)+66 );
+		for( int64_t i = 0; i < (size>>3)+66 ; i++ )
+			CHECK( a.get( start_bit + i ) == br.get(i) );
+
+		start_bit += 3;// no align to 64bit
+		bitfieldReader ar = bitfieldReader( b );
+		ar.setLimits( start_bit, (size>>3)+33 );
+		for( int64_t i = 0; i < (size>>3)+33 ; i++ )
+			CHECK( a.get( start_bit + i ) == ar.get(i) );
 
 		a.free_memory();
 		b.free_memory();
+		as.free_memory();
+		bs.free_memory();
 
 		// TODO check is underlinying file is deleted?
 }
+
+TEST_CASE("bitfield_index-simple")
+{
+    bitfield b(64);
+    b.set(0);
+    b.set(1);
+    b.set(3);
+    bitfield_index const idx(b);
+    CHECK(idx.lookup(0, 0) == std::pair<uint64_t, uint64_t>{0,0});
+    CHECK(idx.lookup(0, 1) == std::pair<uint64_t, uint64_t>{0,1});
+
+    CHECK(idx.lookup(0, 3) == std::pair<uint64_t, uint64_t>{0,2});
+
+    CHECK(idx.lookup(1, 0) == std::pair<uint64_t, uint64_t>{1,0});
+    CHECK(idx.lookup(1, 2) == std::pair<uint64_t, uint64_t>{1,1});
+    CHECK(idx.lookup(3, 0) == std::pair<uint64_t, uint64_t>{2,0});
+}
+
+
 
 TEST_CASE("bitfield_index-use index")
 {

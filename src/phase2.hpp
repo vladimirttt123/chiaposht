@@ -60,12 +60,13 @@ inline void ScanTable( FileDisk* const disk, int table_index, const int64_t &tab
 	for( uint32_t i = 0; i < max_threads; i++ ){
 		threads[i] = std::thread( [table_index, table_size, entry_size, pos_offset_size, k]
 															(FileDisk* disk, int64_t *read_cursor, std::mutex *read_mutex,
-																std::mutex *union_mutex,  bitfield * const current_bitfield, bitfield *next_bitfield){
+																std::mutex *union_mutex,  const bitfield * current_bitfield, bitfield *next_bitfield){
 			// ensure buffer size is even.
 			uint64_t processed[processed_buf_size + (processed_buf_size&1)];
 			uint32_t processed_count = 0;
 			const int64_t read_bufsize = (BUF_SIZE/entry_size)*entry_size; // allign size to entry length
 			auto buffer = std::make_unique<uint8_t[]>(read_bufsize);
+			bitfieldReader cur_bitfield( *current_bitfield );
 			while( true ){
 				int64_t buf_size = 0, buf_start = 0;
 				{	// Read next buffer
@@ -75,6 +76,7 @@ inline void ScanTable( FileDisk* const disk, int table_index, const int64_t &tab
 					if( buf_size > 0 )
 						disk->Read( *read_cursor, buffer.get(), buf_size );
 					*read_cursor += buf_size;
+					cur_bitfield.setLimits( buf_start/entry_size, buf_size/entry_size );
 				}
 				// Nothing to read => end of work
 				if( buf_size == 0 ){
@@ -93,7 +95,7 @@ inline void ScanTable( FileDisk* const disk, int table_index, const int64_t &tab
 							// next_bitfield
 							entry_pos_offset = Util::SliceInt64FromBytes( buffer.get() + buf_ptr, k, pos_offset_size);
 					} else {
-							if( !current_bitfield->get( (buf_start+buf_ptr)/entry_size ) )
+							if( !cur_bitfield.get( buf_ptr/entry_size ) )
 							{
 									// This entry should be dropped.
 									continue;
@@ -208,9 +210,8 @@ inline void SortTable7( FileDisk* const disk, bitfield_index const &index,
 
 inline int64_t SortRegularTableThread( const uint8_t *buffer, const uint64_t buf_size,
 																			 int16_t const &entry_size, int16_t const &new_entry_size,
-																			 int64_t start_position, int64_t start_write_counter,
-																			 const bitfield *current_bitfield,  bitfield_index const index,
-																			 uint32_t const log_num_buckets,
+																			 int64_t start_write_counter, const bitfieldReader *current_bitfield,
+																			 bitfield_index const index, uint32_t const log_num_buckets,
 																			 uint64_t thread_no, uint64_t num_threads, uint8_t * const result,
 																			 uint8_t const pos_offset_size, uint8_t const k
 																			 ,SortManager * sort_manager
@@ -220,12 +221,10 @@ inline int64_t SortRegularTableThread( const uint8_t *buffer, const uint64_t buf
 	uint8_t const pos_offset_shift = write_counter_shift - pos_offset_size;
 
 	int64_t write_counter = start_write_counter;
-	for( uint64_t buf_ptr = 0, read_index = start_position/entry_size ;
-			 buf_ptr < buf_size;
-			 buf_ptr += entry_size, read_index++ ){
+	for( uint64_t buf_ptr = 0; buf_ptr < buf_size; buf_ptr += entry_size ){
 
 		// skipping
-		if( !current_bitfield->get( read_index ) ) continue;
+		if( !current_bitfield->get( buf_ptr/entry_size ) ) continue;
 		// check is it for current thread.
 		if( (write_counter%num_threads) == thread_no ){
 			uint8_t const* entry = buffer + buf_ptr;
@@ -323,9 +322,9 @@ Phase2Results RunPhase2(
 				// that twice is 1GiB or larger than 900KiB
 				// in such case we can operate with one bitfield only and the current one write
 				// to disk and use FilteredDisk class
-				if( std::max(bitfield::memSize(table_size), current_bitfield->memSize())*2 > memory_size ){
+				if( table_index < 7 && std::max(bitfield::memSize(table_size), current_bitfield->memSize())*2 > memory_size ){
 					std::cout << "Warning: Cannot fit 2 bitfields in buffer, flushing one to disk" << std::endl;
-					current_bitfield->flush_to_disk( tmp_1_disks[table_index+1].GetFileName() + ".bitfield.tmp" );
+					current_bitfield->flush_to_disk( tmp_1_disks[table_index].GetFileName() + ".bitfield.tmp" );
 				}
 				auto next_bitfield = std::make_unique<bitfield>( std::max( current_bitfield->size(), table_size ) );
 
@@ -371,17 +370,19 @@ Phase2Results RunPhase2(
 					BufferedReader reader( &tmp_1_disks[table_index], 0, buf_size, table_size*entry_size );
 					auto threads = std::make_unique<std::thread[]>( num_threads - 1 );
 					std::thread write_thread;
+					bitfieldReader cur_bitfield = bitfieldReader( *current_bitfield );
 					while( (buf_size = reader.MoveNextBuffer()) > 0 ){
 						uint8_t * result = new uint8_t[buf_size/entry_size*new_entry_size];
+						cur_bitfield.setLimits( reader.GetBufferStart()/entry_size, buf_size/entry_size );
 
 						// Run threads
 						for( uint64_t t = 0; t < num_threads - 1; t++ )
 							threads[t] = std::thread(SortRegularTableThread, reader.GetBuffer(), buf_size, entry_size,
-																			 new_entry_size, reader.GetBufferStart(), write_counter, current_bitfield.get(), index,
+																			 new_entry_size, write_counter, &cur_bitfield, index,
 																			 log_num_buckets, t, num_threads, result, pos_offset_size, k, sort_manager.get() );
 
-						auto new_write_counter = SortRegularTableThread( reader.GetBuffer(), buf_size, entry_size, new_entry_size,
-																														 reader.GetBufferStart(), write_counter, current_bitfield.get(), index,
+						auto new_write_counter = SortRegularTableThread( reader.GetBuffer(), buf_size, entry_size,
+																														 new_entry_size, write_counter, &cur_bitfield, index,
 																														 log_num_buckets, num_threads-1, num_threads, result, pos_offset_size,
 																														 k, sort_manager.get() );
 

@@ -153,12 +153,12 @@ public:
 				if( phases_flags & ENABLE_BITFIELD ){
 					if( bitfield::memSize( 1ULL << k ) > memory_size ){
 						std::cout << "WARNING: The expected size of bitfield is bigger than buffer size than disable bitfield." << std::endl
-											<< "Minimum buffer size to use bitfield is " << (bitfield::memSize( 1ULL << k )>>20) << "MiB." << std::endl;
+											<< "Minimum buffer size to use bitfield is " << ((bitfield::memSize( 1ULL << k )>>20) + sub_mbytes) << "MiB." << std::endl;
 						phases_flags &= ~ENABLE_BITFIELD;
 					}
 					else if( bitfield::memSize( 1ULL << k )*2 > memory_size ){
 						std::cout << "WARNING: 2 bitfields cannot fit into buffer. One of them expected to flush to disk." << std::endl
-											<< "Minimum buffer size to elemenate this is " << (bitfield::memSize( 1ULL << k )>>19) << "MiB." << std::endl;
+											<< "Minimum buffer size to elemenate this is " << ((bitfield::memSize( 1ULL << k )>>19) + sub_mbytes) << "MiB." << std::endl;
 					}
 				}
 #if defined(_WIN32) || defined(__x86_64__)
@@ -228,7 +228,7 @@ public:
 
             Timer p1;
             Timer all_phases;
-            std::vector<uint64_t> table_sizes = RunPhase1(
+						std::vector<uint64_t> table_sizes = RunPhase1(
                 tmp_1_disks,
                 k,
                 id,

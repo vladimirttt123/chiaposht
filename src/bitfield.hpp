@@ -17,6 +17,7 @@
 #include <memory>
 #include "disk.hpp"
 
+
 struct bitfield
 {
 		explicit bitfield(int64_t size)
@@ -27,6 +28,22 @@ struct bitfield
     {
         clear();
     }
+
+		bitfield( const bitfield &other, int64_t start_bit, int64_t size )
+				: buffer_(new uint64_t[(size + 63) / 64])
+				, size_((size + 63) / 64)
+				, file_( nullptr)
+				, b_file_( nullptr )
+		{
+			assert((start_bit % 64) == 0);
+			assert( size >= 0 );
+			assert( (start_bit + size) <= other.size() );
+
+			if( other.file_ == nullptr )
+				memcpy( (uint8_t*)buffer_.get(), ((uint8_t*)other.buffer_.get()) + (start_bit>>3), size_ << 3 );
+			else
+				other.file_->Read( start_bit>>3, (uint8_t*)buffer_.get(), size_<<3 );
+		}
 
 		inline void set(int64_t const bit)
     {
@@ -43,6 +60,7 @@ struct bitfield
 				return ( (b_file_ == nullptr ? buffer_[pos]:((uint64_t*)b_file_->Read(pos<<3, 8))[0])
 								 & (uint64_t(1) << (bit % 64))) != 0;
     }
+
 
 		inline void clear()
     {
@@ -111,6 +129,7 @@ struct bitfield
 			buffer_.reset();
 		}
 
+		inline bool is_readonly() const { return file_ != nullptr; }
 private:
 		std::unique_ptr<uint64_t[]> buffer_;
     // number of 64-bit words
@@ -118,7 +137,31 @@ private:
 
 		FileDisk * file_;
 		BufferedDisk * b_file_;
+};
 
+
+struct bitfieldReader
+{
+	bitfieldReader( const bitfield &src ) : src_(src)	{	}
+
+	void setLimits( uint64_t start_bit, uint64_t size ){
+		if( src_.is_readonly() ){
+			this->start = start_bit%64;
+			reader.reset( new bitfield( src_, (start_bit>>6) <<6, size + this->start ) );
+		}
+		else {
+			this->start = start_bit;
+		}
+	}
+
+	bool get( int64_t const & bit ) const {
+		return src_.is_readonly()?reader->get(bit+start):src_.get( bit + start );
+	}
+
+	private:
+		const bitfield& src_;
+		std::unique_ptr<bitfield> reader;
+		uint64_t start;
 };
 
 
