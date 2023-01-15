@@ -18,6 +18,7 @@
 #include "encoding.hpp"
 #include "entry_sizes.hpp"
 #include "exceptions.hpp"
+#include "phase2.hpp"
 #include "pos_constants.hpp"
 #include "sort_manager.hpp"
 #include "progress.hpp"

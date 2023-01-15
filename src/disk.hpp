@@ -405,48 +405,56 @@ struct BufferedReader{
 		: disk_(disk), buffer_size_(std::min(buffer_size,bytes_to_read)), file_read_position_(input_disk_begin), bytes_to_read_(bytes_to_read)
 	{
 		if( bytes_to_read_ ){
-			buffer = new uint8_t[buffer_size_<<1]; // double buffer creation
+			buffer = new uint8_t[buffer_size_<<1]; // double size buffer creation
 			read_thread = new std::thread( [this]{this->ReadBuffer();} );
 		}
 	}
 
 	inline uint64_t MoveNextBuffer(){
-		if( read_thread == NULL ) return current_buffer_size_ = 0;
-
+		if( read_thread == nullptr ){
+			assert( bytes_read_from_file_ == bytes_to_read_ );
+			return current_buffer_size_ = 0;
+		}
 		read_thread->join(); // wait for read
 		delete read_thread;
-		read_thread = NULL;
+		read_thread = nullptr;
 
 		current_buffer_start_byte_ = next_buffer_start_byte_;
 		current_buffer_size_ = bytes_read_from_file_ - current_buffer_start_byte_;
-		current_buffer_ ^= 1;
+
+		assert( current_buffer_size_ > 0 );
+		assert( (current_buffer_start_byte_ + current_buffer_size_) <= bytes_to_read_ );
+
+		current_buffer_ ^= 1; // switch to next buffer
 		if( bytes_read_from_file_ < bytes_to_read_ )
 			read_thread = new std::thread( [this]{this->ReadBuffer();} );
 
 		return current_buffer_size_;
 	}
 
-	inline const uint8_t * GetBuffer(){ return buffer + buffer_size_ * current_buffer_;	}
+	inline const uint8_t * GetBuffer() const { return buffer + buffer_size_ * current_buffer_;	}
 
-	inline uint64_t BufferSize(){ return current_buffer_size_; }
+	inline uint64_t BufferSize() const { return current_buffer_size_; }
 
-	inline uint64_t GetBufferStart(){ return current_buffer_start_byte_; }
+	inline uint64_t GetBufferStartPosition() const { return file_read_position_ + current_buffer_start_byte_; }
 
 	~BufferedReader(){
-		if( read_thread != NULL ){
+		if( read_thread != nullptr ){
 			read_thread->join();
 			delete read_thread;
+		} else {
+			assert( bytes_read_from_file_ == bytes_to_read_ );
 		}
-		if( buffer != NULL ) delete [] buffer;
+		if( buffer != nullptr ) delete [] buffer;
 	}
 
 
 private:
 	FileDisk *disk_;
-	uint64_t buffer_size_;
-	uint8_t *buffer = NULL;
-	uint64_t file_read_position_;
-	uint64_t bytes_to_read_;
+	const uint64_t buffer_size_;
+	uint8_t *buffer = nullptr;
+	const uint64_t file_read_position_;
+	const uint64_t bytes_to_read_;
 
 	uint64_t current_buffer_ = 1;
 	uint64_t current_buffer_size_ = 0;
@@ -454,13 +462,14 @@ private:
 	uint64_t current_buffer_start_byte_ = 0;
 	uint64_t bytes_read_from_file_ = 0;
 
-	std::thread *read_thread = NULL;
+	std::thread *read_thread = nullptr;
 
 
 	void ReadBuffer(){
-		uint64_t bytes_to_read = std::min( buffer_size_, this->bytes_to_read_ - bytes_read_from_file_ );
-		if( bytes_to_read > 0 )
-			disk_->Read( file_read_position_ + bytes_read_from_file_, buffer + buffer_size_ * (current_buffer_^1), bytes_to_read );
+		int64_t bytes_to_read = std::min( buffer_size_, this->bytes_to_read_ - bytes_read_from_file_ );
+		assert( bytes_to_read > 0 );
+
+		disk_->Read( file_read_position_ + bytes_read_from_file_, buffer + buffer_size_ * (current_buffer_^1), bytes_to_read );
 
 		next_buffer_start_byte_ = bytes_read_from_file_;
 		bytes_read_from_file_ += bytes_to_read;

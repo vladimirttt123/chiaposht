@@ -222,7 +222,7 @@ namespace UniformSort {
 //						case 1: std::cout << " !sort incorrect order! "; break;
 //						default: std::cout << " !sort incorrect entries count! "; break;
 //					}
-					assert( CheckSort( memory, memory_len, entry_len, bits_begin, (buf_reader.GetBufferStart()+buf_reader.BufferSize())/entry_len ) == 0 );
+					assert( CheckSort( memory, memory_len, entry_len, bits_begin, (buf_reader.GetBufferStartPosition()+buf_reader.BufferSize())/entry_len ) == 0 );
 				}
 
 				auto end_time = std::chrono::high_resolution_clock::now();

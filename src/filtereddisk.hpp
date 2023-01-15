@@ -8,17 +8,17 @@
 
 struct FilteredDisk : Disk
 {
-		FilteredDisk(BufferedDisk underlying, bitfield filter, int entry_size)
-				: filter_(std::move(filter))
+		FilteredDisk(BufferedDisk underlying, bitfield *filter, int entry_size)
+				: filter_( filter )
 				, underlying_(std::move(underlying))
 				, entry_size_(entry_size)
 		{
 				assert(entry_size_ > 0);
-				while (!filter_.get(last_idx_)) {
+				while (!filter_->get(last_idx_)) {
 						last_physical_ += entry_size_;
 						++last_idx_;
 				}
-				assert(filter_.get(last_idx_));
+				assert(filter_->get(last_idx_));
 				assert(last_physical_ == last_idx_ * entry_size_);
 		}
 
@@ -27,7 +27,7 @@ struct FilteredDisk : Disk
 				// we only support a single read-pass with no going backwards
 				assert(begin >= last_logical_);
 				assert((begin % entry_size_) == 0);
-				assert(filter_.get(last_idx_));
+				assert(filter_->get(last_idx_));
 				assert(last_physical_ == last_idx_ * entry_size_);
 
 				if (begin > last_logical_) {
@@ -40,20 +40,20 @@ struct FilteredDisk : Disk
 
 						while (begin > last_logical_)
 						{
-								if (filter_.get(last_idx_)) {
+								if (filter_->get(last_idx_)) {
 										last_logical_ += entry_size_;
 								}
 								last_physical_ += entry_size_;
 								++last_idx_;
 						}
 
-						while (!filter_.get(last_idx_)) {
+						while (!filter_->get(last_idx_)) {
 								last_physical_ += entry_size_;
 								++last_idx_;
 						}
 				}
 
-				assert(filter_.get(last_idx_));
+				assert(filter_->get(last_idx_));
 				assert(last_physical_ == last_idx_ * entry_size_);
 				assert(begin == last_logical_);
 				return underlying_.Read(last_physical_, length);
@@ -67,19 +67,25 @@ struct FilteredDisk : Disk
 		void Truncate(uint64_t new_size) override
 		{
 				underlying_.Truncate(new_size);
-				if (new_size == 0) filter_.free_memory();
+				if (new_size == 0) FreeMemory();
 		}
 		std::string GetFileName() override { return underlying_.GetFileName(); }
+
 		void FreeMemory() override
 		{
-				filter_.free_memory();
+				if( filter_ != nullptr ){
+					filter_->free_memory();
+					delete filter_;
+					filter_ = nullptr;
+				}
 				underlying_.FreeMemory();
 		}
+
 
 private:
 
 		// only entries whose bit is set should be read
-		bitfield filter_;
+		bitfield *filter_;
 		BufferedDisk underlying_;
 		int entry_size_;
 
