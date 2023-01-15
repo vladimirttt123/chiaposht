@@ -71,13 +71,13 @@ inline void ScanTable( FileDisk* const disk, int table_index, const int64_t &tab
 					const std::lock_guard<std::mutex> lk(*read_mutex);
 					buf_start = *read_cursor;
 					buf_size = std::min( read_bufsize, (table_size*(int64_t)entry_size) - *read_cursor );
-					if( buf_size > 0 )
-						disk->Read( *read_cursor, buffer.get(), buf_size );
+					if( buf_size == 0 ) return;// nothing to read -> exit
+
+					disk->Read( *read_cursor, buffer.get(), buf_size );
 					*read_cursor += buf_size;
 					cur_bitfield.setLimits( buf_start/entry_size, buf_size/entry_size );
 				}
 				// Nothing to read => end of work
-				if( buf_size == 0 ) return;
 
 				uint64_t processed[buf_size/entry_size*2];
 				uint32_t processed_count = 0;

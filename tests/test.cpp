@@ -827,32 +827,64 @@ TEST_CASE("Sort on disk")
         remove("test_file.bin");
     }
 
-    SECTION("Lazy Sort Manager QS")
+		SECTION("Lazy Sort Manager QS")
+		{
+				uint32_t iters = 250000;
+				uint32_t const size = 32;
+				const uint32_t memory_len = 550000;
+				for( int threads_num = 0; threads_num < 8; threads_num++ ){
+					vector<Bits> input;
+					SortManager manager(memory_len, 16, 4, size, ".", "test-files", 0, 1, strategy_t::quicksort_last, threads_num);
+//					int total_written_1 = 0;
+					for (uint32_t i = 0; i < iters; i++) {
+							vector<unsigned char> hash_input = intToBytes(i, 4);
+							vector<unsigned char> hash(picosha2::k_digest_size);
+							picosha2::hash256(hash_input.begin(), hash_input.end(), hash.begin(), hash.end());
+//							total_written_1 += size;
+							Bits to_write = Bits(hash.data(), size, size * 8);
+							input.emplace_back(to_write);
+							manager.AddToCache(to_write);
+					}
+					manager.FlushCache();
+					uint8_t buf[size];
+					sort(input.begin(), input.end());
+					uint8_t* buf3;
+					for (uint32_t i = 0; i < iters; i++) {
+							buf3 = manager.ReadEntry(i * size);
+							input[i].ToBytes(buf);
+							REQUIRE(memcmp(buf, buf3, size) == 0);
+					}
+				}
+		}
+
+		SECTION("Lazy Sort Manager BSort")
     {
-        uint32_t iters = 250000;
+				uint32_t iters = 350000;
         uint32_t const size = 32;
-        vector<Bits> input;
         const uint32_t memory_len = 1000000;
-        SortManager manager(memory_len, 16, 4, size, ".", "test-files", 0, 1);
-        int total_written_1 = 0;
-        for (uint32_t i = 0; i < iters; i++) {
-            vector<unsigned char> hash_input = intToBytes(i, 4);
-            vector<unsigned char> hash(picosha2::k_digest_size);
-            picosha2::hash256(hash_input.begin(), hash_input.end(), hash.begin(), hash.end());
-            total_written_1 += size;
-            Bits to_write = Bits(hash.data(), size, size * 8);
-            input.emplace_back(to_write);
-            manager.AddToCache(to_write);
-        }
-        manager.FlushCache();
-        uint8_t buf[size];
-        sort(input.begin(), input.end());
-        uint8_t* buf3;
-        for (uint32_t i = 0; i < iters; i++) {
-            buf3 = manager.ReadEntry(i * size);
-            input[i].ToBytes(buf);
-            REQUIRE(memcmp(buf, buf3, size) == 0);
-        }
+				for( int threads_num = 0; threads_num < 8; threads_num++ ){
+					vector<Bits> input;
+					SortManager manager(memory_len, 16, 4, size, ".", "test-files", 0, 1, strategy_t::uniform, threads_num);
+//					int total_written_1 = 0;
+					for (uint32_t i = 0; i < iters; i++) {
+							vector<unsigned char> hash_input = intToBytes(i, 4);
+							vector<unsigned char> hash(picosha2::k_digest_size);
+							picosha2::hash256(hash_input.begin(), hash_input.end(), hash.begin(), hash.end());
+//							total_written_1 += size;
+							Bits to_write = Bits(hash.data(), size, size * 8);
+							input.emplace_back(to_write);
+							manager.AddToCache(to_write);
+					}
+					manager.FlushCache();
+					uint8_t buf[size];
+					sort(input.begin(), input.end());
+					uint8_t* buf3;
+					for (uint32_t i = 0; i < iters; i++) {
+							buf3 = manager.ReadEntry(i * size);
+							input[i].ToBytes(buf);
+							REQUIRE(memcmp(buf, buf3, size) == 0);
+					}
+				}
     }
 
     SECTION("Lazy Sort Manager uniform sort")
@@ -883,7 +915,7 @@ TEST_CASE("Sort on disk")
         }
     }
 
-    SECTION("Sort in Memory")
+		SECTION("Unifomor Sort in Memory")
     {
         uint32_t iters = 100000;
         uint32_t const size = 32;
@@ -901,15 +933,24 @@ TEST_CASE("Sort on disk")
         }
 
         const uint32_t memory_len = Util::RoundSize(iters) * size;
-        auto memory = std::make_unique<uint8_t[]>(memory_len);
-        UniformSort::SortToMemory(disk, begin, memory.get(), size, iters, 16);
+				auto memory1 = std::make_unique<uint8_t[]>(memory_len);
+				UniformSort::SortToMemory(disk, begin, memory1.get(), size, iters, 16, 1);
+				std::cout << std::endl;
+				auto memory2 = std::make_unique<uint8_t[]>(memory_len);
+				UniformSort::SortToMemory(disk, begin, memory2.get(), size, iters, 16, 2);
+				std::cout << std::endl;
+				auto memory6 = std::make_unique<uint8_t[]>(memory_len);
+				UniformSort::SortToMemory(disk, begin, memory6.get(), size, iters, 16, 6);
+				std::cout << std::endl;
 
         sort(input.begin(), input.end());
         uint8_t buf[size];
         for (uint32_t i = 0; i < iters; i++) {
             input[i].ToBytes(buf);
-            REQUIRE(memcmp(buf, memory.get() + i * size, size) == 0);
-        }
+						REQUIRE(memcmp(buf, memory1.get() + i * size, size) == 0);
+						REQUIRE(memcmp(buf, memory2.get() + i * size, size) == 0);
+						REQUIRE(memcmp(buf, memory6.get() + i * size, size) == 0);
+				}
     }
 
 		SECTION("Bucket Sort in Memory")
@@ -930,14 +971,23 @@ TEST_CASE("Sort on disk")
 				}
 
 				const uint32_t memory_len = Util::RoundSize(iters) * size;
-				auto memory = std::make_unique<uint8_t[]>(memory_len);
-				BucketSort::SortToMemory(disk, begin, memory.get(), memory_len, size, iters, 16);
+				auto memory1 = std::make_unique<uint8_t[]>(memory_len);
+				BucketSort::SortToMemory(disk, begin, memory1.get(), memory_len, size, iters, 16, 1);
+				std::cout << std::endl;
+				auto memory2 = std::make_unique<uint8_t[]>(memory_len);
+				BucketSort::SortToMemory(disk, begin, memory2.get(), memory_len, size, iters, 16, 2);
+				std::cout << std::endl;
+				auto memory6 = std::make_unique<uint8_t[]>(memory_len);
+				BucketSort::SortToMemory(disk, begin, memory6.get(), memory_len, size, iters, 16, 6);
+				std::cout << std::endl;
 
 				sort(input.begin(), input.end());
 				uint8_t buf[size];
 				for (uint32_t i = 0; i < iters; i++) {
 						input[i].ToBytes(buf);
-						REQUIRE(memcmp(buf, memory.get() + i * size, size) == 0);
+						REQUIRE(memcmp(buf, memory1.get() + i * size, size) == 0);
+						REQUIRE(memcmp(buf, memory2.get() + i * size, size) == 0);
+						REQUIRE(memcmp(buf, memory6.get() + i * size, size) == 0);
 				}
 		}
 }

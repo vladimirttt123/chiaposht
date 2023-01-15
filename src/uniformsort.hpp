@@ -217,12 +217,15 @@ namespace UniformSort {
 						thread_rejects.get()[i].clear();
 					}
 
-//					switch( CheckSort(memory, memory_len, entry_len, bits_begin, (buf_reader.GetBufferStart()+buf_reader.BufferSize())/entry_len) ){
+//					auto schk = CheckSort( memory, memory_len, entry_len, bits_begin, (buf_reader.GetBufferStartPosition()+buf_reader.BufferSize() - input_disk_begin)/entry_len );
+//					switch( schk ){
 //						case 0: break;
-//						case 1: std::cout << " !sort incorrect order! "; break;
-//						default: std::cout << " !sort incorrect entries count! "; break;
+//						case 1: std::cout << " !sort incorrect order! " << std::endl; break;
+//						default: std::cout << " !sort incorrect entries count! expected: "
+//															 << (buf_reader.GetBufferStartPosition()+buf_reader.BufferSize())/entry_len
+//															 << ", got: " << (schk-1) << std::endl; break;
 //					}
-					assert( CheckSort( memory, memory_len, entry_len, bits_begin, (buf_reader.GetBufferStartPosition()+buf_reader.BufferSize())/entry_len ) == 0 );
+					assert( CheckSort( memory, memory_len, entry_len, bits_begin, (buf_reader.GetBufferStartPosition()+buf_reader.BufferSize() - input_disk_begin)/entry_len ) == 0 );
 				}
 
 				auto end_time = std::chrono::high_resolution_clock::now();
