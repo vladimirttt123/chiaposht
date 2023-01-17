@@ -1192,21 +1192,26 @@ void write_disk_file(FileDisk& df)
 
 TEST_CASE("FileDisk")
 {
-    FileDisk d = FileDisk("test_file.bin");
-    write_disk_file(d);
+		FileDisk d = FileDisk("test_file.bin");
+		write_disk_file(d);
 
-    std::uint32_t val = 0;
-    for (uint32_t i = 0; i < num_test_entries; ++i) {
-        d.Read(i * 4, reinterpret_cast<std::uint8_t*>(&val), 4);
-        REQUIRE(i == val);
-    }
+		std::uint32_t val = 0;
+		// Read Forward
+		for (uint32_t i = 0; i < num_test_entries; ++i) {
+				d.Read(i * 4, reinterpret_cast<std::uint8_t*>(&val), 4);
+				REQUIRE(i == val);
+		}
 
-    for (uint32_t i = num_test_entries - 1; i > 0; --i) {
-        d.Read(i * 4, reinterpret_cast<std::uint8_t*>(&val), 4);
-        CHECK(i == val);
-    }
+		// Close to test auto reopen
+		d.Close();
 
-    remove("test_file.bin");
+		// Read backward
+		for (uint32_t i = num_test_entries - 1; i > 0; --i) {
+				d.Read(i * 4, reinterpret_cast<std::uint8_t*>(&val), 4);
+				CHECK(i == val);
+		}
+
+		remove("test_file.bin");
 }
 
 TEST_CASE("BufferedDisk")
@@ -1229,6 +1234,88 @@ TEST_CASE("BufferedDisk")
     }
 
     remove("test_file.bin");
+}
+
+TEST_CASE( "BufferedReader" )
+{
+	FileDisk d = FileDisk("test_file.bin");
+	write_disk_file(d);
+
+	auto buf_size =  BUF_SIZE>>2<<2;
+	BufferedReader reader( &d, 0, buf_size, num_test_entries * 4 );
+	uint64_t cur_pos = 0;
+
+	while( reader.MoveNextBuffer() > 0 ){
+		CHECK( cur_pos == reader.GetBufferStartPosition() );
+		for( uint32_t i = 0; i < reader.BufferSize()/4; i+=4 ){
+			CHECK( (i + reader.GetBufferStartPosition()/4) == ((uint32_t*)reader.GetBuffer())[i] );
+		}
+		cur_pos += reader.BufferSize();
+	}
+
+	remove("test_file.bin");
+}
+
+TEST_CASE( "Threaded-IO" )
+{
+	FileDisk d = FileDisk("test_file.bin");
+	BufferedDisk bd(&d, num_test_entries*4 );
+
+	srand (time(NULL));
+	const uint32_t val_start = rand();
+	std::uint32_t val = val_start;
+	for (int i = 0; i < num_test_entries; ++i) {
+			bd.Write(i * 4, reinterpret_cast<std::uint8_t const*>(&val), 4);
+			++val;
+	}
+	bd.FreeMemory();
+
+	auto buf_size =  BUF_SIZE>>2<<2;
+	uint32_t num_threads = 4;
+
+	std::mutex read_mutex;
+	uint64_t read_cursor = 0;
+	auto threads = std::make_unique<std::thread[]>( num_threads );
+
+	for( uint32_t i = 0; i < num_threads; i++ ){
+		threads[i] = std::thread( [val_start](FileDisk *disk, uint64_t num_entries, uint64_t entry_size, uint64_t *read_cursor, std::mutex *read_mutex){
+			uint64_t buf_start, buf_size = BUF_SIZE>>2<<2;
+			auto buffer = std::make_unique<uint8_t[]>(buf_size);
+
+			while( true ){
+				{	// Read next buffer
+					const std::lock_guard<std::mutex> lk(*read_mutex);
+					buf_start = *read_cursor;
+					buf_size = std::min( buf_size, (num_entries*entry_size) - *read_cursor );
+					if( buf_size == 0 ) return;// nothing to read -> exit
+
+					disk->Read( *read_cursor, buffer.get(), buf_size );
+					*read_cursor += buf_size;
+				}
+				std::cout<< "Thread buf_start: " << buf_start << ", buf_size: " << buf_size << std::endl;
+				for( uint32_t i = 0; i< buf_size/4; i+=4 ){
+					CHECK( i+ buf_start/4 + val_start == ((uint32_t*)buffer.get())[i] );
+				}
+			}
+		}, &d, num_test_entries, 4, &read_cursor, &read_mutex );
+	}
+
+	for( uint32_t i = 0; i < num_threads; i++ )
+		threads[i].join();
+
+	BufferedReader reader( &d, 0, buf_size, num_test_entries * 4 );
+	uint64_t cur_pos = 0;
+
+	while( reader.MoveNextBuffer() > 0 ){
+		std::cout << "BufferedReader position: " << reader.GetBufferStartPosition() << ", size: " << reader.BufferSize() << std::endl;
+		CHECK( cur_pos == reader.GetBufferStartPosition() );
+		for( uint32_t i = 0; i < reader.BufferSize()/4; i+=4 ){
+			CHECK( (i + reader.GetBufferStartPosition()/4) + val_start == ((uint32_t*)reader.GetBuffer())[i] );
+		}
+		cur_pos += reader.BufferSize();
+	}
+
+	remove("test_file.bin");
 }
 
 TEST_CASE("DiskProver")

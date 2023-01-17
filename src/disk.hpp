@@ -109,7 +109,7 @@ struct FileDisk {
     void Open(uint8_t flags = 0)
     {
         // if the file is already open, don't do anything
-        if (f_) return;
+				if (f_)  return;
 
         // Opens the file for reading and writing
         do {
@@ -161,6 +161,7 @@ struct FileDisk {
         // Seek, read, and replace into memcache
         uint64_t amtread;
         do {
+						if( !bReading ) Flush();
             if ((!bReading) || (begin != readPos)) {
 #ifdef _WIN32
                 _fseeki64(f_, begin, SEEK_SET);
@@ -235,7 +236,7 @@ struct FileDisk {
         } while (amtwritten != length);
     }
 
-    std::string GetFileName() { return filename_.string(); }
+		std::string GetFileName() const { return filename_.string(); }
 
     uint64_t GetWriteMax() const noexcept { return writeMax; }
 
@@ -243,7 +244,16 @@ struct FileDisk {
     {
         Close();
         fs::resize_file(filename_, new_size);
+				// some debug info
+				if( new_size != 0 )
+					std::cout << "Trancating file " << filename_ << " to " << new_size << ", writeMax = " << writeMax << std::endl;
     }
+
+		void Flush() {
+			if( f_)
+				if( fflush(f_) != 0 )
+					std::cout << "Fail: Cannot flush file " << filename_ << std::endl;
+		}
 
 private:
 
@@ -357,10 +367,11 @@ struct BufferedDisk : Disk
 
     void FlushCache()
     {
-        if (write_buffer_size_ == 0) return;
-
-        disk_->Write(write_buffer_start_, write_buffer_.get(), write_buffer_size_);
-        write_buffer_size_ = 0;
+				if (write_buffer_size_ > 0) {
+					disk_->Write(write_buffer_start_, write_buffer_.get(), write_buffer_size_);
+					write_buffer_size_ = 0;
+				}
+				disk_->Flush();
     }
 
 private:
@@ -466,7 +477,7 @@ private:
 
 
 	void ReadBuffer(){
-		int64_t bytes_to_read = std::min( buffer_size_, this->bytes_to_read_ - bytes_read_from_file_ );
+		int64_t bytes_to_read = std::min( buffer_size_, bytes_to_read_ - bytes_read_from_file_ );
 		assert( bytes_to_read > 0 );
 
 		disk_->Read( file_read_position_ + bytes_read_from_file_, buffer + buffer_size_ * (current_buffer_^1), bytes_to_read );
