@@ -81,10 +81,7 @@ public:
             fs::path const bucket_filename =
                 fs::path(tmp_dirname) /
                 fs::path(filename + ".sort_bucket_" + bucket_number_padded.str() + ".tmp");
-            fs::remove(bucket_filename);
-
-            buckets_.emplace_back(
-                FileDisk(bucket_filename));
+						buckets_.emplace_back( FileDisk(bucket_filename, true ) );
         }
     }
 
@@ -101,7 +98,7 @@ public:
 				AddToCache( entry, bucket_index );
     }
 
-		inline void AddToCache(const uint8_t *entry, uint64_t const bucket_index )
+		inline void AddToCache(const uint8_t *entry, const uint64_t &bucket_index )
 		{
 				if (this->done) {
 						throw InvalidValueException("Already finished.");
@@ -225,11 +222,10 @@ public:
     ~SortManager()
     {
         // Close and delete files in case we exit without doing the sort
-        for (auto& b : buckets_) {
-            std::string const filename = b.file.GetFileName();
-            b.underlying_file.Close();
-            fs::remove(fs::path(filename));
-        }
+				for (auto& b : buckets_){
+					b.file.FreeMemory( false );
+					b.underlying_file.Remove( true );
+				}
     }
 
 private:
@@ -359,9 +355,8 @@ private:
 				std::cout << /*", time: " << end_time.time_since_epoch()/std::chrono::milliseconds(1) << */", sort time: " << (end_time - start_time)/std::chrono::milliseconds(1)/1000.0 << "s" << std::endl;
 	
         // Deletes the bucket file
-        std::string filename = b.file.GetFileName();
-        b.underlying_file.Close();
-        fs::remove(fs::path(filename));
+				b.file.FreeMemory( false );
+				b.underlying_file.Remove();
 
         this->final_position_start = this->final_position_end;
         this->final_position_end += b.write_pointer;

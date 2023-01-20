@@ -71,8 +71,7 @@ public:
             fs::path bucket_filename =
                 fs::path(tmp_dirname) /
                 fs::path(filename + ".sort_bucket_" + bucket_number_padded.str() + ".tmp");
-            fs::remove(bucket_filename);
-            this->bucket_files.push_back(FileDisk(bucket_filename));
+						this->bucket_files.push_back(FileDisk(bucket_filename, true));
         }
         this->final_position_start = 0;
         this->final_position_end = 0;
@@ -178,11 +177,9 @@ public:
     ~b17SortManager()
     {
         // Close and delete files in case we exit without doing the sort
-        for (auto &fd : this->bucket_files) {
-            std::string filename = fd.GetFileName();
-            fd.Close();
-            fs::remove(fs::path(fd.GetFileName()));
-        }
+				for (auto &fd : this->bucket_files)
+						fd.Remove();
+
         delete[] this->prev_bucket_buf;
         delete[] this->entry_buf;
     }
@@ -315,9 +312,7 @@ private:
 				std::cout << /* ", time " << end_time.time_since_epoch()/std::chrono::milliseconds(1) << */ ", sort time: " << (end_time - start_time)/std::chrono::milliseconds(1)/1000.0 << "s" << std::endl;
 
         // Deletes the bucket file
-        std::string filename = this->bucket_files[bucket_i].GetFileName();
-        this->bucket_files[bucket_i].Close();
-        fs::remove(fs::path(filename));
+				this->bucket_files[bucket_i].Remove();
 
         this->final_position_start = this->final_position_end;
         this->final_position_end += this->bucket_write_pointers[bucket_i];

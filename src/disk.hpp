@@ -27,6 +27,7 @@
 // enables disk I/O logging to disk.log
 // use tools/disk.gnuplot to generate a plot
 #define ENABLE_LOGGING 0
+#define DO_NOT_DELETE_FILES 1
 
 using namespace std::chrono_literals; // for operator""min;
 
@@ -100,9 +101,13 @@ void disk_log(fs::path const& filename, op_t const op, uint64_t offset, uint64_t
 #endif
 
 struct FileDisk {
-    explicit FileDisk(const fs::path &filename)
+		explicit FileDisk( const fs::path &filename, bool withPreRemove = false )
     {
         filename_ = filename;
+
+				if( withPreRemove && fs::remove( filename ) )
+					std::cout << "Removed pre exists file " << filename << std::endl;
+
         Open(writeFlag);
     }
 
@@ -149,6 +154,16 @@ struct FileDisk {
         readPos = 0;
         writePos = 0;
     }
+
+		void Remove( bool noWarn = false ){
+			Close();
+#ifdef DO_NOT_DELETE_FILES
+			RenameFileToDeleted();
+#else // DO_NOT_DELETE_FILES
+			if( !fs::remove( GetFileName() ) && !noWarn )
+				std::cout << "Warning: Some problem with file removing: " << GetFileName() << std::endl;
+#endif // DO_NOT_DELETE_FILES
+		}
 
     ~FileDisk() { Close(); }
 
@@ -243,10 +258,17 @@ struct FileDisk {
     void Truncate(uint64_t new_size)
     {
         Close();
-        fs::resize_file(filename_, new_size);
+#ifdef DO_NOT_DELETE_FILES
+			if( new_size == 0 )
+				RenameFileToDeleted();
+			else
+#endif // DO_NOT_DELETE_FILES
+			fs::resize_file(filename_, new_size);
+
+			if( new_size != 0 )
+				std::cout << "Trancating file " << filename_ << " to " << new_size << ", writeMax = " << writeMax << std::endl;
+
 				// some debug info
-				if( new_size != 0 )
-					std::cout << "Trancating file " << filename_ << " to " << new_size << ", writeMax = " << writeMax << std::endl;
     }
 
 		void Flush() {
@@ -267,6 +289,14 @@ private:
 
     static const uint8_t writeFlag = 0b01;
     static const uint8_t retryOpenFlag = 0b10;
+
+		void RenameFileToDeleted() const {
+			if( !fs::exists(GetFileName() )) return;
+			std::string delname = GetFileName() + ".deleted";
+			for( int i = 0; fs::exists(delname); i++ )
+				delname = GetFileName() + "." + std::to_string(i) + ".deleted";
+			fs::rename( GetFileName(), delname );
+		}
 };
 
 struct BufferedDisk : Disk
@@ -355,9 +385,14 @@ struct BufferedDisk : Disk
 
     std::string GetFileName() override { return disk_->GetFileName(); }
 
-    void FreeMemory() override
+		void FreeMemory( ) override{
+			FreeMemory( true );
+		}
+
+		void FreeMemory( bool withFlashCache )
     {
-        FlushCache();
+				if( withFlashCache )
+					FlushCache();
 
         read_buffer_.reset();
         write_buffer_.reset();

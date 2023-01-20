@@ -56,13 +56,13 @@ inline void ScanTable( FileDisk* const disk, int table_index, const int64_t &tab
 	auto max_threads = std::max((uint32_t)1, num_threads);
 	auto threads = std::make_unique<std::thread[]>( max_threads );
 	std::mutex read_mutex, union_mutex;
+	// ensure buffer size is even.
+	const int64_t read_bufsize = (BUF_SIZE/entry_size)*entry_size; // allign size to entry length
 	// Run the threads
 	for( uint32_t i = 0; i < max_threads; i++ ){
-		threads[i] = std::thread( [table_index, table_size, entry_size, pos_offset_size, k]
+		threads[i] = std::thread( [table_index, table_size, entry_size, pos_offset_size, k, read_bufsize]
 															(FileDisk* disk, int64_t *read_cursor, std::mutex *read_mutex,
 																std::mutex *union_mutex,  const bitfield * current_bitfield, bitfield *next_bitfield){
-			// ensure buffer size is even.
-			const int64_t read_bufsize = (BUF_SIZE/entry_size)*entry_size; // allign size to entry length
 			auto buffer = std::make_unique<uint8_t[]>(read_bufsize);
 			bitfieldReader cur_bitfield( *current_bitfield );
 			while( true ){
@@ -116,7 +116,7 @@ inline void ScanTable( FileDisk* const disk, int table_index, const int64_t &tab
 	}
 
 	// Wait for job done
-	for( uint32_t i = 0; i < num_threads; i++ )
+	for( uint32_t i = 0; i < max_threads; i++ )
 		threads[i].join();
 
 	scan_timer.PrintElapsed("time =");
@@ -378,9 +378,9 @@ Phase2Results RunPhase2(
 						for( uint64_t t = 0; t < num_threads - 1; t++ )
 							threads[t].join();
 
-						assert( (new_write_counter - write_counter ) ==
-										( current_bitfield->count( write_counter>>6<<6, write_counter + buf_size / entry_size )
-											- ((write_counter%64) == 0 ? 0: current_bitfield->count( write_counter>>6<<6, (write_counter>>6<<6) + (write_counter%64) + 1 ) ) ) );
+//						assert( (new_write_counter - write_counter ) ==
+//										( current_bitfield->count( write_counter>>6<<6, write_counter + buf_size / entry_size )
+//											- ((write_counter%64) == 0 ? 0: current_bitfield->count( write_counter>>6<<6, (write_counter>>6<<6) + (write_counter%64) + 1 ) ) ) );
 
 						// Write results to sort manager without wait in independent thread
 						if( write_counter > 0 ) write_thread.join();

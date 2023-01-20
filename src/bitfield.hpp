@@ -111,8 +111,7 @@ struct bitfield
 					b_file_->FreeMemory();
 					delete b_file_;
 					b_file_ = nullptr;
-					file_->Close();
-					fs::remove( file_->GetFileName() );
+					file_->Remove();
 					delete file_;
 					file_ = nullptr;
 				}
