@@ -23,14 +23,9 @@
 
 #include <chrono>
 
-#include "chia_filesystem.hpp"
 
 #include "./bits.hpp"
 #include "./calculate_bucket.hpp"
-#include "./disk.hpp"
-#include "./quicksort.hpp"
-#include "./uniformsort.hpp"
-#include "./bucketsort.hpp"
 #include "disk.hpp"
 #include "exceptions.hpp"
 #include "sorting_bucket.hpp"
@@ -56,8 +51,6 @@ public:
         , log_num_buckets_(log_num_buckets)
         , prev_bucket_buf_size(
             2 * (stripe_size + 10 * (kBC / pow(2, kExtraBits))) * entry_size)
-        // 7 bytes head-room for SliceInt64FromBytes()
-        , entry_buf_(new uint8_t[entry_size + 7])
 				, num_threads( num_threads )
 				, subbucket_bits( std::max( (uint8_t)2, (uint8_t)(k - log_num_buckets - 11) ) )
     {
@@ -78,8 +71,10 @@ public:
 
 		inline void AddToCache(const Bits &entry)
     {
-        entry.ToBytes(entry_buf_.get());
-				AddToCache(entry_buf_.get());
+				// 7 bytes head-room for SliceInt64FromBytes()
+				uint8_t buf[entry_size_+7];
+				entry.ToBytes(buf);
+				AddToCache(buf);
     }
 
 		inline void AddToCache(const uint8_t *entry)
@@ -113,27 +108,24 @@ public:
         FreeMemory();
     }
 
-    std::string GetFileName() override
-    {
-        return "<SortManager>";
-    }
+		std::string GetFileName() override { return "<SortManager>"; }
 
     void FreeMemory() override
     {
         for (auto& b : buckets_) {
+					b.FreeMemory();
 					// TODO: clear bucket memory
 //            b.file.FreeMemory();
 //            // the underlying file will be re-opened again on-demand
 //            b.underlying_file.Close();
         }
         prev_bucket_buf_.reset();
-        memory_start_.reset();
         final_position_end = 0;
         // TODO: Ideally, bucket files should be deleted as we read them (in the
         // last reading pass over them)
     }
 
-    uint8_t *ReadEntry(uint64_t position)
+		const uint8_t *ReadEntry(uint64_t position)
     {
         if (position < this->final_position_start) {
             if (!(position >= this->prev_bucket_position_start)) {
@@ -153,8 +145,8 @@ public:
         if (!(this->final_position_start <= position)) {
             throw InvalidValueException("Position too small");
         }
-        assert(memory_start_);
-        return memory_start_.get() + (position - this->final_position_start);
+				assert(next_bucket_to_sort>0);
+				return memory_start() + (position - this->final_position_start);
     }
 
     bool CloseToNewBucket(uint64_t position) const
@@ -167,7 +159,7 @@ public:
             this->next_bucket_to_sort < buckets_.size());
     }
 
-    void TriggerNewBucket(uint64_t position)
+		void TriggerNewBucket( uint64_t position )
     {
         if (!(position <= this->final_position_end)) {
             throw InvalidValueException("Triggering bucket too late");
@@ -176,7 +168,7 @@ public:
             throw InvalidValueException("Triggering bucket too early");
         }
 
-        if (memory_start_) {
+				if( next_bucket_to_sort > 0 ) {
             // save some of the current bucket, to allow some reverse-tracking
             // in the reading pattern,
             // position is the first position that we need in the new array
@@ -185,7 +177,7 @@ public:
             memset(prev_bucket_buf_.get(), 0x00, this->prev_bucket_buf_size);
             memcpy(
                 prev_bucket_buf_.get(),
-                memory_start_.get() + position - this->final_position_start,
+								memory_start() + position - this->final_position_start,
                 cache_size);
         }
 
@@ -197,13 +189,16 @@ public:
     {
         for (auto& b : buckets_) {
 						b.Flush();
-        }
+						b.FreeMemory();
+				}
         final_position_end = 0;
-        memory_start_.reset();
     }
 
     ~SortManager()
     {
+				if( next_bucket_sorting_thread )
+					next_bucket_sorting_thread->join();
+
         // Close and delete files in case we exit without doing the sort
 				for (auto& b : buckets_){
 					b.Remove();
@@ -212,8 +207,6 @@ public:
 
 private:
 
-    // The buffer we use to sort buckets in-memory
-    std::unique_ptr<uint8_t[]> memory_start_;
     // Size of the whole memory array
     uint64_t memory_size_;
     // Size of each entry
@@ -229,56 +222,60 @@ private:
     std::unique_ptr<uint8_t[]> prev_bucket_buf_;
     uint64_t prev_bucket_position_start = 0;
 
-    bool done = false;
-
     uint64_t final_position_start = 0;
     uint64_t final_position_end = 0;
     uint64_t next_bucket_to_sort = 0;
-    std::unique_ptr<uint8_t[]> entry_buf_;
 		uint32_t num_threads;
 		const uint8_t subbucket_bits;
+		std::unique_ptr<std::thread> next_bucket_sorting_thread;
 
-    void SortBucket()
+		const inline uint8_t* memory_start() const {return buckets_[next_bucket_to_sort-1].get();}
+
+		void SortBucket()
     {
-        if (!memory_start_) {
-            // we allocate the memory to sort the bucket in lazily. It'se freed
-            // in FreeMemory() or the destructor
-            memory_start_.reset(new uint8_t[memory_size_]);
-        }
-
-        this->done = true;
         if (next_bucket_to_sort >= buckets_.size()) {
             throw InvalidValueException("Trying to sort bucket which does not exist.");
         }
-        uint64_t const bucket_i = this->next_bucket_to_sort;
-				SortingBucket& b = buckets_[bucket_i];
-        uint64_t const entries_fit_in_memory = this->memory_size_ / entry_size_;
 
-				if( b.Count() > entries_fit_in_memory ) {
+				uint64_t const bucket_i = this->next_bucket_to_sort;
+				if( bucket_i > 0 ) buckets_[bucket_i-1].FreeMemory();
+				SortingBucket& b = buckets_[bucket_i];
+
+				if( b.Size() > this->memory_size_ ) {
             throw InsufficientMemoryException(
                 "Not enough memory for sort in memory. Need to sort " +
 								std::to_string(b.Size() / (1024.0 * 1024.0 * 1024.0)) +
                 "GiB");
         }
 
-				double const have_ram = entry_size_ * entries_fit_in_memory / (1024.0 * 1024.0 * 1024.0);
+				double const have_ram = memory_size_ / (1024.0 * 1024.0 * 1024.0);
 				double const qs_ram = entry_size_ * b.Count() / (1024.0 * 1024.0 * 1024.0);
 
 				std::cout << "\tBucket " << bucket_i << " Ram: " << std::fixed
 									<< std::setprecision(3) << have_ram << "GiB, size: " <<  qs_ram << "GiB" << std::flush;
 
-				auto start_time = std::chrono::high_resolution_clock::now();
+				if( next_bucket_sorting_thread ){
+					next_bucket_sorting_thread->join();
+					next_bucket_sorting_thread.reset();
+				}
+				else
+					b.SortToMemory( num_threads );
 
-				b.SortToMemory( memory_start_.get(), num_threads );
+				std::cout << ", read time: " << b.read_time/1000.0 << "s, sort time: " << b.sort_time/1000.0 << "s" << std::endl;
 
-				auto end_time = std::chrono::high_resolution_clock::now();
-				std::cout << ", sort time: " << (end_time - start_time)/std::chrono::milliseconds(1)/1000.0 << "s" << std::endl;
 
         this->final_position_start = this->final_position_end;
 				this->final_position_end += b.Size();
 				this->next_bucket_to_sort += 1;
 
-				// Deletes the bucket file and clean ram
+				if( num_threads > 1 && this->next_bucket_to_sort < buckets_.size() &&
+						( b.Size() + buckets_[this->next_bucket_to_sort].Size() ) < memory_size_ ){
+					// we have memory to sort next bucket
+					next_bucket_sorting_thread.reset(
+								new std::thread( [this](){ buckets_[this->next_bucket_to_sort].SortToMemory( num_threads - 1 );} ) );
+				}
+
+				// Deletes the bucket file
 				b.Remove();
 		}
 };

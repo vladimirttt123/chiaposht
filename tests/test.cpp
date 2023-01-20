@@ -848,9 +848,8 @@ TEST_CASE("Sort on disk")
 					manager.FlushCache();
 					uint8_t buf[size];
 					sort(input.begin(), input.end());
-					uint8_t* buf3;
 					for (uint32_t i = 0; i < iters; i++) {
-							buf3 = manager.ReadEntry(i * size);
+							auto buf3 = manager.ReadEntry(i * size);
 							input[i].ToBytes(buf);
 							REQUIRE(memcmp(buf, buf3, size) == 0);
 					}
@@ -878,9 +877,8 @@ TEST_CASE("Sort on disk")
 					manager.FlushCache();
 					uint8_t buf[size];
 					sort(input.begin(), input.end());
-					uint8_t* buf3;
 					for (uint32_t i = 0; i < iters; i++) {
-							buf3 = manager.ReadEntry(i * size);
+							auto buf3 = manager.ReadEntry(i * size);
 							input[i].ToBytes(buf);
 							REQUIRE(memcmp(buf, buf3, size) == 0);
 					}
@@ -907,9 +905,8 @@ TEST_CASE("Sort on disk")
         manager.FlushCache();
         uint8_t buf[size];
         sort(input.begin(), input.end());
-        uint8_t* buf3;
         for (uint32_t i = 0; i < iters; i++) {
-            buf3 = manager.ReadEntry(i * size);
+						auto buf3 = manager.ReadEntry(i * size);
             input[i].ToBytes(buf);
             REQUIRE(memcmp(buf, buf3, size) == 0);
         }

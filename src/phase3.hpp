@@ -406,8 +406,6 @@ Phase3Results RunPhase3(
         uint128_t last_line_point = 0;
         uint64_t park_index = 0;
 
-        uint8_t *right_reader_entry_buf;
-
         // Now we will write on of the final tables, since we have a table sorted by line point.
         // The final table will simply store the deltas between each line_point, in fixed space
         // groups(parks), with a checkpoint in each group.
@@ -415,7 +413,7 @@ Phase3Results RunPhase3(
         uint8_t const sort_key_shift = 128 - right_sort_key_size;
         uint8_t const index_shift = sort_key_shift - (k + (table_index == 6 ? 1 : 0));
         for (uint64_t index = 0; index < total_r_entries; index++) {
-            right_reader_entry_buf = R_sort_manager->ReadEntry(right_reader);
+						const uint8_t *right_reader_entry_buf = R_sort_manager->ReadEntry(right_reader);
             right_reader += right_entry_size_bytes;
             right_reader_count++;
 

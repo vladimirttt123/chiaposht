@@ -227,7 +227,7 @@ void* phase1_thread(THREADDATA* ptd)
                 left_entry.used = false;
             } else {
                 // Reads a left entry from disk
-                uint8_t* left_buf = globals.L_sort_manager->ReadEntry(left_reader);
+								const uint8_t* left_buf = globals.L_sort_manager->ReadEntry(left_reader);
                 left_reader += entry_size_bytes;
 
                 left_entry = GetLeftEntry(table_index, left_buf, k, metadata_size, pos_size);
