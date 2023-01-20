@@ -27,7 +27,6 @@
 // enables disk I/O logging to disk.log
 // use tools/disk.gnuplot to generate a plot
 #define ENABLE_LOGGING 0
-#define DO_NOT_DELETE_FILES_ 1
 
 using namespace std::chrono_literals; // for operator""min;
 
@@ -39,7 +38,8 @@ using namespace std::chrono_literals; // for operator""min;
 
 constexpr uint64_t write_cache = 1024 * 1024;
 constexpr uint64_t read_ahead = 1024 * 1024;
-constexpr uint64_t BUF_SIZE = 1024*1024;
+uint64_t BUF_SIZE = 1024*1024;
+bool LEAVE_FILES = false;
 
 struct Disk {
     virtual uint8_t const* Read(uint64_t begin, uint64_t length) = 0;
@@ -157,12 +157,12 @@ struct FileDisk {
 
 		void Remove( bool noWarn = false ){
 			Close();
-#ifdef DO_NOT_DELETE_FILES
-			RenameFileToDeleted();
-#else // DO_NOT_DELETE_FILES
-			if( !fs::remove( GetFileName() ) && !noWarn )
-				std::cout << "Warning: Some problem with file removing: " << GetFileName() << std::endl;
-#endif // DO_NOT_DELETE_FILES
+			if( LEAVE_FILES )
+				RenameFileToDeleted();
+			else{
+				if( !fs::remove( GetFileName() ) && !noWarn )
+					std::cout << "Warning: Some problem with file removing: " << GetFileName() << std::endl;
+			}
 		}
 
     ~FileDisk() { Close(); }
@@ -258,12 +258,10 @@ struct FileDisk {
     void Truncate(uint64_t new_size)
     {
         Close();
-#ifdef DO_NOT_DELETE_FILES
-			if( new_size == 0 )
+			if( LEAVE_FILES && new_size == 0 )
 				RenameFileToDeleted();
 			else
-#endif // DO_NOT_DELETE_FILES
-			fs::resize_file(filename_, new_size);
+				fs::resize_file(filename_, new_size);
 
 			if( new_size != 0 )
 				std::cout << "Trancating file " << filename_ << " to " << new_size << ", writeMax = " << writeMax << std::endl;

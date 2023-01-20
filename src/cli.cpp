@@ -85,6 +85,7 @@ int main(int argc, char *argv[]) try {
     bool show_progress = false;
     bool parallel_read = true;
     uint32_t buffmegabytes = 0;
+		uint32_t filebufkb = 1024;
 
     options.allow_unrecognised_options().add_options()(
             "k, size", "Plot size", cxxopts::value<uint8_t>(k))(
@@ -101,6 +102,10 @@ int main(int argc, char *argv[]) try {
         "b, buffer",
         "Megabytes to be used as buffer for sorting and plotting",
         cxxopts::value<uint32_t>(buffmegabytes))(
+				"B, file-buffer", "Per file read/write buffer size in KiB",
+				cxxopts::value<uint32_t>(filebufkb)->default_value("1024") )(
+				"l, leave-files", "do not delete temporary files (for debug)",
+					cxxopts::value<bool>(LEAVE_FILES)->default_value("false") )(
         "p, progress", "Display progress percentage during plotting",
         cxxopts::value<bool>(show_progress))(
         "parallel_read", "Set to false to use sequential reads",
@@ -142,6 +147,7 @@ int main(int argc, char *argv[]) try {
         if (!nobitfield) {
             phases_flags = ENABLE_BITFIELD;
         }
+				BUF_SIZE = std::max( (uint64_t)64, (uint64_t)filebufkb ) << 10;
         if (show_progress) {
             phases_flags = phases_flags | SHOW_PROGRESS;
         }
