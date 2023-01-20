@@ -110,6 +110,64 @@ public:
         return CalculateLinePointSize(k) + CalculateStubsSize(k) +
                CalculateMaxDeltasSize(k, table_index);
     }
+
+		static uint64_t EvaluateTableFileSize( uint8_t k, uint8_t table_index, uint8_t phase ){
+			return 0;
+		}
+
+		static uint64_t EvalueateBucketFileSize( uint8_t k, uint8_t table_index, uint8_t phase, uint32_t buckets_count, uint32_t bucket_num ){
+			return EvaluateTableFileSize( k, table_index, phase ) / (uint64_t)buckets_count;
+			/* k=25, -u 16,
+					Phase 1:
+						t1: 113318K - bucket_sizes: [14330K, 14353K] ~ 1/45 final
+						t2: 141622K - bucket_sizes: [30682K, 30756K] ~ 1/21 final
+						t3: 141567K - bucket_sizes: [42924K, 43033K]
+						t4: 141468K - bucket_sizes: [42909K, 43006K]
+						t5: 141264K - bucket_sizes: [36748K, 36810K]
+						t6: 140873K - bucket_sizes: [30559K, 30615K]
+						t7: 256944K - bucket_sizes: [0, 0]
+					Phase 2: t1 & t7 does not touched
+						t6:	0		buckets_sizes: 0-12=[17175K, 17198K], 13=1988K, 14-15=0
+						t5:	0		buckets_sizes: 0-11=[16663K, 16691K], 12=14795K, 13-15=0
+						t4:	0		buckets_sizes: 0-11=[16480K, 16506K], 12=13219K, 13-15=0
+						t3:	0		buckets_sizes: 0-11=[16415K, 16443K], 12=12623K, 13-15=0
+						t2:	0		buckets_sizes: 0-11=[16380K, 16409K], 12=12384K, 13-15=0
+					Phase 3:
+						t1: 0
+						t2:     buckets_sezes: [16202K, 16833K]
+
+						t3p1:		buckets_sizes: 0-9=[25707K, 25753K], 10=4874K, 11-15=0
+						t3p2:		buckets_sizes: 0-11=[14336K], 12=11264K, 13-15=0 (p3s)
+						t4p1:		buckets_sizes: 0-9=[25751K, 25798K], 10=6213K 11-15=0
+						t4p2:		buckets_sizes: 0-11=[14336K],	12=12288K, 13-15=0
+						t5p1:		buckets_sizes: 0-9=[25843K, 25905K], 10=9818K, 11-15=0
+						t5p2:		buckets_sizes: 0-12=[14336K],	13=1024K, 14-15=0
+						t6p1:		buckets_sizes: 0-9=[26184K, 26212K], 10=19704K, 11-15=0
+						t6p2:		buckets_sizes: 0-12=[14336K],	13=10240K, 14-15=0
+						t7p1:		buckets_sizes: 0-10=[27454K], 11=22767K,	12-15=0
+						t7p2:		buckets_sizes: 0-15=[13312K]
+
+					final: 652687K
+
+
+				K=32 -u 128
+					Phase1:
+						t1: bs=0.281GiB
+						t2: bs=0.563GiB
+						t3: bs=0.813GiB
+						t4: bs=0.813GiB
+						t5: bs=0.688GiB
+						t6: bs=0.563GiB
+					Phase2:
+						t1: bs=0-101[0.313GiB], 0.025GiB
+						t2: bs=0-101[0.313GiB], 0.065GiB
+						t3: 0-101[0.315Gib],  0.165GiB
+					Phase3:
+						t1p1: [0.299, 0.330]
+						t1p2: 0-101[0.250GiB], 0.052GiB
+						t1p2: 0-80[0.471GiB], 0.431GiB
+			*/
+		}
 };
 
 #endif  // CHIAPOS_ENTRY_SIZES_HPP

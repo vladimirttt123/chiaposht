@@ -122,6 +122,7 @@ struct bitfield
 			auto const length = memSize();
 			file_ = new FileDisk( filename );
 			file_->Write( 0, (uint8_t*)buffer_.get(), length );
+			file_->Flush();
 			b_file_ = new BufferedDisk( file_, length );
 			// free memory
 			buffer_.reset();

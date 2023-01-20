@@ -27,7 +27,7 @@
 // enables disk I/O logging to disk.log
 // use tools/disk.gnuplot to generate a plot
 #define ENABLE_LOGGING 0
-#define DO_NOT_DELETE_FILES 1
+#define DO_NOT_DELETE_FILES_ 1
 
 using namespace std::chrono_literals; // for operator""min;
 
