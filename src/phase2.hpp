@@ -349,7 +349,8 @@ Phase2Results RunPhase2(
 							filename + ".p2.t" + std::to_string(table_index),
 							uint32_t(k),
 							0,
-							strategy_t::quicksort_last,
+							k,
+							2,
 							num_threads );
 
 					uint64_t buf_size = num_threads*(BUF_SIZE/entry_size)*entry_size;

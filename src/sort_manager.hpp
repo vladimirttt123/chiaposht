@@ -35,17 +35,6 @@
 #include "exceptions.hpp"
 #include "sorting_bucket.hpp"
 
-enum class strategy_t : uint8_t
-{
-    uniform,
-    quicksort,
-
-    // the quicksort_last strategy is important because uniform sort performs
-    // really poorly on data that isn't actually uniformly distributed. The last
-    // buckets are often not uniformly distributed.
-    quicksort_last,
-};
-
 class SortManager : public Disk {
 public:
     SortManager(
@@ -57,7 +46,8 @@ public:
         const std::string &filename,
         uint32_t begin_bits,
         uint64_t const stripe_size,
-				strategy_t const sort_strategy = strategy_t::uniform,
+				uint8_t k,
+				uint8_t phase,
 				uint32_t num_threads = 2)
 
         : memory_size_(memory_size)
@@ -68,8 +58,8 @@ public:
             2 * (stripe_size + 10 * (kBC / pow(2, kExtraBits))) * entry_size)
         // 7 bytes head-room for SliceInt64FromBytes()
         , entry_buf_(new uint8_t[entry_size + 7])
-        , strategy_(sort_strategy)
 				, num_threads( num_threads )
+				, subbucket_bits( std::max( (uint8_t)2, (uint8_t)(k - log_num_buckets - 11) ) )
     {
         // Cross platform way to concatenate paths, gulrak library.
 				std::vector<fs::path> bucket_filenames = std::vector<fs::path>();
@@ -82,7 +72,7 @@ public:
             fs::path const bucket_filename =
                 fs::path(tmp_dirname) /
                 fs::path(filename + ".sort_bucket_" + bucket_number_padded.str() + ".tmp");
-						buckets_.emplace_back( SortingBucket( bucket_filename.string(), entry_size, begin_bits_ + log_num_buckets, subbucket_bits /* TODO: make depends on k and begin_bits or expected number of entries */ ) );
+						buckets_.emplace_back( SortingBucket( bucket_filename.string(), entry_size, begin_bits_ + log_num_buckets, subbucket_bits ) );
         }
     }
 
@@ -245,9 +235,8 @@ private:
     uint64_t final_position_end = 0;
     uint64_t next_bucket_to_sort = 0;
     std::unique_ptr<uint8_t[]> entry_buf_;
-    strategy_t strategy_;
 		uint32_t num_threads;
-		const uint8_t subbucket_bits = 11;
+		const uint8_t subbucket_bits;
 
     void SortBucket()
     {

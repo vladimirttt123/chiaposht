@@ -209,7 +209,8 @@ Phase3Results RunPhase3(
             filename + ".p3.t" + std::to_string(table_index + 1),
             0,
             0,
-						strategy_t::quicksort_last,
+						k,
+						3, // Phase
 						num_threads );
 
         bool should_read_entry = true;
@@ -395,7 +396,8 @@ Phase3Results RunPhase3(
             filename + ".p3s.t" + std::to_string(table_index + 1),
             0,
             0,
-						strategy_t::quicksort_last,
+						k,
+						3,
 						num_threads );
 
         std::vector<uint8_t> park_deltas;
