@@ -45,6 +45,7 @@ struct SortingBucket{
 	uint64_t read_time = 0;
 	uint64_t sort_time = 0;
 
+	// Adds Entry to bucket
 	void AddEntry( const uint8_t *entry, uint32_t statistics_bits ){
 		assert(disk); // Check not closed
 		assert( statistics_bits < ((uint32_t)1<<bucket_bits_count_) );
@@ -99,21 +100,20 @@ struct SortingBucket{
 	void SortToMemory( uint32_t num_threads = 2 ){
 		if( memory_ ) return; // already sorted;
 
+		// Init memory to sort into
 		memory_.reset( new uint8_t[Size()] );
 		uint8_t* memory = memory_.get();
 
 
 		// TODO: It is possible not flush but use last buffer to split it by buckets.
-		Flush();
+		// Flush();
 
-		// Wait for last disk write finish
-		WaitLastDiskWrite();
 
 		uint32_t buckets_count = 1<<bucket_bits_count_;
 		auto bucket_positions = std::make_unique<uint64_t[]>( buckets_count );
-		bucket_positions[0] = 0;
 
 		// Calculate initial buckets positions.
+		bucket_positions[0] = 0;
 		for( uint32_t i = 1; i < buckets_count; i++ )
 			bucket_positions[i] = bucket_positions[i-1] + (statistics[i-1]*entry_size_);
 
@@ -121,9 +121,19 @@ struct SortingBucket{
 		assert( bucket_positions[buckets_count-1]/entry_size_ + statistics[buckets_count-1] == Count() );
 
 		auto start_time = std::chrono::high_resolution_clock::now();
+		uint64_t read_pos = 0, read_size = Size() - disk_buffer_position;
+
+
 		// Read from file to buckets
-		uint64_t read_pos = 0, read_size = Size();
-		if( num_threads <= 1 ){
+		if( num_threads <= 1 || read_size < 1024*entry_size_ ){
+			// if last buffer not flashed to not flash it use it as already read.
+			if( disk_buffer_position > 0 )
+				FillBuckets( memory, disk_buffer.get(), disk_buffer_position, bucket_positions.get(), entry_size_ );
+
+
+			// Wait for last disk write finish
+			WaitLastDiskWrite();
+
 			while( read_pos < read_size ){
 				auto buf_size = std::min( (uint64_t)disk_buffer_size, read_size - read_pos );
 				disk->Read( read_pos, disk_buffer.get(), buf_size );
@@ -156,10 +166,20 @@ struct SortingBucket{
 				}
 			};
 
+			// if last buffer not flashed to not flash it use it as already read.
+			if( disk_buffer_position > 0 )
+				FillBuckets( memory, disk_buffer.get(), disk_buffer_position, bucket_positions.get(), entry_size_ );
+
+
+			// Wait for last disk write finish
+			WaitLastDiskWrite();
+
+			// Start threads
 			std::thread forward = std::thread( thread_func, this->disk_buffer.get(), bucket_positions.get(), entry_size_ );
 			auto back_buf = std::make_unique<uint8_t[]>(disk_buffer_size);
 			std::thread backward = std::thread( thread_func, back_buf.get(), back_bucket_positions.get(), -(int64_t)entry_size_ );
 
+			// Wait threads
 			forward.join();
 			backward.join();
 #ifndef NDEBUG

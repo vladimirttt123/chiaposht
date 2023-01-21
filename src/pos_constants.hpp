@@ -53,7 +53,7 @@ const uint32_t kCheckpoint1Interval = 10000;
 const uint32_t kCheckpoint2Interval = 10000;
 
 // F1 evaluations are done in batches of 2^kBatchSizes
-const uint32_t kBatchSizes = 12;
+const uint32_t kBatchSizes = 8;
 
 // EPP for the final file, the higher this is, the less variability, and lower delta
 // Note: if this is increased, ParkVector size must increase
