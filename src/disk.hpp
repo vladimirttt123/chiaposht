@@ -134,7 +134,7 @@ struct FileDisk {
 									std::cout << "Warning: Too many open file tring to close some " << std::endl;
 									CloseCouldBeClosed();
 								}
-								else if (flags & retryOpenFlag) {
+								else if (errno == 24 || (flags & retryOpenFlag) ) {
                     std::cout << error_message << " Retrying in five minutes." << std::endl;
                     std::this_thread::sleep_for(5min);
                 } else {

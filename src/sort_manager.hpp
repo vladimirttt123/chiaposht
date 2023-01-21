@@ -52,7 +52,7 @@ public:
         , prev_bucket_buf_size(
             2 * (stripe_size + 10 * (kBC / pow(2, kExtraBits))) * entry_size)
 				, num_threads( num_threads )
-				, subbucket_bits( std::max( (uint8_t)2, (uint8_t)(k - log_num_buckets - 11) ) )
+				, subbucket_bits( std::max( (uint8_t)2, (uint8_t)(k - log_num_buckets - kSubBucketBits) ) )
     {
         // Cross platform way to concatenate paths, gulrak library.
 				std::vector<fs::path> bucket_filenames = std::vector<fs::path>();

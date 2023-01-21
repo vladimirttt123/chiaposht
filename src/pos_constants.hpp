@@ -53,7 +53,7 @@ const uint32_t kCheckpoint1Interval = 10000;
 const uint32_t kCheckpoint2Interval = 10000;
 
 // F1 evaluations are done in batches of 2^kBatchSizes
-const uint32_t kBatchSizes = 10;
+const uint32_t kBatchSizes = 12;
 
 // EPP for the final file, the higher this is, the less variability, and lower delta
 // Note: if this is increased, ParkVector size must increase
@@ -68,6 +68,9 @@ const double kC3BitsPerEntry = 2.4;
 
 // The number of bits in the stub is k minus this value
 const uint8_t kStubMinusBits = 3;
+
+// The number of bits for bottom subbucket that sorted by quick sort
+const uint8_t kSubBucketBits = 11;
 
 // The ANS encoding R values for the 7 final plot tables
 // Tweaking the R values might allow lowering of the max average deltas, and reducing final
