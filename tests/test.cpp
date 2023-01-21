@@ -48,6 +48,58 @@ vector<unsigned char> intToBytes(uint32_t paramInt, uint32_t numBytes)
 
 static uint128_t to_uint128(uint64_t hi, uint64_t lo) { return (uint128_t)hi << 64 | lo; }
 
+//TEST_CASE("BSWAP")
+//{
+//	uint64_t iteration = 1000000000;
+//	uint8_t bytes[16];
+//	for( uint32_t b = 6; b < 11; b++ ){
+//		uint8_t final[b];
+//		Timer time128;
+//		for( uint128_t i = 0; i < iteration; i++ ){
+//			uint128_t e = i;
+//			Util::IntTo16Bytes( bytes, e );
+//			memcpy( final, bytes, b );
+//		}
+//		time128.PrintElapsed( std::to_string(b) + " bytes bswap time: ");
+
+//		Timer timeB;
+//		for( uint128_t i = 0; i < iteration; i++ ){
+//			uint128_t e = i;
+//			for( uint32_t j = 0; j < b; j++ ){
+//				final[j] = ((uint32_t)e)&0xff;
+//				e >>= 8;
+//			}
+//		}
+
+//		timeB.PrintElapsed(  std::to_string(b) + " bytes copy time: " );
+
+//		Timer timeC;
+//		for( uint128_t i = 0; i < iteration; i++ ){
+//			uint128_t e = i;
+//			uint64_t r = bswap_64(e >> 64);
+//			memcpy( final, &r, std::min( (uint32_t)8, b ) );
+//			if( b > 8 ){
+//				r = bswap_64((uint64_t)e);
+//				memcpy(final + 8, &r, std::min( (uint32_t)8, b-8 ) );
+//			}
+//		}
+
+//		timeC.PrintElapsed(  std::to_string(b) + " bytes bswap partial time: " );
+
+//		Timer timeD;
+//		for( uint128_t i = 0; i < iteration; i++ ){
+//			uint128_t e = i;
+//			uint8_t final[b];
+//			*((uint64_t*)bytes) = bswap_64( e >> 64);
+//			*((uint64_t*)(bytes+8)) = bswap_64((uint64_t)e);
+//			memcpy( final, bytes, b );
+//		}
+//		timeD.PrintElapsed(  std::to_string(b) + " bytes bswap partial time: " );
+
+//		std::cout << std::endl;
+//	}
+//}
+
 TEST_CASE("SliceInt64FromBytes 1 bit")
 {
     const uint8_t bytes[9 + 7] = {0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7, 0x8, 0x9};

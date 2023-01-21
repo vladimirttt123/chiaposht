@@ -506,9 +506,8 @@ void* phase1_thread(THREADDATA* ptd)
             }
         }
         if (table_index < 6) {
-            for (uint64_t i = 0; i < right_writer_count; i++) {
-                globals.R_sort_manager->AddToCache(right_writer_buf.get() + i * right_entry_size_bytes);
-            }
+					assert( (right_writer_count>>32) == 0 );
+					globals.R_sort_manager->AddAllToCache( right_writer_buf.get(), right_writer_count, right_entry_size_bytes );
         } else {
             // Writes out the right table for table 7
             (*ptmp_1_disks)[table_index + 1].Write(
@@ -569,11 +568,9 @@ void* F1thread(int const index, uint8_t const k, const uint8_t* id, std::mutex* 
         }
 
         std::lock_guard<std::mutex> l(*smm);
-
-        // Write it out
-        for (uint32_t i = 0; i < right_writer_count; i++) {
-            globals.L_sort_manager->AddToCache(&(right_writer_buf[i * entry_size_bytes]));
-        }
+				// Write it out
+				assert( (right_writer_count>>32) == 0 );
+				globals.L_sort_manager->AddAllToCache( right_writer_buf.get(), right_writer_count, entry_size_bytes );
     }
 
     return 0;

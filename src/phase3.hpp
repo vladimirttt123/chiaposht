@@ -409,7 +409,6 @@ Phase3Results RunPhase3(
         // Now we will write on of the final tables, since we have a table sorted by line point.
         // The final table will simply store the deltas between each line_point, in fixed space
         // groups(parks), with a checkpoint in each group.
-        int added_to_cache = 0;
         uint8_t const sort_key_shift = 128 - right_sort_key_size;
         uint8_t const index_shift = sort_key_shift - (k + (table_index == 6 ? 1 : 0));
         for (uint64_t index = 0; index < total_r_entries; index++) {
@@ -426,10 +425,7 @@ Phase3Results RunPhase3(
             uint128_t to_write = (uint128_t)sort_key << sort_key_shift;
             to_write |= (uint128_t)index << index_shift;
 
-            uint8_t bytes[16];
-            Util::IntTo16Bytes(bytes, to_write);
-            L_sort_manager->AddToCache(bytes);
-            added_to_cache++;
+						L_sort_manager->AddToCache(to_write);
 
             // Every EPP entries, writes a park
             if (index % kEntriesPerPark == 0) {

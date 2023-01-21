@@ -385,9 +385,9 @@ Phase2Results RunPhase2(
 
 						// Write results to sort manager without wait in independent thread
 						if( write_counter > 0 ) write_thread.join();
-						write_thread = std::thread( [new_entry_size](SortManager* srt_mngr, uint8_t * res, int64_t num_entries ){
-								for( int64_t i = 0; i < num_entries; i++ )
-									srt_mngr->AddToCache( res + i*new_entry_size );
+						write_thread = std::thread( [new_entry_size](SortManager* srt_mngr, uint8_t * res, const int64_t num_entries ){
+								assert( (num_entries>>32) == 0 );
+								srt_mngr->AddAllToCache( res, num_entries, new_entry_size );
 								delete [] res;
 						}, sort_manager.get(), result, new_write_counter - write_counter );
 

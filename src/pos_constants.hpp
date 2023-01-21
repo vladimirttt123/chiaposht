@@ -26,7 +26,7 @@ const uint32_t kOffsetSize = 10;
 // Max matches a single entry can have, used for hardcoded memory allocation
 const uint32_t kMaxMatchesSingleEntry = 30;
 const uint32_t kMinBuckets = 16;
-const uint32_t kMaxBuckets = 256;
+const uint32_t kMaxBuckets = 1024;
 
 // During backprop and compress, the write pointer is ahead of the read pointer
 // Note that the large the offset, the higher these values must be
@@ -53,7 +53,7 @@ const uint32_t kCheckpoint1Interval = 10000;
 const uint32_t kCheckpoint2Interval = 10000;
 
 // F1 evaluations are done in batches of 2^kBatchSizes
-const uint32_t kBatchSizes = 8;
+const uint32_t kBatchSizes = 10;
 
 // EPP for the final file, the higher this is, the less variability, and lower delta
 // Note: if this is increased, ParkVector size must increase

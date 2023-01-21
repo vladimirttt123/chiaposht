@@ -116,7 +116,6 @@ struct SortingBucket{
 		assert( bucket_positions[buckets_count-1]/entry_size_ + statistics[buckets_count-1] == Count() );
 
 		auto start_time = std::chrono::high_resolution_clock::now();
-		// TODO read in 2 threads one fills from start and second from back.
 		// Read from file to buckets
 		uint64_t read_pos = 0, read_size = Size();
 		if( num_threads <= 1 ){
@@ -130,6 +129,7 @@ struct SortingBucket{
 			assert( bucket_positions[0] == statistics[0]*entry_size_ ); // check first bucket is full
 			assert( bucket_positions[buckets_count-1]/entry_size_ == Count() ); // check last bucket is full
 		} else {
+			// read in 2 threads one fills from start and second from back.
 			auto back_bucket_positions = std::make_unique<uint64_t[]>( buckets_count );
 			for( uint32_t i = 0; i < buckets_count - 1; i++ )
 				back_bucket_positions[i] = bucket_positions[i+1]-entry_size_;
@@ -159,7 +159,7 @@ struct SortingBucket{
 			backward.join();
 #ifndef NDEBUG
 			for( uint32_t i = 0; i < buckets_count; i++ )
-				assert( std::abs( (int64_t)bucket_positions[i] - (int64_t)back_bucket_positions[i] ) == entry_size_ );
+				assert( (int64_t)bucket_positions[i] == (int64_t)back_bucket_positions[i] + entry_size_ );
 #endif
 			// Fix bucket_positions for sorting step
 			bucket_positions[0] = statistics[0]*entry_size_;

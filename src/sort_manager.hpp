@@ -69,6 +69,12 @@ public:
         }
     }
 
+		inline void AddToCache( const uint128_t &entry ){
+			uint8_t bytes[16];
+			Util::IntTo16Bytes(bytes, entry );
+			AddToCache( bytes );
+		}
+
 		inline void AddToCache(const Bits &entry)
     {
 				// 7 bytes head-room for SliceInt64FromBytes()
@@ -84,6 +90,11 @@ public:
 				buckets_[bucket_index>>subbucket_bits].AddEntry( entry, bucket_index & ( ( (uint64_t)1<<subbucket_bits)-1) );
 		}
 
+		inline void AddAllToCache( const uint8_t *entries, const uint32_t &num_entries, const uint32_t &ext_enrty_size ){
+			for (uint32_t i = 0; i < num_entries; i++) {
+				AddToCache( entries + i * ext_enrty_size );
+			}
+		}
 
 		uint8_t const* Read(uint64_t begin, uint64_t length) override
     {
