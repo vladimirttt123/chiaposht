@@ -51,22 +51,30 @@ struct SortingBucket{
 		assert( Util::ExtractNum( entry, entry_size_, bits_begin_, bucket_bits_count_ ) == statistics_bits );
 
 		statistics[statistics_bits]++;
-		memcpy( disk_buffer.get() + BufferSize(), entry, entry_size_ );
+		memcpy( disk_buffer.get() + disk_buffer_position, entry, entry_size_ );
 		entries_count++;
-		if( BufferSize() == 0 ){
-			if( !disk ) throw InvalidStateException("Bucket is already closed");
-			disk->Write( Size() - disk_buffer_size, disk_buffer.get(), disk_buffer_size );
-			disk->Flush();
-		}
+		disk_buffer_position += entry_size_;
+		if( disk_buffer_position == disk_buffer_size )
+			Flush();
 	}
 
+	// Flush current buffer to disk
 	void Flush(){
-		if( !disk ) return;
-		auto size = BufferSize();
-		if( size > 0 ){
-			disk->Write( Size() - (uint64_t)size, disk_buffer.get(), size );
-			disk->Flush();
-		}
+		if( !disk || disk_buffer_position == 0 ) return;
+		WaitLastDiskWrite();
+
+		int64_t size_to_write = disk_buffer_position;
+		assert( size_to_write >= 0 && size_to_write <= disk_buffer_size );
+		// Wait for previous disk write operation.
+		disk_output_thread.reset( new std::thread( [this, size_to_write]( uint8_t* buffer ){
+																disk->Write( disk_write_position, buffer, size_to_write );
+																disk->Flush();
+																delete[] buffer;
+																disk_write_position += size_to_write;
+															}, disk_buffer.release() )
+					);
+		disk_buffer.reset( new uint8_t[disk_buffer_size] );
+		disk_buffer_position = 0;
 	}
 
 	void FreeMemory(){
@@ -76,6 +84,7 @@ struct SortingBucket{
 	/* Like destructor totaly removes the bucket including underlying file */
 	void Remove(){
 		if( !disk ) return; // already removed
+		WaitLastDiskWrite();
 		disk->Remove();
 		disk.reset();
 		statistics.reset();
@@ -87,22 +96,18 @@ struct SortingBucket{
 		return memory_.get();
 	}
 
-	inline void FillBuckets( uint8_t* memory, const uint8_t* disk_buffer, const uint64_t &buf_size, uint64_t * bucket_positions, int64_t direction ){
-		for( uint32_t buf_ptr = 0; buf_ptr < buf_size; buf_ptr += entry_size_ ){
-			uint64_t bucket_bits = Util::ExtractNum( disk_buffer + buf_ptr, entry_size_, bits_begin_, bucket_bits_count_ );
-			memcpy( memory + bucket_positions[bucket_bits], disk_buffer + buf_ptr, entry_size_ );
-			bucket_positions[bucket_bits] += direction;
-		}
-	}
-
 	void SortToMemory( uint32_t num_threads = 2 ){
 		if( memory_ ) return; // already sorted;
 
 		memory_.reset( new uint8_t[Size()] );
 		uint8_t* memory = memory_.get();
 
+
 		// TODO: It is possible not flush but use last buffer to split it by buckets.
 		Flush();
+
+		// Wait for last disk write finish
+		WaitLastDiskWrite();
 
 		uint32_t buckets_count = 1<<bucket_bits_count_;
 		auto bucket_positions = std::make_unique<uint64_t[]>( buckets_count );
@@ -158,6 +163,7 @@ struct SortingBucket{
 			forward.join();
 			backward.join();
 #ifndef NDEBUG
+			// Chcek everything read as written.
 			for( uint32_t i = 0; i < buckets_count; i++ )
 				assert( (int64_t)bucket_positions[i] == (int64_t)back_bucket_positions[i] + entry_size_ );
 #endif
@@ -203,17 +209,39 @@ struct SortingBucket{
 private:
 	std::unique_ptr<FileDisk> disk;
 	const uint8_t bucket_bits_count_;
+	std::unique_ptr<std::thread> disk_output_thread;
+	uint64_t disk_write_position = 0;
+
 	const uint32_t entry_size_;
 	uint32_t bits_begin_;
 	std::unique_ptr<uint32_t[]> statistics;
 	const uint32_t disk_buffer_size;
 	std::unique_ptr<uint8_t[]> disk_buffer;
+	uint32_t disk_buffer_position = 0;
 	uint64_t entries_count = 0;
 	std::unique_ptr<uint8_t[]> memory_;
 
-	inline uint32_t BufferSize() const {
-		return Size()%disk_buffer_size;
+
+	inline void WaitLastDiskWrite(){
+		if( disk_output_thread ){
+			disk_output_thread->join();
+			disk_output_thread.reset();
+		}
 	}
+
+	/* Used for reading from disk */
+	inline void FillBuckets( uint8_t* memory, const uint8_t* disk_buffer, const uint64_t &buf_size, uint64_t * bucket_positions, int64_t direction ){
+		for( uint32_t buf_ptr = 0; buf_ptr < buf_size; buf_ptr += entry_size_ ){
+			// Define bucket to put into
+			uint64_t bucket_bits = Util::ExtractNum( disk_buffer + buf_ptr, entry_size_, bits_begin_, bucket_bits_count_ );
+			// Put next entry to its bucket
+			memcpy( memory + bucket_positions[bucket_bits], disk_buffer + buf_ptr, entry_size_ );
+			// move pointer inside bucket to next entry position
+			bucket_positions[bucket_bits] += direction;
+		}
+	}
+
+
 };
 
 #endif // SRC_CPP_SORTING_BUCKET_HPP_
