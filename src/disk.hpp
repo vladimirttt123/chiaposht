@@ -22,6 +22,7 @@
 #include <vector>
 #include <chrono>
 #include <thread>
+#include <mutex>
 
 
 // enables disk I/O logging to disk.log
@@ -108,11 +109,13 @@ struct FileDisk {
 				if( withPreRemove && fs::remove( filename ) )
 					std::cout << "Removed pre exists file " << filename << std::endl;
 
-        Open(writeFlag);
+				Open(writeFlag);
+				SetCouldBeClosed();
     }
 
     void Open(uint8_t flags = 0)
     {
+			UnsetCouldBeClosed( );
         // if the file is already open, don't do anything
 				if (f_)  return;
 
@@ -125,8 +128,13 @@ struct FileDisk {
 #endif
             if (f_ == nullptr) {
                 std::string error_message =
-                    "Could not open " + filename_.string() + ": " + ::strerror(errno) + ".";
-                if (flags & retryOpenFlag) {
+										"Could not open " + filename_.string() + ": err" + std::to_string(errno) + " " + ::strerror(errno) + ".";
+
+								if( errno == 24 && could_be_closed.size() > 0 ){
+									std::cout << "Warning: Too many open file tring to close some " << std::endl;
+									CloseCouldBeClosed();
+								}
+								else if (flags & retryOpenFlag) {
                     std::cout << error_message << " Retrying in five minutes." << std::endl;
                     std::this_thread::sleep_for(5min);
                 } else {
@@ -165,7 +173,10 @@ struct FileDisk {
 			}
 		}
 
-    ~FileDisk() { Close(); }
+		~FileDisk() {
+			UnsetCouldBeClosed();
+			Close();
+		}
 
     void Read(uint64_t begin, uint8_t *memcache, uint64_t length)
     {
@@ -201,6 +212,7 @@ struct FileDisk {
                 Open(retryOpenFlag);
             }
         } while (amtread != length);
+			SetCouldBeClosed();
     }
 
     void Write(uint64_t begin, const uint8_t *memcache, uint64_t length)
@@ -249,6 +261,7 @@ struct FileDisk {
                 Open(writeFlag | retryOpenFlag);
             }
         } while (amtwritten != length);
+			SetCouldBeClosed();
     }
 
 		std::string GetFileName() const { return filename_.string(); }
@@ -295,7 +308,35 @@ private:
 				delname = GetFileName() + "." + std::to_string(i) + ".deleted";
 			fs::rename( GetFileName(), delname );
 		}
+
+		static std::vector<FileDisk*> could_be_closed;
+		static std::mutex mutFileManager;
+
+		inline void SetCouldBeClosed(){
+			std::lock_guard<std::mutex> lk(mutFileManager);
+			could_be_closed.push_back( this );
+		}
+
+		inline void UnsetCouldBeClosed(){
+			std::lock_guard<std::mutex> lk(mutFileManager);
+			for( uint32_t i = 0; i < could_be_closed.size(); i++ ){
+				if( could_be_closed[i] == this ){
+					could_be_closed[i] = could_be_closed[could_be_closed.size() - 1];
+					could_be_closed.resize( could_be_closed.size() - 1 );
+				}
+			}
+		}
+
+		static void CloseCouldBeClosed() {
+			std::lock_guard<std::mutex> lk(mutFileManager);
+			for( auto f : could_be_closed )
+				f->Close();
+			could_be_closed.clear();
+		}
 };
+
+std::vector<FileDisk*> FileDisk::could_be_closed = std::vector<FileDisk*>();
+std::mutex FileDisk::mutFileManager = std::mutex();
 
 struct BufferedDisk : Disk
 {
