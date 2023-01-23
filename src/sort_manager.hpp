@@ -90,9 +90,22 @@ public:
 				buckets_[bucket_index>>subbucket_bits].AddEntry( entry, bucket_index & ( ( (uint64_t)1<<subbucket_bits)-1) );
 		}
 
+		inline void AddToCacheTS(const uint8_t *entry)
+		{
+				uint64_t const bucket_index =
+						Util::ExtractNum(entry, entry_size_, begin_bits_, log_num_buckets_ + subbucket_bits );
+				buckets_[bucket_index>>subbucket_bits].AddEntryTS( entry, bucket_index & ( ( (uint64_t)1<<subbucket_bits)-1) );
+		}
+
 		inline void AddAllToCache( const uint8_t *entries, const uint32_t &num_entries, const uint32_t &ext_enrty_size ){
 			for (uint32_t i = 0; i < num_entries; i++) {
 				AddToCache( entries + i * ext_enrty_size );
+			}
+		}
+
+		inline void AddAllToCacheTS( const uint8_t *entries, const uint32_t &num_entries, const uint32_t &ext_enrty_size ){
+			for (uint32_t i = 0; i < num_entries; i++) {
+				AddToCacheTS( entries + i * ext_enrty_size );
 			}
 		}
 

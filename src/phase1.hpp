@@ -530,11 +530,12 @@ void* phase1_thread(THREADDATA* ptd)
     return 0;
 }
 
-void* F1thread(int const index, uint8_t const k, const uint8_t* id, std::mutex* smm)
+void* F1thread( int const index, uint8_t const k, const uint8_t* id )
 {
     uint32_t const entry_size_bytes = 16;
     uint64_t const max_value = ((uint64_t)1 << (k));
     uint64_t const right_buf_entries = 1 << (kBatchSizes);
+		//auto cacheData = SortManager::PrepareToCacheData(1U << kBatchSizes);
 
     std::unique_ptr<uint64_t[]> f1_entries(new uint64_t[(1U << kBatchSizes)]);
 
@@ -567,10 +568,8 @@ void* F1thread(int const index, uint8_t const k, const uint8_t* id, std::mutex* 
             x++;
         }
 
-        std::lock_guard<std::mutex> l(*smm);
-				// Write it out
 				assert( (right_writer_count>>32) == 0 );
-				globals.L_sort_manager->AddAllToCache( right_writer_buf.get(), right_writer_count, entry_size_bytes );
+				globals.L_sort_manager->AddAllToCacheTS( right_writer_buf.get(), right_writer_count, entry_size_bytes );
     }
 
     return 0;
@@ -620,20 +619,17 @@ std::vector<uint64_t> RunPhase1(
     // These are used for sorting on disk. The sort on disk code needs to know how
     // many elements are in each bucket.
     std::vector<uint64_t> table_sizes = std::vector<uint64_t>(8, 0);
-    std::mutex sort_manager_mutex;
 
-    {
-        // Start of parallel execution
-        std::vector<std::thread> threads;
-        for (int i = 0; i < num_threads; i++) {
-            threads.emplace_back(F1thread, i, k, id, &sort_manager_mutex);
-        }
+		// Start of parallel execution
+		{
+			std::vector<std::thread> threads;
+			for (int i = 0; i < num_threads; i++)
+					threads.emplace_back(F1thread, i, k, id );
 
-        for (auto& t : threads) {
-            t.join();
-        }
-        // end of parallel execution
-    }
+			for (auto& t : threads)
+					t.join();
+		}
+		// end of parallel execution
 
     uint64_t prevtableentries = 1ULL << k;
     f1_start_time.PrintElapsed("F1 complete, time:");

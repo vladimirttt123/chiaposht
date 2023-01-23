@@ -19,7 +19,6 @@
 #include "disk.hpp"
 #include "util.hpp"
 #include "quicksort.hpp"
-#include "exceptions.hpp"
 
 
 
@@ -45,7 +44,7 @@ struct SortingBucket{
 	uint64_t sort_time = 0;
 
 	// Adds Entry to bucket
-	void AddEntry( const uint8_t *entry, uint32_t statistics_bits ){
+	inline void AddEntry( const uint8_t * &entry, const uint32_t &statistics_bits ){
 		assert(disk); // Check not closed
 		assert( statistics_bits < ((uint32_t)1<<bucket_bits_count_) );
 		assert( Util::ExtractNum( entry, entry_size_, bits_begin_, bucket_bits_count_ ) == statistics_bits );
@@ -54,6 +53,11 @@ struct SortingBucket{
 		entries_count++;
 		if( disk_buffer->Add(entry, entry_size_ ) )
 			Flush();
+	}
+
+	inline void AddEntryTS( const uint8_t *entry, const uint32_t &statistics_bits ){
+		std::lock_guard<std::mutex> lk( *addMutex.get() );
+		AddEntry( entry, statistics_bits );
 	}
 
 	// Flush current buffer to disk
@@ -98,11 +102,6 @@ struct SortingBucket{
 		// Init memory to sort into
 		memory_.reset( new uint8_t[Size()] );
 		uint8_t* memory = memory_.get();
-
-
-		// TODO: It is possible not flush but use last buffer to split it by buckets.
-		// Flush();
-
 
 		uint32_t buckets_count = 1<<bucket_bits_count_;
 		auto bucket_positions = std::make_unique<uint64_t[]>( buckets_count );
@@ -239,7 +238,7 @@ private:
 			: size(0), allocated_length(BUF_SIZE - (BUF_SIZE%entry_size))
 			, buffer(new uint8_t[allocated_length]){}
 
-		bool Add( const uint8_t* &entry, const uint32_t &entry_size ){
+		inline bool Add( const uint8_t* &entry, const uint32_t &entry_size ){
 			assert( (size+entry_size) <= allocated_length );
 			memcpy(buffer.get() + size, entry, entry_size );
 			return ( size += entry_size ) == allocated_length;
@@ -266,6 +265,7 @@ private:
 	std::unique_ptr<ABuffer> disk_buffer;
 	uint64_t entries_count = 0;
 	std::unique_ptr<uint8_t[]> memory_;
+	std::unique_ptr<std::mutex> addMutex = std::make_unique<std::mutex>();
 
 
 	inline void WaitLastDiskWrite(){
