@@ -201,7 +201,7 @@ inline int64_t SortRegularTableThread( const uint8_t *buffer, const uint64_t buf
 																			 int16_t const &entry_size, int16_t const &new_entry_size,
 																			 int64_t start_write_counter, const bitfieldReader *current_bitfield,
 																			 bitfield_index const index, uint32_t const log_num_buckets,
-																			 uint64_t thread_no, uint64_t num_threads, uint8_t * const result,
+																			 uint64_t thread_no, uint64_t num_threads, SortManager * result,
 																			 uint8_t const pos_offset_size, uint8_t const k )
 {
 	uint8_t const write_counter_shift = 128 - k;
@@ -234,7 +234,8 @@ inline int64_t SortRegularTableThread( const uint8_t *buffer, const uint64_t buf
 			new_entry |= (uint128_t)entry_pos_offset << pos_offset_shift;
 			Util::IntTo16Bytes(bytes, new_entry);
 
-			memcpy( result + (write_counter-start_write_counter)*new_entry_size, bytes, new_entry_size );
+			// memcpy( result + (write_counter-start_write_counter)*new_entry_size, bytes, new_entry_size );
+			result->AddToCacheTS( bytes );
 		}
 		++write_counter;
 	}
@@ -362,39 +363,35 @@ Phase2Results RunPhase2(
 
 					while( (buf_size = reader.MoveNextBuffer()) > 0 ){
 
-						uint8_t * result = new uint8_t[buf_size/entry_size*new_entry_size];
+//						uint8_t * result = new uint8_t[buf_size/entry_size*new_entry_size];
 						cur_bitfield.setLimits( reader.GetBufferStartPosition()/entry_size, buf_size/entry_size );
 
 						// Run threads
 						for( uint64_t t = 0; t < num_threads - 1; t++ )
 							threads[t] = std::thread(SortRegularTableThread, reader.GetBuffer(), buf_size, entry_size,
 																			 new_entry_size, write_counter, &cur_bitfield, index,
-																			 log_num_buckets, t, num_threads, result, pos_offset_size, k );
+																			 log_num_buckets, t, num_threads, sort_manager.get(), pos_offset_size, k );
 
 						auto new_write_counter = SortRegularTableThread( reader.GetBuffer(), buf_size, entry_size,
 																														 new_entry_size, write_counter, &cur_bitfield, index,
-																														 log_num_buckets, num_threads-1, num_threads, result,
+																														 log_num_buckets, num_threads-1, num_threads, sort_manager.get(),
 																														 pos_offset_size, k );
 
 						for( uint64_t t = 0; t < num_threads - 1; t++ )
 							threads[t].join();
 
-//						assert( (new_write_counter - write_counter ) ==
-//										( current_bitfield->count( write_counter>>6<<6, write_counter + buf_size / entry_size )
-//											- ((write_counter%64) == 0 ? 0: current_bitfield->count( write_counter>>6<<6, (write_counter>>6<<6) + (write_counter%64) + 1 ) ) ) );
-
 						// Write results to sort manager without wait in independent thread
-						if( write_counter > 0 ) write_thread.join();
-						write_thread = std::thread( [new_entry_size](SortManager* srt_mngr, uint8_t * res, const int64_t num_entries ){
-								assert( (num_entries>>32) == 0 );
-								srt_mngr->AddAllToCache( res, num_entries, new_entry_size );
-								delete [] res;
-						}, sort_manager.get(), result, new_write_counter - write_counter );
+//						if( write_counter > 0 ) write_thread.join();
+//						write_thread = std::thread( [new_entry_size](SortManager* srt_mngr, uint8_t * res, const int64_t num_entries ){
+//								assert( (num_entries>>32) == 0 );
+//								srt_mngr->AddAllToCache( res, num_entries, new_entry_size );
+//								delete [] res;
+//						}, sort_manager.get(), result, new_write_counter - write_counter );
 
 						write_counter = new_write_counter;
 					}
 
-					if( write_counter > 0 ) write_thread.join();
+//					if( write_counter > 0 ) write_thread.join();
 
 					// clear disk caches and memory
 					sort_manager->FlushCache();
