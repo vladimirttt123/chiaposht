@@ -172,6 +172,7 @@ inline void SortTable7( FileDisk* const disk, bitfield_index const &index,
 	uint64_t buf_size = ((uint64_t)num_threads)*(BUF_SIZE/entry_size)*entry_size;
 	auto reader = BufferedReader( disk, 0, buf_size , table_size*entry_size );
 	auto result = std::make_unique<uint8_t[]>(buf_size);
+	uint64_t file_size = 0;
 
 	while( (buf_size = reader.MoveNextBuffer() ) > 0 ){
 
@@ -193,7 +194,10 @@ inline void SortTable7( FileDisk* const disk, bitfield_index const &index,
 				threads[t].join();
 
 		disk->Write( reader.GetBufferStartPosition(), result.get(), buf_size );
+		file_size += buf_size;
 	}
+	disk->Truncate( file_size );
+	std::cout << "\t file_size=" << file_size << std::endl;
 }
 
 
@@ -351,7 +355,8 @@ Phase2Results RunPhase2(
 							uint32_t(k),
 							0,
 							k,
-							2,
+							2, // Phase
+							table_index,
 							num_threads );
 
 					uint64_t buf_size = num_threads*(BUF_SIZE/entry_size)*entry_size;
@@ -389,13 +394,17 @@ Phase2Results RunPhase2(
 //						}, sort_manager.get(), result, new_write_counter - write_counter );
 
 						write_counter = new_write_counter;
+						assert( write_counter == (int64_t)sort_manager->Count() );
 					}
 
 //					if( write_counter > 0 ) write_thread.join();
+					std::cout << " written: " << write_counter << " entries with size " << new_entry_size;
+					if( write_counter != (int64_t)sort_manager->Count() )
+						std::cout << "Incorrect writing counter!!!! " << write_counter << " != " << sort_manager->Count() << std::endl;
 
 					// clear disk caches and memory
-					sort_manager->FlushCache();
-					sort_manager->FreeMemory();
+					// sort_manager->FlushCache();  // should do nothing at this point
+					//sort_manager->FreeMemory(); // should do nothing at this point
 
 					output_files[table_index - 2] = std::move(sort_manager);
 					new_table_sizes[table_index] = write_counter;

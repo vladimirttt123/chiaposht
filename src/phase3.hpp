@@ -211,6 +211,7 @@ Phase3Results RunPhase3(
             0,
 						k,
 						3, // Phase
+						table_index,
 						num_threads );
 
         bool should_read_entry = true;
@@ -236,6 +237,9 @@ Phase3Results RunPhase3(
 
         // Similar algorithm as Backprop, to read both L and R tables simultaneously
         while (!end_of_right_table || (current_pos - end_of_table_pos <= kReadMinusWrite)) {
+//					if( !end_of_right_table && current_pos > end_of_table_pos )
+//						throw InvalidValueException( "passed end of table" );
+
             old_counters[current_pos % kReadMinusWrite] = 0;
 
             if (end_of_right_table || current_pos <= greatest_pos) {
@@ -397,7 +401,8 @@ Phase3Results RunPhase3(
             0,
             0,
 						k,
-						3,
+						3, // Phase
+						table_index + 1,
 						num_threads );
 
         std::vector<uint8_t> park_deltas;

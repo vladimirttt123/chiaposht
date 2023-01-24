@@ -50,7 +50,7 @@ struct bitfield
 				if( b_file_ != nullptr )
 					throw "Bitfield is in readonly state";
 				assert(bit / 64 < size_);
-        buffer_[bit / 64] |= uint64_t(1) << (bit % 64);
+				buffer_[bit / 64] |= uint64_t(1) << (bit & 63);
     }
 
 		inline bool get(int64_t const bit) const

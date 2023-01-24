@@ -118,7 +118,7 @@ struct SortingBucket{
 		uint64_t read_pos = 0, read_size = Size() - disk_buffer->size;
 
 
-		// Read from file to buckets
+		// Read from file to buckets, do not run threads if less than 1024 entries to read
 		if( num_threads <= 1 || read_size < 1024*entry_size_ ){
 			// if last buffer not flashed do not flash it, use it as already read.
 			if( !disk_buffer->IsEmpty() )
@@ -143,10 +143,6 @@ struct SortingBucket{
 			for( uint32_t i = 0; i < buckets_count - 1; i++ )
 				back_bucket_positions[i] = bucket_positions[i+1]-entry_size_;
 			back_bucket_positions[buckets_count-1] = back_bucket_positions[buckets_count-2] + statistics[buckets_count-1] * entry_size_;
-
-			// if last buffer not flashed do not flash it, use it as already read.
-			if( !disk_buffer->IsEmpty() )
-				FillBuckets( memory, disk_buffer->buffer.get(), disk_buffer->size, bucket_positions.get(), entry_size_ );
 
 			// Wait for last disk write finish
 			WaitLastDiskWrite();
@@ -176,6 +172,14 @@ struct SortingBucket{
 			// Twice forward and twice backward implements asyn reading: one thread reads second executes.
 			std::thread forward1 = std::thread( thread_func, &mutForward, bucket_positions.get(), entry_size_ );
 			std::thread forward2 = std::thread( thread_func, &mutForward, bucket_positions.get(), entry_size_ );
+
+			// if last buffer not flashed do not flash it, use it as already read.
+			// Do it in parallel with forward reading
+			if( !disk_buffer->IsEmpty() )
+				FillBuckets( memory, disk_buffer->buffer.get(), disk_buffer->size, back_bucket_positions.get(), -(int64_t)entry_size_ );
+			// Disk buffer can be cleaned we do not need it anymore.
+			disk_buffer->buffer.reset();
+
 			std::thread backward1 = std::thread( thread_func, &mutBackward, back_bucket_positions.get(), -(int64_t)entry_size_ );
 			std::thread backward2 = std::thread( thread_func, &mutBackward, back_bucket_positions.get(), -(int64_t)entry_size_ );
 

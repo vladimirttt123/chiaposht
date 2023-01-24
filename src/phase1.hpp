@@ -535,7 +535,6 @@ void* F1thread( int const index, uint8_t const k, const uint8_t* id )
     uint32_t const entry_size_bytes = 16;
     uint64_t const max_value = ((uint64_t)1 << (k));
     uint64_t const right_buf_entries = 1 << (kBatchSizes);
-		//auto cacheData = SortManager::PrepareToCacheData(1U << kBatchSizes);
 
     std::unique_ptr<uint64_t[]> f1_entries(new uint64_t[(1U << kBatchSizes)]);
 
@@ -613,7 +612,8 @@ std::vector<uint64_t> RunPhase1(
         0,
 				globals.stripe_size,
 				k,
-				1,
+				1, // Phase
+				2, // table
 				num_threads );
 
     // These are used for sorting on disk. The sort on disk code needs to know how
@@ -684,7 +684,8 @@ std::vector<uint64_t> RunPhase1(
             0,
 						globals.stripe_size,
 						k,
-						1,
+						1, // Phase
+						table_index+2,
 						num_threads );
 
         globals.L_sort_manager->TriggerNewBucket(0);
@@ -738,8 +739,8 @@ std::vector<uint64_t> RunPhase1(
         // Truncates the file after the final write position, deleting no longer useful
         // working space
         tmp_1_disks[table_index].Truncate(globals.left_writer);
-        globals.L_sort_manager.reset();
-        if (table_index < 6) {
+				globals.L_sort_manager.reset();
+				if (table_index < 6) {
             globals.R_sort_manager->FlushCache();
             globals.L_sort_manager = std::move(globals.R_sort_manager);
         } else {

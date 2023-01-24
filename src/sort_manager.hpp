@@ -43,6 +43,7 @@ public:
         uint64_t const stripe_size,
 				uint8_t k,
 				uint8_t phase,
+				uint8_t table_index,
 				uint32_t num_threads = 2)
 
         : memory_size_(memory_size)
@@ -53,6 +54,7 @@ public:
             2 * (stripe_size + 10 * (kBC / pow(2, kExtraBits))) * entry_size)
 				, num_threads( num_threads )
 				, subbucket_bits( std::max( (uint8_t)2, (uint8_t)(k - log_num_buckets - kSubBucketBits) ) )
+				, k_(k), phase_(phase), table_index_(table_index)
     {
         // Cross platform way to concatenate paths, gulrak library.
 				std::vector<fs::path> bucket_filenames = std::vector<fs::path>();
@@ -68,6 +70,13 @@ public:
 						buckets_.emplace_back( SortingBucket( bucket_filename.string(), entry_size, begin_bits_ + log_num_buckets, subbucket_bits ) );
         }
     }
+
+		inline uint64_t Count() const {
+			uint64_t res = 0;
+			for( auto &b : buckets_ )
+				res += b.Count();
+			return res;
+		}
 
 		inline void AddToCache( const uint128_t &entry ){
 			uint8_t bytes[16];
@@ -253,6 +262,8 @@ private:
 		const uint8_t subbucket_bits;
 		std::unique_ptr<std::thread> next_bucket_sorting_thread;
 
+		uint8_t k_, phase_, table_index_;
+
 		const inline uint8_t* memory_start() const {return buckets_[next_bucket_to_sort-1].get();}
 
 		void SortBucket()
@@ -275,8 +286,9 @@ private:
 				double const have_ram = memory_size_ / (1024.0 * 1024.0 * 1024.0);
 				double const qs_ram = entry_size_ * b.Count() / (1024.0 * 1024.0 * 1024.0);
 
-				std::cout << "\tBucket " << bucket_i << " Ram: " << std::fixed
-									<< std::setprecision(3) << have_ram << "GiB, size: " <<  qs_ram << "GiB" << std::flush;
+				std::cout << "\tp" << (uint32_t)phase_ << " t" << (uint32_t)table_index_
+									<< " Bucket " << bucket_i << " Ram: " << std::fixed << std::setprecision(3)
+									<< have_ram << "GiB, size: " <<  qs_ram << "GiB" << std::flush;
 
 				if( next_bucket_sorting_thread ){
 					next_bucket_sorting_thread->join();
