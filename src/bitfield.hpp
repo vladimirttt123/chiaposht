@@ -48,10 +48,20 @@ struct bitfield
 		inline void set(int64_t const bit)
     {
 				if( b_file_ != nullptr )
-					throw "Bitfield is in readonly state";
+					throw InvalidStateException( "Cannot set in RO bitfield" );
 				assert(bit / 64 < size_);
 				buffer_[bit / 64] |= uint64_t(1) << (bit & 63);
     }
+
+		inline void set( const uint64_t *bits, const uint32_t &count ){
+			if( b_file_ != nullptr )
+				throw InvalidStateException( "Cannot set in RO bitfield" );
+			for( uint32_t i = 0; i < count; i++ ){
+				assert( bits[i] / 64 < size_);
+				buffer_[bits[i] / 64] |= uint64_t(1) << (bits[i] & 63);
+			}
+
+		}
 
 		inline bool get(int64_t const bit) const
     {
@@ -65,7 +75,7 @@ struct bitfield
 		inline void clear()
     {
 			if( b_file_ != nullptr )
-				throw "Bitfield is in readonly state";
+				throw InvalidStateException( "Cannot clear RO bitfield" );
 			std::memset(buffer_.get(), 0, size_ * 8);
 		}
 
@@ -104,7 +114,7 @@ struct bitfield
         return ret;
     }
 
-    void free_memory()
+		void FreeMemory()
     {
 				buffer_.reset();
 				if( b_file_ != nullptr ){
@@ -118,7 +128,7 @@ struct bitfield
 				size_ = 0;
     }
 
-		void flush_to_disk( const fs::path &filename ){
+		void FlushToDisk( const fs::path &filename ){
 			auto const length = memSize();
 			file_ = new FileDisk( filename );
 			file_->Write( 0, (uint8_t*)buffer_.get(), length );
@@ -153,7 +163,7 @@ struct bitfieldReader
 		}
 	}
 
-	bool get( int64_t const & bit ) const {
+	inline bool get( int64_t const & bit ) const {
 		return src_.is_readonly()?reader->get(bit+start):src_.get( bit + start );
 	}
 

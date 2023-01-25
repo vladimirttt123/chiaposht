@@ -190,11 +190,16 @@ struct FileDisk {
 						if( !bReading ) Flush();
             if ((!bReading) || (begin != readPos)) {
 #ifdef _WIN32
-                _fseeki64(f_, begin, SEEK_SET);
+								_fseeki64(f_, begin, SEEK_SET);
 #else
                 // fseek() takes a long as offset, make sure it's wide enough
                 static_assert(sizeof(long) >= sizeof(begin));
-                ::fseek(f_, begin, SEEK_SET);
+								auto seek_res = ::fseek( f_, begin, SEEK_SET );
+								if( seek_res != 0 ){
+									std::cout << "Error of seeking to position " << begin << " where writeMax= " << writeMax
+														<< " in file " << filename_ << std::endl;
+									throw InvalidStateException( "Cann't seek to " + std::to_string(begin) + " in file " + GetFileName() );
+								}
 #endif
                 bReading = true;
             }
@@ -270,21 +275,22 @@ struct FileDisk {
 
     void Truncate(uint64_t new_size)
     {
-        Close();
+			Close();
 			if( LEAVE_FILES && new_size == 0 )
 				RenameFileToDeleted();
 			else
 				fs::resize_file(filename_, new_size);
 
-			if( new_size != 0 )
+			// some debug info
+			if( new_size != 0 && new_size != writeMax )
 				std::cout << "Trancating file " << filename_ << " to " << new_size << ", writeMax = " << writeMax << std::endl;
 
-				// some debug info
+
     }
 
 		void Flush() {
 			if( f_)
-				if( fflush(f_) != 0 )
+				if( ::fflush(f_) != 0 )
 					std::cout << "Fail: Cannot flush file " << filename_ << std::endl;
 		}
 
@@ -345,6 +351,15 @@ struct BufferedDisk : Disk
     uint8_t const* Read(uint64_t begin, uint64_t length) override
     {
         assert(length < read_ahead);
+				if( begin > file_size_ )
+					throw InvalidValueException( "Begin of read position is byond the end of the file: begin = "
+									+ std::to_string(begin) + "; file_size = " + std::to_string(file_size_)
+									+ "; filename = " + GetFileName() );
+				if( (begin+length ) > file_size_ )
+					throw InvalidValueException( "Try to read after end of the file: begin = "
+									+ std::to_string(begin) + "; length=" + std::to_string( begin + length )
+									+ "; file_size = " + std::to_string(file_size_) + "; filename = " + GetFileName() );
+
         NeedReadCache();
         // all allocations need 7 bytes head-room, since
         // SliceInt64FromBytes() may overrun by 7 bytes

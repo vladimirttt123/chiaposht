@@ -18,6 +18,8 @@ Some threads also added to phase 2 of calculations.
 For me overall process of plot creation improved in time by about 20-40%.
 It is still not madmax, but madmax cannot create k35+.
 
+WARNING!!! Still too many bugs. DO NOT USE.
+
 Chia's proof of space is written in C++. Includes a plotter, prover, and
 verifier. It exclusively runs on 64 bit architectures. Read the
 [Proof of Space document](https://www.chia.net/assets/Chia_Proof_of_Space_Construction_v1.1.pdf) to

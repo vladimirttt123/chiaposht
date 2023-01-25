@@ -74,7 +74,7 @@ struct FilteredDisk : Disk
 		void FreeMemory() override
 		{
 				if( filter_ != nullptr ){
-					filter_->free_memory();
+					filter_->FreeMemory();
 					delete filter_;
 					filter_ = nullptr;
 				}

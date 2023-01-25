@@ -23,7 +23,7 @@
 
 
 struct SortingBucket{
-	SortingBucket( const std::string &fileName, uint32_t entry_size, uint32_t bits_begin, uint8_t bucket_bits_count )
+	SortingBucket( const std::string &fileName, uint16_t entry_size, uint32_t bits_begin, uint8_t bucket_bits_count )
 		:disk( new FileDisk(fileName) )
 		, bucket_bits_count_(bucket_bits_count)
 		, entry_size_(entry_size)
@@ -39,6 +39,7 @@ struct SortingBucket{
 	inline uint64_t Count() const { return entries_count; }
 	inline uint8_t	SubBucketBits() const { return bucket_bits_count_; }
 	inline bool isSorted() const { return !!memory_; }
+	inline uint16_t EntrySize() const { return entry_size_; }
 
 	uint64_t read_time = 0;
 	uint64_t sort_time = 0;
@@ -58,6 +59,20 @@ struct SortingBucket{
 	inline void AddEntryTS( const uint8_t *entry, const uint32_t &statistics_bits ){
 		std::lock_guard<std::mutex> lk( *addMutex.get() );
 		AddEntry( entry, statistics_bits );
+	}
+
+	inline void AddBulkTS( const uint8_t * entries, const uint32_t * stats, const uint32_t &count ){
+		assert( entry_size_*count <= disk_buffer->allocated_length );
+
+		std::lock_guard<std::mutex> lk( *addMutex.get() );
+
+		if( (disk_buffer->size + entry_size_*count) >= disk_buffer->allocated_length )
+			Flush();
+
+		memcpy( disk_buffer->buffer.get(), entries, count * entry_size_ );
+		for( uint32_t i = 0; i < count; i++ )
+			statistics[stats[i]]++;
+		entries_count += count;
 	}
 
 	// Flush current buffer to disk
@@ -147,47 +162,63 @@ struct SortingBucket{
 			// Wait for last disk write finish
 			WaitLastDiskWrite();
 
+			uint32_t max_threads = std::max( (uint32_t)1, num_threads/2 );
+			const uint32_t num_sub_locks = ((uint32_t)1 ) << std::min( (uint32_t)bucket_bits_count_, (uint32_t)std::log2(max_threads)+2 );
+			const uint32_t sub_locks_mask = num_sub_locks - 1;
 
-			std::mutex mutRead, mutForward, mutBackward;
+			std::mutex mutRead;
+			auto mutForward = std::make_unique<std::mutex[]>(num_sub_locks);
+			auto mutBackward = std::make_unique<std::mutex[]>(num_sub_locks);
 			// Define thread function
-			auto thread_func = [&read_pos, &read_size, this, &memory, &mutRead]( std::mutex *mutWrite, uint64_t* bucket_positions, const uint64_t direction ){
+			auto thread_func = [&read_pos, &read_size, this, &memory , &num_sub_locks, &sub_locks_mask]( std::mutex *mutRead, std::mutex *mutWrite,  uint64_t* bucket_positions, const uint64_t direction ){
 				while( true ){
 					uint64_t buf_size;
 					auto buf = std::make_unique<uint8_t[]>( disk_buffer->allocated_length );
 					{
-						std::lock_guard<std::mutex> lk(mutRead);
+						std::lock_guard<std::mutex> lk(*mutRead);
 						buf_size = std::min( (uint64_t)disk_buffer->allocated_length, read_size - read_pos );
 						if( buf_size == 0 ) return;
 						disk->Read( read_pos, buf.get(), buf_size );
 						read_pos += buf_size;
 					}
-					{
-						std::lock_guard lk(*mutWrite);
-						FillBuckets( memory, buf.get(), buf_size, bucket_positions, direction );
+					// Extract all bucket_bits
+					uint32_t bucket_bits[buf_size/entry_size_];
+					for( uint64_t buf_ptr = 0; buf_ptr < buf_size; buf_ptr += entry_size_ )
+						bucket_bits[buf_ptr/entry_size_] = (uint32_t)Util::ExtractNum( buf.get() + buf_ptr, entry_size_, bits_begin_, bucket_bits_count_ );
+
+					for( uint32_t l = 0; l < num_sub_locks; l++ ){
+						std::lock_guard lk(mutWrite[l]);
+						for( uint64_t buf_ptr = 0; buf_ptr < buf_size; buf_ptr += entry_size_ ){
+							auto b_bits = bucket_bits[buf_ptr/entry_size_];
+							if( (b_bits&sub_locks_mask) == l ){
+								// Put next entry to its bucket
+								memcpy( memory + bucket_positions[b_bits], buf.get() + buf_ptr, entry_size_ );
+								// move pointer inside bucket to next entry position
+								bucket_positions[b_bits] += direction;
+							}
+						}
 					}
 				}
 			};
 
-			// Start threads
-			// Twice forward and twice backward implements asyn reading: one thread reads second executes.
-			std::thread forward1 = std::thread( thread_func, &mutForward, bucket_positions.get(), entry_size_ );
-			std::thread forward2 = std::thread( thread_func, &mutForward, bucket_positions.get(), entry_size_ );
-
-			// if last buffer not flashed do not flash it, use it as already read.
 			// Do it in parallel with forward reading
 			if( !disk_buffer->IsEmpty() )
 				FillBuckets( memory, disk_buffer->buffer.get(), disk_buffer->size, back_bucket_positions.get(), -(int64_t)entry_size_ );
 			// Disk buffer can be cleaned we do not need it anymore.
 			disk_buffer->buffer.reset();
 
-			std::thread backward1 = std::thread( thread_func, &mutBackward, back_bucket_positions.get(), -(int64_t)entry_size_ );
-			std::thread backward2 = std::thread( thread_func, &mutBackward, back_bucket_positions.get(), -(int64_t)entry_size_ );
+			// Start threads
+			{
+				std::vector<std::thread> threads;
+				for( uint32_t t = 0; t < max_threads; t++ ){
+					threads.emplace_back( thread_func, &mutRead, mutForward.get(), bucket_positions.get(), entry_size_ );
+					threads.emplace_back( thread_func, &mutRead, mutBackward.get(), back_bucket_positions.get(), -(int64_t)entry_size_ );
+				}
 
-			// Wait for threads
-			forward1.join();
-			backward1.join();
-			forward2.join();
-			backward2.join();
+				for (auto& t : threads)
+						t.join();
+			}
+
 #ifndef NDEBUG
 			// Chcek everything read as written.
 			for( uint32_t i = 0; i < buckets_count; i++ )
@@ -263,7 +294,7 @@ private:
 	std::unique_ptr<std::thread> disk_output_thread;
 	uint64_t disk_write_position = 0;
 
-	const uint32_t entry_size_;
+	const uint16_t entry_size_;
 	uint32_t bits_begin_;
 	std::unique_ptr<uint32_t[]> statistics;
 	std::unique_ptr<ABuffer> disk_buffer;

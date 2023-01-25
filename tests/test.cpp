@@ -1111,14 +1111,14 @@ TEST_CASE("bitfield-file-flushed")
 			}
 
 		// 2. save
-		b.flush_to_disk( "./bitfield.tmp" );
+		b.FlushToDisk( "./bitfield.tmp" );
 
 		// 3. check no change
 		for( int64_t i = 0; i < size; i++ )
 			CHECK( a.get(i) == b.get(i) );
 
-		// 4. check count
-		CHECK( a.count( (size>>7)<<6, (size>>1)+150) == b.count((size>>7)<<6, (size>>1)+150) );
+		// 4. check count - not supported any more
+		//CHECK( a.count( (size>>7)<<6, (size>>1)+150) == b.count((size>>7)<<6, (size>>1)+150) );
 
 		// 5. check subset
 		auto start_bit = (size>>8)<<6;
@@ -1143,10 +1143,10 @@ TEST_CASE("bitfield-file-flushed")
 		for( int64_t i = 0; i < (size>>3)+33 ; i++ )
 			CHECK( a.get( start_bit + i ) == ar.get(i) );
 
-		a.free_memory();
-		b.free_memory();
-		as.free_memory();
-		bs.free_memory();
+		a.FreeMemory();
+		b.FreeMemory();
+		as.FreeMemory();
+		bs.FreeMemory();
 
 		// TODO check is underlinying file is deleted?
 }

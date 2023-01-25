@@ -30,6 +30,36 @@
 #include "exceptions.hpp"
 #include "sorting_bucket.hpp"
 
+struct CacheBucket{
+	explicit CacheBucket( SortingBucket &cacheFor )
+		:statistics(new uint32_t[256])
+		, entries(new uint8_t[((uint32_t)cacheFor.EntrySize())<<8])
+		, parent( cacheFor )
+	{	}
+
+	inline void Add( const uint8_t *entry, const uint32_t stats ){
+		assert( count < 255 );
+		//if( count == 255 ) throw InvalidStateException( "Adding to full small bucket ");
+		statistics[count] = stats;
+		memcpy( entries.get() + count*(uint32_t)parent.EntrySize(), entry, parent.EntrySize() );
+		if( count == 255 ) parent.AddBulkTS( entries.get(), statistics.get(), 255 );
+		++count;
+	}
+
+	inline void Flush(){
+		if( count > 0 )
+			parent.AddBulkTS( entries.get(), statistics.get(), count );
+		count = 0;
+	}
+
+private:
+	std::unique_ptr<uint32_t[]> statistics;
+	std::unique_ptr<uint8_t[]> entries;
+	uint8_t count = 0;
+	SortingBucket &parent;
+};
+
+
 class SortManager : public Disk {
 public:
     SortManager(
@@ -70,6 +100,26 @@ public:
 						buckets_.emplace_back( SortingBucket( bucket_filename.string(), entry_size, begin_bits_ + log_num_buckets, subbucket_bits ) );
         }
     }
+
+		struct ThreadWriter{
+			explicit ThreadWriter( SortManager &parent )
+				: parent_(parent)
+			{
+				for( auto &b : parent.buckets_ )
+					buckets_cache.emplace_back(b);
+			}
+
+			inline void Add( const uint8_t *entry ){
+				uint64_t const bucket_index =
+						Util::ExtractNum(entry, parent_.entry_size_, parent_.begin_bits_, parent_.log_num_buckets_ + parent_.subbucket_bits );
+				buckets_cache[bucket_index>>parent_.subbucket_bits].Add( entry, bucket_index & ( ( (uint64_t)1<<parent_.subbucket_bits)-1) );
+			}
+
+			inline void Flush(){}
+		private:
+			std::vector<CacheBucket> buckets_cache;
+			SortManager &parent_;
+		};
 
 		inline uint64_t Count() const {
 			uint64_t res = 0;
@@ -286,7 +336,7 @@ private:
 				double const have_ram = memory_size_ / (1024.0 * 1024.0 * 1024.0);
 				double const qs_ram = entry_size_ * b.Count() / (1024.0 * 1024.0 * 1024.0);
 
-				std::cout << "\tp" << (uint32_t)phase_ << " t" << (uint32_t)table_index_
+				std::cout << "\tk" << (uint32_t)k_ << " p" << (uint32_t)phase_ << " t" << (uint32_t)table_index_
 									<< " Bucket " << bucket_i << " Ram: " << std::fixed << std::setprecision(3)
 									<< have_ram << "GiB, size: " <<  qs_ram << "GiB" << std::flush;
 
@@ -297,7 +347,7 @@ private:
 				else
 					b.SortToMemory( num_threads );
 
-				std::cout << ", read time: " << b.read_time/1000.0 << "s, sort time: " << b.sort_time/1000.0 << "s" << std::endl;
+				std::cout << ", read time: " << b.read_time/1000.0 << "s, sort time: " << b.sort_time/1000.0 << "s\r" << std::flush;
 
 
         this->final_position_start = this->final_position_end;
