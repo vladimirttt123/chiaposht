@@ -69,9 +69,14 @@ struct SortingBucket{
 		if( (disk_buffer->size + entry_size_*count) >= disk_buffer->allocated_length )
 			Flush();
 
-		memcpy( disk_buffer->buffer.get(), entries, count * entry_size_ );
-		for( uint32_t i = 0; i < count; i++ )
+		// Adding to buffer
+		memcpy( disk_buffer->buffer.get() + disk_buffer->size, entries, count * entry_size_ );
+		disk_buffer->size += count*entry_size_;
+		// Adding to statistics
+		for( uint32_t i = 0; i < count; i++ )	{
+			assert( Util::ExtractNum( entries + i*entry_size_, entry_size_, bits_begin_, bucket_bits_count_ ) == stats[i] );
 			statistics[stats[i]]++;
+		}
 		entries_count += count;
 	}
 

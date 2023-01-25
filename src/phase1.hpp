@@ -532,24 +532,26 @@ void* phase1_thread(THREADDATA* ptd)
 
 void* F1thread( int const index, uint8_t const k, const uint8_t* id )
 {
-    uint32_t const entry_size_bytes = 16;
+		//uint32_t const entry_size_bytes = 16;
     uint64_t const max_value = ((uint64_t)1 << (k));
-    uint64_t const right_buf_entries = 1 << (kBatchSizes);
+		//uint64_t const right_buf_entries = 1 << (kBatchSizes);
+
+		SortManager::ThreadWriter writer = SortManager::ThreadWriter(*globals.L_sort_manager.get());
 
     std::unique_ptr<uint64_t[]> f1_entries(new uint64_t[(1U << kBatchSizes)]);
 
     F1Calculator f1(k, id);
 
-    std::unique_ptr<uint8_t[]> right_writer_buf(new uint8_t[right_buf_entries * entry_size_bytes]);
+		//std::unique_ptr<uint8_t[]> right_writer_buf(new uint8_t[right_buf_entries * entry_size_bytes]);
 
-    // Instead of computing f1(1), f1(2), etc, for each x, we compute them in batches
+		// Instead of computing f1(1), f1(2), etc, for each x, we compute them in batches
     // to increase CPU efficency.
     for (uint64_t lp = index; lp <= (((uint64_t)1) << (k - kBatchSizes));
          lp = lp + globals.num_threads)
     {
         // For each pair x, y in the batch
 
-        uint64_t right_writer_count = 0;
+				//uint64_t right_writer_count = 0;
         uint64_t x = lp * (1 << (kBatchSizes));
 
         uint64_t const loopcount = std::min(max_value - x, (uint64_t)1 << (kBatchSizes));
@@ -562,13 +564,15 @@ void* F1thread( int const index, uint8_t const k, const uint8_t* id )
 
             entry = (uint128_t)f1_entries[i] << (128 - kExtraBits - k);
             entry |= (uint128_t)x << (128 - kExtraBits - 2 * k);
-            Util::IntTo16Bytes(&right_writer_buf[i * entry_size_bytes], entry);
-            right_writer_count++;
+						uint8_t buf[16];
+						Util::IntTo16Bytes( buf, entry );
+						writer.Add( buf );
+						//Util::IntTo16Bytes(&right_writer_buf[i * entry_size_bytes], entry);
+						// right_writer_count++;
             x++;
         }
 
-				assert( (right_writer_count>>32) == 0 );
-				globals.L_sort_manager->AddAllToCacheTS( right_writer_buf.get(), right_writer_count, entry_size_bytes );
+				//globals.L_sort_manager->AddAllToCacheTS( right_writer_buf.get(), right_writer_count, entry_size_bytes );
     }
 
     return 0;
@@ -731,7 +735,7 @@ std::vector<uint64_t> RunPhase1(
         // end of parallel execution
 
         // Total matches found in the left table
-        std::cout << "\tTotal matches: " << globals.matches << std::endl;
+				std::cout << std::endl << "\tTotal matches: " << globals.matches << std::endl;
 
         table_sizes[table_index] = globals.left_writer_count;
         table_sizes[table_index + 1] = globals.right_writer_count;

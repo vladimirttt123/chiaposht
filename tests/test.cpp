@@ -720,7 +720,7 @@ TEST_CASE("Plotting")
 {
     SECTION("Disk plot k18")
     {
-        PlotAndTestProofOfSpace("cpp-test-plot.dat", 100, 18, plot_id_1, 11, 95, 4000, 2);
+				PlotAndTestProofOfSpace("cpp-test-plot.dat", 100, 18, plot_id_1, 11, 95, 4000, 1);
     }
     SECTION("Disk plot k19")
     {

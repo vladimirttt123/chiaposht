@@ -37,12 +37,12 @@ struct CacheBucket{
 		, parent( cacheFor )
 	{	}
 
+	inline uint64_t Count() const { return (uint64_t)count; }
 	inline void Add( const uint8_t *entry, const uint32_t stats ){
-		assert( count < 255 );
-		//if( count == 255 ) throw InvalidStateException( "Adding to full small bucket ");
 		statistics[count] = stats;
-		memcpy( entries.get() + count*(uint32_t)parent.EntrySize(), entry, parent.EntrySize() );
-		if( count == 255 ) parent.AddBulkTS( entries.get(), statistics.get(), 255 );
+		memcpy( entries.get() + ((uint32_t)count)*(uint32_t)parent.EntrySize(), entry, parent.EntrySize() );
+		if( count == 255 )
+			parent.AddBulkTS( entries.get(), statistics.get(), 256 );
 		++count;
 	}
 
@@ -52,6 +52,7 @@ struct CacheBucket{
 		count = 0;
 	}
 
+	~CacheBucket(){Flush();}
 private:
 	std::unique_ptr<uint32_t[]> statistics;
 	std::unique_ptr<uint8_t[]> entries;
@@ -85,6 +86,7 @@ public:
 				, num_threads( num_threads )
 				, subbucket_bits( std::max( (uint8_t)2, (uint8_t)(k - log_num_buckets - kSubBucketBits) ) )
 				, k_(k), phase_(phase), table_index_(table_index)
+				, stats_mask( ( (uint32_t)1<<subbucket_bits)-1 )
     {
         // Cross platform way to concatenate paths, gulrak library.
 				std::vector<fs::path> bucket_filenames = std::vector<fs::path>();
@@ -101,24 +103,37 @@ public:
         }
     }
 
+		// Class to support writing to sort cache by threads in safe way
 		struct ThreadWriter{
-			explicit ThreadWriter( SortManager &parent )
-				: parent_(parent)
+			explicit ThreadWriter( SortManager &parent ) : parent_(parent)
+						, buckets_cache(new std::unique_ptr<CacheBucket>[parent.buckets_.size()])
 			{
-				for( auto &b : parent.buckets_ )
-					buckets_cache.emplace_back(b);
+				for( uint32_t i = 0; i < parent.buckets_.size(); i++ )
+					buckets_cache[i].reset( new CacheBucket( parent.buckets_[i] ) );
+			}
+
+			inline uint64_t Count() const {
+				uint64_t res = 0;
+				for( uint32_t i = 0; i < parent_.buckets_.size(); i++ )
+					res += buckets_cache[i]->Count();
+				return res;
 			}
 
 			inline void Add( const uint8_t *entry ){
 				uint64_t const bucket_index =
 						Util::ExtractNum(entry, parent_.entry_size_, parent_.begin_bits_, parent_.log_num_buckets_ + parent_.subbucket_bits );
-				buckets_cache[bucket_index>>parent_.subbucket_bits].Add( entry, bucket_index & ( ( (uint64_t)1<<parent_.subbucket_bits)-1) );
+				buckets_cache[bucket_index>>parent_.subbucket_bits]->Add( entry, bucket_index & parent_.stats_mask );
 			}
 
-			inline void Flush(){}
+			inline void Flush(){
+				for( uint32_t i = 0; i < parent_.buckets_.size(); i++ )
+					buckets_cache[i]->Flush();
+			}
+
+			~ThreadWriter(){Flush();}
 		private:
-			std::vector<CacheBucket> buckets_cache;
 			SortManager &parent_;
+			std::unique_ptr<std::unique_ptr<CacheBucket>[]> buckets_cache;
 		};
 
 		inline uint64_t Count() const {
@@ -146,14 +161,14 @@ public:
     {
         uint64_t const bucket_index =
 						Util::ExtractNum(entry, entry_size_, begin_bits_, log_num_buckets_ + subbucket_bits );
-				buckets_[bucket_index>>subbucket_bits].AddEntry( entry, bucket_index & ( ( (uint64_t)1<<subbucket_bits)-1) );
+				buckets_[bucket_index>>subbucket_bits].AddEntry( entry, bucket_index & stats_mask );
 		}
 
 		inline void AddToCacheTS(const uint8_t *entry)
 		{
 				uint64_t const bucket_index =
 						Util::ExtractNum(entry, entry_size_, begin_bits_, log_num_buckets_ + subbucket_bits );
-				buckets_[bucket_index>>subbucket_bits].AddEntryTS( entry, bucket_index & ( ( (uint64_t)1<<subbucket_bits)-1) );
+				buckets_[bucket_index>>subbucket_bits].AddEntryTS( entry, bucket_index & stats_mask );
 		}
 
 		inline void AddAllToCache( const uint8_t *entries, const uint32_t &num_entries, const uint32_t &ext_enrty_size ){
@@ -313,6 +328,7 @@ private:
 		std::unique_ptr<std::thread> next_bucket_sorting_thread;
 
 		uint8_t k_, phase_, table_index_;
+		const uint32_t stats_mask;
 
 		const inline uint8_t* memory_start() const {return buckets_[next_bucket_to_sort-1].get();}
 
@@ -336,7 +352,7 @@ private:
 				double const have_ram = memory_size_ / (1024.0 * 1024.0 * 1024.0);
 				double const qs_ram = entry_size_ * b.Count() / (1024.0 * 1024.0 * 1024.0);
 
-				std::cout << "\tk" << (uint32_t)k_ << " p" << (uint32_t)phase_ << " t" << (uint32_t)table_index_
+				std::cout << "\r\tk" << (uint32_t)k_ << " p" << (uint32_t)phase_ << " t" << (uint32_t)table_index_
 									<< " Bucket " << bucket_i << " Ram: " << std::fixed << std::setprecision(3)
 									<< have_ram << "GiB, size: " <<  qs_ram << "GiB" << std::flush;
 
@@ -347,12 +363,14 @@ private:
 				else
 					b.SortToMemory( num_threads );
 
-				std::cout << ", read time: " << b.read_time/1000.0 << "s, sort time: " << b.sort_time/1000.0 << "s\r" << std::flush;
-
+				std::cout << ", read time: " << b.read_time/1000.0 << "s, sort time: " << b.sort_time/1000.0 << "s" << std::flush;
 
         this->final_position_start = this->final_position_end;
 				this->final_position_end += b.Size();
 				this->next_bucket_to_sort += 1;
+
+				if( this->next_bucket_to_sort >= buckets_.size() || buckets_[this->next_bucket_to_sort].Size() == 0 )
+					std::cout << std::endl; // final endline
 
 				if( num_threads > 1 && this->next_bucket_to_sort < buckets_.size() &&
 						( b.Size() + buckets_[this->next_bucket_to_sort].Size() ) < memory_size_ ){

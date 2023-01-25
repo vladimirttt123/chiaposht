@@ -57,7 +57,7 @@ struct bitfield
 			if( b_file_ != nullptr )
 				throw InvalidStateException( "Cannot set in RO bitfield" );
 			for( uint32_t i = 0; i < count; i++ ){
-				assert( bits[i] / 64 < size_);
+				assert( bits[i] / 64 < (uint64_t)size_);
 				buffer_[bits[i] / 64] |= uint64_t(1) << (bits[i] & 63);
 			}
 
