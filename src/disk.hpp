@@ -534,9 +534,10 @@ struct BufferedReader{
 
 	inline const uint8_t * GetBuffer() const { return buffer + buffer_size_ * current_buffer_;	}
 
-	inline uint64_t BufferSize() const { return current_buffer_size_; }
-
 	inline uint64_t GetBufferStartPosition() const { return file_read_position_ + current_buffer_start_byte_; }
+	inline uint64_t BufferSize() const { return current_buffer_size_; }
+	inline bool isAtEnd() const { return GetBufferStartPosition() + buffer_size_ >= bytes_to_read_; }
+
 
 	~BufferedReader(){
 		if( read_thread != nullptr ){

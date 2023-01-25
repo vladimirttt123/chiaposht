@@ -203,7 +203,8 @@ inline int64_t SortRegularTableThread( const uint8_t *buffer, const uint64_t buf
 																			 int16_t const &entry_size, int16_t const &new_entry_size,
 																			 int64_t start_write_counter, const bitfieldReader *current_bitfield,
 																			 bitfield_index const index, uint32_t const log_num_buckets,
-																			 uint64_t thread_no, uint64_t num_threads, SortManager::ThreadWriter * result,
+																			 uint64_t thread_no, uint64_t num_threads,
+																			 SortManager::ThreadWriter * result, bool flash_writer,
 																			 uint8_t const pos_offset_size, uint8_t const k )
 {
 	uint8_t const write_counter_shift = 128 - k;
@@ -240,6 +241,8 @@ inline int64_t SortRegularTableThread( const uint8_t *buffer, const uint64_t buf
 		}
 		++write_counter;
 	}
+
+	if( flash_writer ) result->Flush();
 
 	return write_counter;
 }
@@ -356,7 +359,7 @@ Phase2Results RunPhase2(
 							table_index,
 							num_threads );
 
-					uint64_t buf_size = num_threads*(BUF_SIZE/entry_size)*entry_size;
+					const uint64_t buf_size = num_threads*(BUF_SIZE/entry_size)*entry_size;
 					int64_t write_counter = 0;
 					BufferedReader reader( &tmp_1_disks[table_index], 0, buf_size, table_size*entry_size );
 					auto threads = std::make_unique<std::thread[]>( num_threads - 1 );
@@ -368,20 +371,22 @@ Phase2Results RunPhase2(
 						for( uint64_t t = 0; t < num_threads; t++ )
 							sort_writers[t].reset( new SortManager::ThreadWriter(*sort_manager.get()) );
 
-						while( (buf_size = reader.MoveNextBuffer()) > 0 ){
+						while( reader.MoveNextBuffer() > 0 ){
 
-							cur_bitfield.setLimits( reader.GetBufferStartPosition()/entry_size, buf_size/entry_size );
+							cur_bitfield.setLimits( reader.GetBufferStartPosition()/entry_size, reader.BufferSize()/entry_size );
 
 							// Run threads
 							for( uint64_t t = 0; t < num_threads - 1; t++ )
-								threads[t] = std::thread(SortRegularTableThread, reader.GetBuffer(), buf_size, entry_size,
+								threads[t] = std::thread(SortRegularTableThread, reader.GetBuffer(), reader.BufferSize(), entry_size,
 																				 new_entry_size, write_counter, &cur_bitfield, index,
-																				 log_num_buckets, t, num_threads, sort_writers[t].get(), pos_offset_size, k );
+																				 log_num_buckets, t, num_threads, sort_writers[t].get(),
+																				 reader.isAtEnd(), pos_offset_size, k );
 
-							auto new_write_counter = SortRegularTableThread( reader.GetBuffer(), buf_size, entry_size,
+							auto new_write_counter = SortRegularTableThread( reader.GetBuffer(), reader.BufferSize(), entry_size,
 																															 new_entry_size, write_counter, &cur_bitfield, index,
 																															 log_num_buckets, num_threads-1, num_threads,
 																															 sort_writers[num_threads-1].get(),
+																															 reader.isAtEnd(),
 																															 pos_offset_size, k );
 
 							for( uint64_t t = 0; t < num_threads - 1; t++ )
@@ -440,7 +445,7 @@ Phase2Results RunPhase2(
 		// to free memory we flush the bitfield to disk
 		//current_bitfield->flush_to_disk( tmp_1_disks[table_index].GetFileName() + ".bitfield.tmp" );
 
-		// TODO some more check, it can be memory leadk with current_bitfield
+		// TODO some more check, it can be memory leaks with current_bitfield
 		return {
 				FilteredDisk(std::move(disk), current_bitfield.release(), entry_size)
         , BufferedDisk(&tmp_1_disks[7], new_table_sizes[7] * new_entry_size)
