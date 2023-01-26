@@ -532,17 +532,11 @@ void* phase1_thread(THREADDATA* ptd)
 
 void* F1thread( int const index, uint8_t const k, const uint8_t* id )
 {
-		//uint32_t const entry_size_bytes = 16;
     uint64_t const max_value = ((uint64_t)1 << (k));
-		//uint64_t const right_buf_entries = 1 << (kBatchSizes);
-
 		SortManager::ThreadWriter writer = SortManager::ThreadWriter(*globals.L_sort_manager.get());
-
     std::unique_ptr<uint64_t[]> f1_entries(new uint64_t[(1U << kBatchSizes)]);
 
     F1Calculator f1(k, id);
-
-		//std::unique_ptr<uint8_t[]> right_writer_buf(new uint8_t[right_buf_entries * entry_size_bytes]);
 
 		// Instead of computing f1(1), f1(2), etc, for each x, we compute them in batches
     // to increase CPU efficency.
@@ -551,8 +545,7 @@ void* F1thread( int const index, uint8_t const k, const uint8_t* id )
     {
         // For each pair x, y in the batch
 
-				//uint64_t right_writer_count = 0;
-        uint64_t x = lp * (1 << (kBatchSizes));
+				uint64_t x = lp * (1 << (kBatchSizes));
 
         uint64_t const loopcount = std::min(max_value - x, (uint64_t)1 << (kBatchSizes));
 
@@ -567,12 +560,8 @@ void* F1thread( int const index, uint8_t const k, const uint8_t* id )
 						uint8_t buf[16];
 						Util::IntTo16Bytes( buf, entry );
 						writer.Add( buf );
-						//Util::IntTo16Bytes(&right_writer_buf[i * entry_size_bytes], entry);
-						// right_writer_count++;
             x++;
         }
-
-				//globals.L_sort_manager->AddAllToCacheTS( right_writer_buf.get(), right_writer_count, entry_size_bytes );
     }
 
     return 0;
