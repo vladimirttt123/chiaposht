@@ -402,14 +402,13 @@ Phase2Results RunPhase2(
 						std::cout << "Incorrect writing counter!!!! " << write_counter << " != " << sort_manager->Count() << std::endl;
 
 					// clear disk caches and memory
-					// sort_manager->FlushCache();  // should do nothing at this point
+					sort_manager->FlushCache();  // close all files
 					//sort_manager->FreeMemory(); // should do nothing at this point
 
 					output_files[table_index - 2] = std::move(sort_manager);
 					new_table_sizes[table_index] = write_counter;
-
-					std::cout << " entries: " << write_counter;
 			}
+
 			sort_timer.PrintElapsed( ", time =" );
 			current_bitfield.swap(next_bitfield);
 			next_bitfield->FreeMemory();
