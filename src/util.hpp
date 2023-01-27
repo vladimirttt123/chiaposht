@@ -296,6 +296,13 @@ namespace Util {
         return Util::SliceInt64FromBytes(bytes, begin_bits, take_bits);
     }
 
+		inline uint64_t ExtractNum64( const uint8_t *bytes, const uint32_t begin_bits, const uint32_t take_bits ){
+			assert( (begin_bits&7) + take_bits <= 64 );
+			auto moved = bswap_64( ((uint64_t*)(bytes + (begin_bits>>3) ))[0] ) >> (64-take_bits - (begin_bits&7));
+			auto mask = (((uint64_t)1)<<take_bits)-1;
+			return moved&mask;
+		}
+
     // The number of memory entries required to do the custom SortInMemory algorithm, given the
     // total number of entries to be sorted.
     inline uint64_t RoundSize(uint64_t size)

@@ -24,7 +24,7 @@
 
 struct SortingBucket{
 	SortingBucket( const std::string &fileName, uint16_t entry_size, uint32_t bits_begin, uint8_t bucket_bits_count )
-		:disk( new FileDisk(fileName) )
+		: disk( new FileDisk(fileName) )
 		, bucket_bits_count_(bucket_bits_count)
 		, entry_size_(entry_size)
 		, bits_begin_(bits_begin)
@@ -95,6 +95,12 @@ struct SortingBucket{
 																disk_write_position += size_to_write;
 															}, disk_buffer->ReleaseBuffer() )
 					);
+	}
+
+	void CloseFile(){
+		if( !disk ) return; // already removed
+		WaitLastDiskWrite();
+		disk->Close();
 	}
 
 	void FreeMemory(){
@@ -319,7 +325,7 @@ private:
 	inline void FillBuckets( uint8_t* memory, const uint8_t* disk_buffer, const uint64_t &buf_size, uint64_t * bucket_positions, int64_t direction ){
 		for( uint32_t buf_ptr = 0; buf_ptr < buf_size; buf_ptr += entry_size_ ){
 			// Define bucket to put into
-			uint64_t bucket_bits = Util::ExtractNum( disk_buffer + buf_ptr, entry_size_, bits_begin_, bucket_bits_count_ );
+			uint64_t bucket_bits = Util::ExtractNum64( disk_buffer + buf_ptr, bits_begin_, bucket_bits_count_ );
 			// Put next entry to its bucket
 			memcpy( memory + bucket_positions[bucket_bits], disk_buffer + buf_ptr, entry_size_ );
 			// move pointer inside bucket to next entry position

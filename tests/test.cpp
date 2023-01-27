@@ -48,6 +48,38 @@ vector<unsigned char> intToBytes(uint32_t paramInt, uint32_t numBytes)
 
 static uint128_t to_uint128(uint64_t hi, uint64_t lo) { return (uint128_t)hi << 64 | lo; }
 
+TEST_CASE( "Extract" )
+{
+	uint8_t bytes[10] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0x00};
+	for( uint32_t start = 0; start < 64; start ++ )
+		for( uint32_t len = 1; len < (64-(start&7)) && len+start < 80; len ++ ){
+			auto res = Util::ExtractNum( bytes, 10, start, len );
+			auto res2 = Util::ExtractNum64( bytes, start, len );
+			CHECK(res2 == res);
+		}
+
+	uint64_t iteration = 100000;
+	Timer time;
+	for( uint64_t i = 0; i < iteration; i++ ){
+		for( uint32_t start = 0; start < 40; start ++ )
+			for( uint32_t len = 1; len < (64-start); len ++ ){
+				auto res = Util::ExtractNum( bytes, 10, start, len );
+				bytes[0] += res;
+			}
+	}
+	time.PrintElapsed( "old: " );
+	bytes[0] = 0x11;
+	Timer timeB;
+	for( uint64_t i = 0; i < iteration; i++ ){
+		for( uint32_t start = 0; start < 40; start ++ )
+			for( uint32_t len = 1; len < (64-start); len ++ ){
+				auto res = Util::ExtractNum64( bytes, start, len );
+				bytes[0] += res;
+			}
+	}
+	timeB.PrintElapsed( "new: " );
+
+}
 //TEST_CASE("BSWAP")
 //{
 //	uint64_t iteration = 1000000000;

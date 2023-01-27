@@ -121,7 +121,7 @@ public:
 
 			inline void Add( const uint8_t *entry ){
 				uint64_t const bucket_index =
-						Util::ExtractNum(entry, parent_.entry_size_, parent_.begin_bits_, parent_.log_num_buckets_ + parent_.subbucket_bits );
+						Util::ExtractNum64(entry, parent_.begin_bits_, parent_.log_num_buckets_ + parent_.subbucket_bits );
 				buckets_cache[bucket_index>>parent_.subbucket_bits]->Add( entry, bucket_index & parent_.stats_mask );
 			}
 
@@ -160,14 +160,14 @@ public:
 		inline void AddToCache(const uint8_t *entry)
     {
         uint64_t const bucket_index =
-						Util::ExtractNum(entry, entry_size_, begin_bits_, log_num_buckets_ + subbucket_bits );
+						Util::ExtractNum64(entry, begin_bits_, log_num_buckets_ + subbucket_bits );
 				buckets_[bucket_index>>subbucket_bits].AddEntry( entry, bucket_index & stats_mask );
 		}
 
 		inline void AddToCacheTS(const uint8_t *entry)
 		{
 				uint64_t const bucket_index =
-						Util::ExtractNum(entry, entry_size_, begin_bits_, log_num_buckets_ + subbucket_bits );
+						Util::ExtractNum64(entry, begin_bits_, log_num_buckets_ + subbucket_bits );
 				buckets_[bucket_index>>subbucket_bits].AddEntryTS( entry, bucket_index & stats_mask );
 		}
 
@@ -287,6 +287,7 @@ public:
     {
         for (auto& b : buckets_) {
 						// b.Flush();
+						b.CloseFile();
 						b.FreeMemory();
 				}
         final_position_end = 0;
