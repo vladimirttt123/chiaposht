@@ -131,12 +131,14 @@ struct FileDisk {
 										"Could not open " + filename_.string() + ": err" + std::to_string(errno) + " " + ::strerror(errno) + ".";
 
 								if( errno == 24 && could_be_closed.size() > 0 ){
-									std::cout << "Warning: Too many open file tring to close some " << std::endl;
+									std::cout << "Warning: Too many open file, forced to close some. Closing " << could_be_closed.size() << " files." << std::endl;
 									CloseCouldBeClosed();
 								}
 								else if (errno == 24 || (flags & retryOpenFlag) ) {
                     std::cout << error_message << " Retrying in five minutes." << std::endl;
-                    std::this_thread::sleep_for(5min);
+										// Close as much as possible to allow remount
+										CloseCouldBeClosed();
+										std::this_thread::sleep_for(5min);
                 } else {
                     throw InvalidValueException(error_message);
                 }

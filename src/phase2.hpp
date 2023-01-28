@@ -52,7 +52,7 @@ inline void ScanTable( FileDisk* const disk, int table_index, const int64_t &tab
 	// current table) i.e. the index to the current entry. This is not used
 	// for table 7
 
-	int64_t read_cursor = 0;
+	int64_t read_cursor = 0, total_marked = 0;
 	auto max_threads = std::max((uint32_t)1, num_threads);
 	auto threads = std::make_unique<std::thread[]>( max_threads );
 	std::mutex read_mutex, union_mutex;
@@ -60,18 +60,20 @@ inline void ScanTable( FileDisk* const disk, int table_index, const int64_t &tab
 	const int64_t read_bufsize = (BUF_SIZE/entry_size)*entry_size; // allign size to entry length
 	// Run the threads
 	for( uint32_t i = 0; i < max_threads; i++ ){
-		threads[i] = std::thread( [table_index, table_size, entry_size, pos_offset_size, k, read_bufsize, &read_mutex, &union_mutex]
+		threads[i] = std::thread( [table_index, table_size, entry_size, pos_offset_size, k, read_bufsize, &read_mutex, &union_mutex, &total_marked]
 															(FileDisk* disk, int64_t *read_cursor, const bitfield * current_bitfield, bitfield *next_bitfield){
 			auto buffer = std::make_unique<uint8_t[]>(read_bufsize);
 			bitfieldReader cur_bitfield( *current_bitfield );
 			while( true ){
-				int64_t buf_size = 0, buf_start = 0;
+				int64_t buf_size = 0, buf_start = 0, thread_marked = 0;
 				{	// Read next buffer
 					const std::lock_guard<std::mutex> lk(read_mutex);
 					buf_start = *read_cursor;
 					buf_size = std::min( read_bufsize, (table_size*(int64_t)entry_size) - *read_cursor );
-					if( buf_size == 0 ) return;// nothing to read -> exit
-
+					if( buf_size == 0 ){
+						total_marked += thread_marked;
+						return;// nothing to read -> exit
+					}
 					disk->Read( *read_cursor, buffer.get(), buf_size );
 					*read_cursor += buf_size;
 					cur_bitfield.setLimits( buf_start/entry_size, buf_size/entry_size );
@@ -109,6 +111,7 @@ inline void ScanTable( FileDisk* const disk, int table_index, const int64_t &tab
 					const std::lock_guard<std::mutex> lk(union_mutex);
 					next_bitfield->set( processed.get(), processed_count );
 				}
+				thread_marked += processed_count;
 			}
 		}, disk, &read_cursor, &current_bitfield, &next_bitfield );
 	}
@@ -117,7 +120,10 @@ inline void ScanTable( FileDisk* const disk, int table_index, const int64_t &tab
 	for( uint32_t i = 0; i < max_threads; i++ )
 		threads[i].join();
 
-	scan_timer.PrintElapsed("time =");
+	if( total_marked != next_bitfield.count( 0, next_bitfield.size() ) )
+		std::cout << "ERROR: problem with bitfield filling marked: " << total_marked << ", count: " << next_bitfield.count( 0, next_bitfield.size() ) << std::endl;
+
+	scan_timer.PrintElapsed( "marked: " + std::to_string(total_marked) + "time =");
 }
 
 inline void SortTable7Thread( const uint8_t *buffer, const uint64_t buf_size,
@@ -195,7 +201,7 @@ inline void SortTable7( FileDisk* const disk, bitfield_index const &index,
 		file_size += buf_size;
 	}
 	disk->Truncate( file_size );
-	std::cout << "\t file_size=" << file_size << std::endl;
+	std::cout << " entry size: " << entry_size << " file_size=" << file_size << std::endl;
 }
 
 
@@ -399,7 +405,7 @@ Phase2Results RunPhase2(
 
 					std::cout << " written: " << write_counter << " entries with size " << (uint32_t)new_entry_size;
 					if( write_counter != (int64_t)sort_manager->Count() )
-						std::cout << "Incorrect writing counter!!!! " << write_counter << " != " << sort_manager->Count() << std::endl;
+						std::cout << "ERROR: Incorrect writing counter written: " << write_counter << " in sorting: " << sort_manager->Count() << std::endl;
 
 					// clear disk caches and memory
 					sort_manager->FlushCache();  // close all files

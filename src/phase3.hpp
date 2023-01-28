@@ -237,6 +237,17 @@ Phase3Results RunPhase3(
 
         // Similar algorithm as Backprop, to read both L and R tables simultaneously
         while (!end_of_right_table || (current_pos - end_of_table_pos <= kReadMinusWrite)) {
+					if( current_pos > std::max( res2.table_sizes[table_index], res2.table_sizes[table_index+1] ) + kReadMinusWrite ){
+						std::cout<< "some inconsistency in number of entries current_pos=" << current_pos
+											<< ", table size[" << table_index << "]=" << res2.table_sizes[table_index]
+											<< ", table size[" << (table_index+1) << "]=" << res2.table_sizes[table_index+1] << std::endl;
+						assert( false );
+						if( current_pos*2 > res2.table_sizes[table_index+1] ){
+							std::cout << "ERROR: breaking the loop" << std::endl;
+							break;
+						}
+					}
+
 //					if( !end_of_right_table && current_pos > end_of_table_pos )
 //						throw InvalidValueException( "passed end of table" );
 
@@ -358,6 +369,8 @@ Phase3Results RunPhase3(
             }
             current_pos += 1;
         }
+
+				assert( R_sort_manager->Count() == total_r_entries );
         computation_pass_1_timer.PrintElapsed("\tFirst computation pass time:");
 
         // Remove no longer needed file
