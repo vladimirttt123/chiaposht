@@ -22,6 +22,47 @@
 
 
 
+struct ABuffer{
+	ABuffer( uint32_t entry_size )
+		: size(0), allocated_length(BUF_SIZE - (BUF_SIZE%entry_size))
+		, buffer(new uint8_t[allocated_length]){}
+
+	inline bool Add( const uint8_t* &entry, const uint32_t &entry_size ){
+		assert( (size+entry_size) <= allocated_length );
+		memcpy(buffer.get() + size, entry, entry_size );
+		return ( size += entry_size ) == allocated_length;
+	}
+
+	// returns number of NOT inserted records.
+	inline uint32_t AddBulk( const uint8_t * &entries, const uint32_t &entry_size,
+													 const uint32_t &first_entry, const uint32_t &num_entries ) {
+		uint32_t insert_amount = std::min( allocated_length - size, entry_size*num_entries );
+		memcpy( buffer.get() + size, entries + (first_entry*entry_size), insert_amount );
+		size += insert_amount;
+		return num_entries - insert_amount/entry_size;
+	}
+
+	inline bool IsEmpty() const { return size == 0;}
+	inline bool IsFull() const { return size == allocated_length; }
+	inline uint32_t Size() const { return size; }
+
+	uint8_t * ReleaseBuffer(){
+		auto res = buffer.release();
+		size = 0;
+		buffer.reset( new uint8_t[allocated_length] );
+		return res;
+	}
+
+
+	// size of used buffer
+	uint32_t size;
+	// the buffer length
+	const uint32_t allocated_length;
+	std::unique_ptr<uint8_t[]> buffer;
+};
+
+
+
 struct SortingBucket{
 	SortingBucket( const std::string &fileName, uint16_t entry_size, uint32_t bits_begin, uint8_t bucket_bits_count )
 		: disk( new FileDisk(fileName) )
@@ -62,16 +103,16 @@ struct SortingBucket{
 	}
 
 	inline void AddBulkTS( const uint8_t * entries, const uint32_t * stats, const uint32_t &count ){
-		assert( entry_size_*count <= disk_buffer->allocated_length );
 
 		std::lock_guard<std::mutex> lk( *addMutex.get() );
 
-		if( (disk_buffer->size + entry_size_*count) >= disk_buffer->allocated_length )
+		// Adding to buffer
+		for( auto to_add = count; to_add > 0;
+				 to_add = disk_buffer->AddBulk( entries, entry_size_, count-to_add, to_add ) )
+			Flush();
+		if( disk_buffer->IsFull() )
 			Flush();
 
-		// Adding to buffer
-		memcpy( disk_buffer->buffer.get() + disk_buffer->size, entries, count * entry_size_ );
-		disk_buffer->size += count*entry_size_;
 		// Adding to statistics
 		for( uint32_t i = 0; i < count; i++ )	{
 			assert( Util::ExtractNum( entries + i*entry_size_, entry_size_, bits_begin_, bucket_bits_count_ ) == stats[i] );
@@ -83,17 +124,19 @@ struct SortingBucket{
 	// Flush current buffer to disk
 	void Flush(){
 		if( !disk || disk_buffer->IsEmpty() ) return;
-		WaitLastDiskWrite();
 
-		int64_t size_to_write = disk_buffer->size;
-		assert( size_to_write >= 0 && size_to_write <= disk_buffer->allocated_length );
+		int64_t size_to_write = disk_buffer->Size();
 		// Wait for previous disk write operation.
-		disk_output_thread.reset( new std::thread( [this, size_to_write]( uint8_t* buffer ){
+		disk_output_thread.reset( new std::thread( [this, size_to_write]( uint8_t* buffer, std::thread * prevThread ){
+																if( prevThread ){
+																	prevThread->join();
+																	delete prevThread;
+																}
 																disk->Write( disk_write_position, buffer, size_to_write );
 																disk->Flush();
 																delete[] buffer;
 																disk_write_position += size_to_write;
-															}, disk_buffer->ReleaseBuffer() )
+															}, disk_buffer->ReleaseBuffer(), disk_output_thread.release() )
 					);
 	}
 
@@ -141,14 +184,14 @@ struct SortingBucket{
 		assert( bucket_positions[buckets_count-1]/entry_size_ + statistics[buckets_count-1] == Count() );
 
 		auto start_time = std::chrono::high_resolution_clock::now();
-		uint64_t read_pos = 0, read_size = Size() - disk_buffer->size;
+		uint64_t read_pos = 0, read_size = Size() - disk_buffer->Size();
 
 
 		// Read from file to buckets, do not run threads if less than 1024 entries to read
 		if( num_threads <= 1 || read_size < 1024*entry_size_ ){
 			// if last buffer not flashed do not flash it, use it as already read.
 			if( !disk_buffer->IsEmpty() )
-				FillBuckets( memory, disk_buffer->buffer.get(), disk_buffer->size, bucket_positions.get(), entry_size_ );
+				FillBuckets( memory, disk_buffer->buffer.get(), disk_buffer->Size(), bucket_positions.get(), entry_size_ );
 
 
 			// Wait for last disk write finish
@@ -275,30 +318,7 @@ struct SortingBucket{
 	}
 
 private:
-	struct ABuffer{
-		uint32_t size;
-		const uint32_t allocated_length;
-		std::unique_ptr<uint8_t[]> buffer;
 
-		ABuffer( uint32_t entry_size )
-			: size(0), allocated_length(BUF_SIZE - (BUF_SIZE%entry_size))
-			, buffer(new uint8_t[allocated_length]){}
-
-		inline bool Add( const uint8_t* &entry, const uint32_t &entry_size ){
-			assert( (size+entry_size) <= allocated_length );
-			memcpy(buffer.get() + size, entry, entry_size );
-			return ( size += entry_size ) == allocated_length;
-		}
-
-		bool IsEmpty() const { return size == 0;}
-
-		uint8_t * ReleaseBuffer(){
-			auto res = buffer.release();
-			size = 0;
-			buffer.reset( new uint8_t[allocated_length] );
-			return res;
-		}
-	};
 
 	std::unique_ptr<FileDisk> disk;
 	const uint8_t bucket_bits_count_;
