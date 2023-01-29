@@ -293,7 +293,7 @@ Phase2Results RunPhase2(
     // Only table 2-6 are passed on as SortManagers, to phase3
     output_files.resize(7 - 2);
 
-		FileDisk *table7_rewrited = new FileDisk( fs::path(filename + ".table7.p2.tmp") );
+		FileDisk *table7_rewrited = &tmp_1_disks.emplace_back( fs::path(filename + ".table7.p2.tmp") );
 
     // note that we don't iterate over table_index=1. That table is special
     // since it contains different data. We'll do an extra scan of table 1 at
@@ -345,7 +345,7 @@ Phase2Results RunPhase2(
 					SortTable7( &tmp_1_disks[table_index], table7_rewrited, index, table_size,
 											entry_size, num_threads, pos_offset_size, k );
 					// we do not need any more table 7 file from phase 1
-					tmp_1_disks[table_index].Remove();
+					tmp_1_disks[table_index].Truncate(0);
 				}
 				else{
 					auto sort_manager = std::make_unique<SortManager>(
@@ -450,7 +450,7 @@ Phase2Results RunPhase2(
 		BufferedDisk disk_table1(&tmp_1_disks[1], table_size * entry_size);
 		return {
 				FilteredDisk(std::move(disk_table1), current_bitfield.release(), entry_size)
-				, BufferedDisk(table7_rewrited, new_table_sizes[7] * new_entry_size) // I think it should be not new entry size but old one.
+				, BufferedDisk(table7_rewrited, new_table_sizes[7] * new_entry_size)
         , std::move(output_files)
         , std::move(new_table_sizes)
     };

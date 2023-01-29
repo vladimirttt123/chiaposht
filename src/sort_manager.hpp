@@ -99,7 +99,8 @@ public:
             fs::path const bucket_filename =
                 fs::path(tmp_dirname) /
                 fs::path(filename + ".sort_bucket_" + bucket_number_padded.str() + ".tmp");
-						buckets_.emplace_back( SortingBucket( bucket_filename.string(), entry_size, begin_bits_ + log_num_buckets, subbucket_bits ) );
+						buckets_.emplace_back( SortingBucket( bucket_filename.string(), entry_size,
+																									begin_bits_ + log_num_buckets, subbucket_bits ) );
         }
     }
 

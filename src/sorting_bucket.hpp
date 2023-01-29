@@ -16,7 +16,6 @@
 #define SRC_CPP_SORTING_BUCKET_HPP_
 
 #include <mutex>
-#include "bitfield.hpp"
 #include "disk.hpp"
 #include "util.hpp"
 #include "quicksort.hpp"

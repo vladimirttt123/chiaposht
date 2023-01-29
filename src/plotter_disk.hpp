@@ -370,11 +370,12 @@ public:
                              (1024 * 1024 * 1024)
                       << " GiB" << std::endl;
             all_phases.PrintElapsed("Total time =");
+
+						for( uint32_t i = 0; i < tmp_1_disks.size(); i++)
+							tmp_1_disks[i].Remove();
         }
 
-        for (fs::path p : tmp_1_filenames) {
-            fs::remove(p);
-        }
+
 
         bool bCopied = false;
         bool bRenamed = false;
