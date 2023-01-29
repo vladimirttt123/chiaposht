@@ -293,7 +293,8 @@ Phase2Results RunPhase2(
     // Only table 2-6 are passed on as SortManagers, to phase3
     output_files.resize(7 - 2);
 
-		FileDisk *table7_rewrited = &tmp_1_disks.emplace_back( fs::path(filename + ".table7.p2.tmp") );
+		FileDisk *table7_rewrited = &tmp_1_disks.emplace_back(
+					fs::path(tmp_dirname) / fs::path(filename + ".table7.p2.tmp") );
 
     // note that we don't iterate over table_index=1. That table is special
     // since it contains different data. We'll do an extra scan of table 1 at
