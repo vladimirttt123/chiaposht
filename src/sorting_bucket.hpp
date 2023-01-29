@@ -16,6 +16,7 @@
 #define SRC_CPP_SORTING_BUCKET_HPP_
 
 #include <mutex>
+#include "bitfield.hpp"
 #include "disk.hpp"
 #include "util.hpp"
 #include "quicksort.hpp"
@@ -62,10 +63,10 @@ struct ABuffer{
 };
 
 
-
+// ==================================================================================================
 struct SortingBucket{
 	SortingBucket( const std::string &fileName, uint16_t entry_size, uint32_t bits_begin, uint8_t bucket_bits_count )
-		: disk( new FileDisk(fileName) )
+		:	disk( new FileDisk(fileName) )
 		, bucket_bits_count_(bucket_bits_count)
 		, entry_size_(entry_size)
 		, bits_begin_(bits_begin)
@@ -107,11 +108,11 @@ struct SortingBucket{
 		std::lock_guard<std::mutex> lk( *addMutex.get() );
 
 		// Adding to buffer
-		for( auto to_add = count; to_add > 0;
-				 to_add = disk_buffer->AddBulk( entries, entry_size_, count-to_add, to_add ) )
-			Flush();
-		if( disk_buffer->IsFull() )
-			Flush();
+		auto to_add = count;
+		while( to_add > 0 ){
+			 to_add = disk_buffer->AddBulk( entries, entry_size_, count-to_add, to_add );
+			 if( disk_buffer->IsFull() ) Flush();
+		}
 
 		// Adding to statistics
 		for( uint32_t i = 0; i < count; i++ )	{
@@ -125,18 +126,22 @@ struct SortingBucket{
 	void Flush(){
 		if( !disk || disk_buffer->IsEmpty() ) return;
 
+		// If more than 4 ( it should be number of threads ) buffers are waiting to write than wait to finish;
+		if( disk_write_position + BUF_SIZE*4 < entry_size_*entries_count )
+			WaitLastDiskWrite();
+
 		int64_t size_to_write = disk_buffer->Size();
-		// Wait for previous disk write operation.
 		disk_output_thread.reset( new std::thread( [this, size_to_write]( uint8_t* buffer, std::thread * prevThread ){
-																if( prevThread ){
-																	prevThread->join();
-																	delete prevThread;
-																}
-																disk->Write( disk_write_position, buffer, size_to_write );
-																disk->Flush();
-																delete[] buffer;
-																disk_write_position += size_to_write;
-															}, disk_buffer->ReleaseBuffer(), disk_output_thread.release() )
+								// Wait for previous disk write operation.
+								if( prevThread ){
+									prevThread->join();
+									delete prevThread;
+								}
+								disk->Write( disk_write_position, buffer, size_to_write );
+								disk->Flush();
+								delete[] buffer;
+								disk_write_position += size_to_write;
+							}, disk_buffer->ReleaseBuffer(), disk_output_thread.release() )
 					);
 	}
 
@@ -319,7 +324,7 @@ struct SortingBucket{
 
 private:
 
-
+//	const uint32_t log_num_buckets_;
 	std::unique_ptr<FileDisk> disk;
 	const uint8_t bucket_bits_count_;
 	std::unique_ptr<std::thread> disk_output_thread;
@@ -354,6 +359,62 @@ private:
 	}
 
 
+//	uint32_t EvaluateCompactSize( const uint8_t * buffer, const uint32_t &num_entries, const uint8_t &start_byte, const uint8_t &remove_bytes ){
+//		uint8_t buf[remove_bytes*num_entries];
+//		for( uint32_t i = 0; i < num_entries; i++ )
+//			memcpy( buf + i*remove_bytes, buffer + i * entry_size_, remove_bytes );
+//		QuickSort::Sort( buf, remove_bytes, num_entries, 0 );
+
+//		uint32_t size = entry_size_ + 2;
+//		for( uint32_t i = 1; i < num_entries; i++ ){
+//			if( memcmp(buf + (i-1)*remove_bytes, buf + i*remove_bytes, remove_bytes ) == 0 )
+//				size += entry_size_ - remove_bytes;
+//			else
+//				size += entry_size_ + 2;
+//		}
+
+//		return size;
+//	}
+
+//	uint32_t CompactBuffer( uint8_t * buffer, uint32_t buf_size ){
+//		uint32_t res = 0;
+//		auto res_buf = std::make_unique<uint8_t[]>(buf_size);
+//		uint64_t new_entry_size = entry_size_;
+//		// Stage I: remove bucket number if possible by bytes alignings
+//		if( log_num_buckets_ >= 8 ){
+//			uint32_t start_bit = bits_begin_ - log_num_buckets_;
+//			uint64_t bytes_before = start_bit/8;
+//			new_entry_size--;
+//			if( (start_bit&7)==0 ){
+//				for( uint32_t i = 0; i * entry_size_ < buf_size; i++ ){
+//					memcpy( res_buf.get() + i*new_entry_size, buffer + i * entry_size_, bytes_before );
+//					memcpy( res_buf.get() + i*new_entry_size + bytes_before, buffer + i*entry_size_ + 1 + bytes_before, entry_size_ - bytes_before - 1 );
+//				}
+//			}
+//		}
+////		uint32_t start_byte = start_bit / 8 + ((start_bit%8)?1:0);
+////		uint32_t can_remove_bytes = (log_num_buckets_ +  bucket_bits_count_ - (start_byte*8-start_bit))/8;
+////		if( can_remove_bytes == 0 ) return buf_size + 1; // cannot compact
+////		uint32_t num_entries = buf_size / entry_size_;
+
+////		// evaluate statistics size
+////		uint8_t num_statistics_bits = (start_byte+can_remove_bytes)*8 - bits_begin_;
+////		uint64_t statistics_mask = (((uint64_t)1)<<num_statistics_bits)-1;
+////		uint32_t one_byte[256];
+////		memset( one_byte, 0, 1024 );
+////		for( uint32_t i = 0; i < buf_size/entry_size_; i++ )
+////			one_byte[buffer[i*entry_size_ + start_byte]]++;
+////		// compact the buffer
+
+//		res = buf_size + buf_size/entry_size_;
+//		//QuickSort::Sort( buffer, entry_size_, buf_size/entry_size_, bits_begin_ );
+//		for( uint32_t i = 1; i < buf_size/entry_size_; i++ ){
+//			for( uint32_t j = 0; j < 8; j++ )
+//				if( ( buffer[i*entry_size_ + j] ^ buffer[(i-1)*entry_size_ + j] ) == 0 )
+//					res--;
+//		}
+//		return res;
+//	}
 };
 
 #endif // SRC_CPP_SORTING_BUCKET_HPP_
