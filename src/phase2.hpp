@@ -52,7 +52,7 @@ inline void ScanTable( FileDisk* const disk, int table_index, const int64_t &tab
 	// current table) i.e. the index to the current entry. This is not used
 	// for table 7
 
-	int64_t read_cursor = 0, total_marked = 0;
+	int64_t read_cursor = 0;
 	auto max_threads = std::max((uint32_t)1, num_threads);
 	auto threads = std::make_unique<std::thread[]>( max_threads );
 	std::mutex read_mutex, union_mutex;
@@ -60,20 +60,18 @@ inline void ScanTable( FileDisk* const disk, int table_index, const int64_t &tab
 	const int64_t read_bufsize = (BUF_SIZE/entry_size)*entry_size; // allign size to entry length
 	// Run the threads
 	for( uint32_t i = 0; i < max_threads; i++ ){
-		threads[i] = std::thread( [table_index, table_size, entry_size, pos_offset_size, k, read_bufsize, &read_mutex, &union_mutex, &total_marked]
+		threads[i] = std::thread( [table_index, table_size, entry_size, pos_offset_size, k, read_bufsize, &read_mutex, &union_mutex]
 															(FileDisk* disk, int64_t *read_cursor, const bitfield * current_bitfield, bitfield *next_bitfield){
 			auto buffer = std::make_unique<uint8_t[]>(read_bufsize);
 			bitfieldReader cur_bitfield( *current_bitfield );
 			while( true ){
-				int64_t buf_size = 0, buf_start = 0, thread_marked = 0;
+				int64_t buf_size = 0, buf_start = 0;
 				{	// Read next buffer
 					const std::lock_guard<std::mutex> lk(read_mutex);
 					buf_start = *read_cursor;
 					buf_size = std::min( read_bufsize, (table_size*(int64_t)entry_size) - *read_cursor );
-					if( buf_size == 0 ){
-						total_marked += thread_marked;
-						return;// nothing to read -> exit
-					}
+					if( buf_size == 0 ) return;// nothing to read -> exit
+
 					disk->Read( *read_cursor, buffer.get(), buf_size );
 					*read_cursor += buf_size;
 					cur_bitfield.setLimits( buf_start/entry_size, buf_size/entry_size );
@@ -111,7 +109,6 @@ inline void ScanTable( FileDisk* const disk, int table_index, const int64_t &tab
 					const std::lock_guard<std::mutex> lk(union_mutex);
 					next_bitfield->set( processed.get(), processed_count );
 				}
-				thread_marked += processed_count;
 			}
 		}, disk, &read_cursor, &current_bitfield, &next_bitfield );
 	}
@@ -119,11 +116,6 @@ inline void ScanTable( FileDisk* const disk, int table_index, const int64_t &tab
 	// Wait for job done
 	for( uint32_t i = 0; i < max_threads; i++ )
 		threads[i].join();
-
-	if( total_marked != next_bitfield.count( 0, next_bitfield.size() ) )
-		std::cout << "ERROR: problem with bitfield filling marked: " << total_marked << ", count: " << next_bitfield.count( 0, next_bitfield.size() ) << std::endl;
-
-	scan_timer.PrintElapsed( "marked: " + std::to_string(total_marked) + "time =");
 }
 
 inline void SortTable7Thread( const uint8_t *buffer, const uint64_t buf_size,
@@ -164,9 +156,9 @@ inline void SortTable7Thread( const uint8_t *buffer, const uint64_t buf_size,
 }
 
 
-inline void SortTable7( FileDisk* const disk, bitfield_index const &index,
-												const int64_t &table_size, int16_t const &entry_size,
-												uint32_t num_threads,
+inline void SortTable7( FileDisk* const disk, FileDisk* const result_disk,
+												bitfield_index const &index, const int64_t &table_size,
+												int16_t const &entry_size, uint32_t num_threads,
 												uint8_t const pos_offset_size, uint8_t const k){
 
 	num_threads = std::max( (uint32_t)1, num_threads );
@@ -197,10 +189,10 @@ inline void SortTable7( FileDisk* const disk, bitfield_index const &index,
 			for( uint32_t t = 0; t < num_threads-1; t++ )
 				threads[t].join();
 
-		disk->Write( reader.GetBufferStartPosition(), result.get(), buf_size );
+		result_disk->Write( reader.GetBufferStartPosition(), result.get(), buf_size );
 		file_size += buf_size;
 	}
-	disk->Truncate( file_size );
+	result_disk->Truncate( file_size ); // do not think this is necessary
 	std::cout << " entry size: " << entry_size << " file_size=" << file_size << std::endl;
 }
 
@@ -301,6 +293,8 @@ Phase2Results RunPhase2(
     // Only table 2-6 are passed on as SortManagers, to phase3
     output_files.resize(7 - 2);
 
+		FileDisk *table7_rewrited = new FileDisk( fs::path(filename + ".table7.p2.tmp") );
+
     // note that we don't iterate over table_index=1. That table is special
     // since it contains different data. We'll do an extra scan of table 1 at
     // the end, just to compact it.
@@ -347,9 +341,12 @@ Phase2Results RunPhase2(
 				// the positions and offsets based on the next_bitfield.
 				bitfield_index const index(*next_bitfield.get());
 
-				if( table_index == 7 )
-					SortTable7( &tmp_1_disks[table_index], index, table_size, entry_size,
-											num_threads, pos_offset_size, k );
+				if( table_index == 7 ){
+					SortTable7( &tmp_1_disks[table_index], table7_rewrited, index, table_size,
+											entry_size, num_threads, pos_offset_size, k );
+					// we do not need any more table 7 file from phase 1
+					tmp_1_disks[table_index].Remove();
+				}
 				else{
 					auto sort_manager = std::make_unique<SortManager>(
 							table_index == 2 ? memory_size : memory_size / 2,
@@ -443,7 +440,6 @@ Phase2Results RunPhase2(
     // current_bitfield. Instead of compacting it right now, defer it and read
     // from it as-if it was compacted. This saves one read and one write pass
 		new_table_sizes[table_index] = current_bitfield->count(0, table_size);
-    BufferedDisk disk(&tmp_1_disks[table_index], table_size * entry_size);
 
     std::cout << "table " << table_index << " new size: " << new_table_sizes[table_index] << std::endl;
 
@@ -451,9 +447,10 @@ Phase2Results RunPhase2(
 		//current_bitfield->flush_to_disk( tmp_1_disks[table_index].GetFileName() + ".bitfield.tmp" );
 
 		// TODO some more check, it can be memory leaks with current_bitfield
+		BufferedDisk disk_table1(&tmp_1_disks[1], table_size * entry_size);
 		return {
-				FilteredDisk(std::move(disk), current_bitfield.release(), entry_size)
-        , BufferedDisk(&tmp_1_disks[7], new_table_sizes[7] * new_entry_size)
+				FilteredDisk(std::move(disk_table1), current_bitfield.release(), entry_size)
+				, BufferedDisk(table7_rewrited, new_table_sizes[7] * new_entry_size) // I think it should be not new entry size but old one.
         , std::move(output_files)
         , std::move(new_table_sizes)
     };

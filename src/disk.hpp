@@ -159,6 +159,7 @@ struct FileDisk {
     void Close()
     {
         if (f_ == nullptr) return;
+				UnsetCouldBeClosed();
         ::fclose(f_);
         f_ = nullptr;
         readPos = 0;
