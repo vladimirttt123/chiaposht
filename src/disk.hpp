@@ -211,12 +211,14 @@ struct FileDisk {
             if (amtread != length) {
                 std::cout << "Only read " << amtread << " of " << length << " bytes at offset "
                           << begin << " from " << filename_ << " with length " << writeMax
-                          << ". Error " << ferror(f_) << ". Retrying in five minutes." << std::endl;
+													<< ". Error " << ferror(f_) << ": " << ::strerror(ferror(f_))
+													<< ". Retrying in five minutes." << std::endl;
                 // Close, Reopen, and re-seek the file to recover in case the filesystem
                 // has been remounted.
                 Close();
+								CloseCouldBeClosed();
                 bReading = false;
-                std::this_thread::sleep_for(5min);
+								std::this_thread::sleep_for(5min);
                 Open(retryOpenFlag);
             }
         } while (amtread != length);
