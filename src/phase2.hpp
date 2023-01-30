@@ -116,6 +116,8 @@ inline void ScanTable( FileDisk* const disk, int table_index, const int64_t &tab
 	// Wait for job done
 	for( uint32_t i = 0; i < max_threads; i++ )
 		threads[i].join();
+
+	scan_timer.PrintElapsed( "time =" );
 }
 
 inline void SortTable7Thread( const uint8_t *buffer, const uint64_t buf_size,
