@@ -145,7 +145,8 @@ namespace UniformSort {
         while ((1ULL << bucket_length) < 2 * num_entries) bucket_length++;
         memset(memory, 0, memory_len);
 
-				uint64_t max_threads = num_threads, thread_mask = 0, thread_mask_shift = 0;
+				uint32_t max_threads = num_threads;
+				uint64_t thread_mask = 0, thread_mask_shift = 0;
 				if( max_threads <= 1 ){
 					max_threads = 1;
 				}else {
