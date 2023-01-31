@@ -246,6 +246,69 @@ inline int64_t SortRegularTableThread( const uint8_t *buffer, const uint64_t buf
 
 	return write_counter;
 }
+
+
+inline void SortRegularTableThreadNew( FileDisk * disk, const uint64_t &table_size,
+																					const int16_t &entry_size, const int16_t &new_entry_size,
+																					uint64_t *read_position, uint64_t *global_write_counter,
+																					bitfield *current_bitfield, const bitfield_index &index,
+																					SortManager * sort_manager,std::mutex *sync_mutex,
+																					const uint8_t &pos_offset_size, const uint8_t &k )
+{
+	uint8_t const write_counter_shift = 128 - k;
+	uint8_t const pos_offset_shift = write_counter_shift - pos_offset_size;
+
+	SortManager::ThreadWriter result = SortManager::ThreadWriter( *sort_manager );
+	uint64_t buf_size = (BUF_SIZE/entry_size)*entry_size;
+	auto buffer = std::make_unique<uint8_t[]>(buf_size);
+	bitfieldReader cur_bitfield = bitfieldReader( *current_bitfield );
+	uint64_t write_counter = 0;
+
+	while( true ){
+		{	// Read next buffer
+			const std::lock_guard<std::mutex> lk(*sync_mutex);
+			buf_size = std::min( buf_size, (table_size*(uint64_t)entry_size) - *read_position );
+			if( buf_size == 0 ) return;// nothing to read -> exit
+
+			disk->Read( *read_position, buffer.get(), buf_size );
+			cur_bitfield.setLimits( *read_position/entry_size, buf_size/entry_size );
+			*read_position += buf_size;
+			write_counter = *global_write_counter;
+			*global_write_counter += cur_bitfield.count( 0, buf_size/entry_size );
+		}
+
+		for( uint64_t buf_ptr = 0; buf_ptr < buf_size; buf_ptr += entry_size ){
+
+			// skipping
+			if( !cur_bitfield.get( buf_ptr/entry_size ) ) continue;
+
+			uint8_t const* entry = buffer.get() + buf_ptr;
+
+			uint64_t entry_pos_offset = Util::SliceInt64FromBytes( entry, 0, pos_offset_size );
+			uint64_t entry_pos = entry_pos_offset >> kOffsetSize;
+			uint64_t entry_offset = entry_pos_offset & ((1U << kOffsetSize) - 1);
+
+			// assemble the new entry and write it to the sort manager
+
+			// map the pos and offset to the new, compacted, positions and offsets
+			std::tie(entry_pos, entry_offset) = index.lookup(entry_pos, entry_offset);
+			entry_pos_offset = (entry_pos << kOffsetSize) | entry_offset;
+
+			// The new entry is slightly different. Metadata is dropped, to
+			// save space, and the counter of the entry is written (sort_key). We
+			// use this instead of (y + pos + offset) since its smaller.
+			uint8_t bytes[16];
+			uint128_t new_entry = (uint128_t)write_counter << write_counter_shift;
+			new_entry |= (uint128_t)entry_pos_offset << pos_offset_shift;
+			Util::IntTo16Bytes(bytes, new_entry);
+
+			result.Add( bytes );
+
+			++write_counter;
+		}
+	}
+}
+
 // Backpropagate takes in as input, a file on which forward propagation has been done.
 // The purpose of backpropagate is to eliminate any dead entries that don't contribute
 // to final values in f7, to minimize disk usage. A sort on disk is applied to each table,
@@ -365,49 +428,63 @@ Phase2Results RunPhase2(
 							table_index,
 							num_threads );
 
-					const uint64_t buf_size = num_threads*(BUF_SIZE/entry_size)*entry_size;
-					int64_t write_counter = 0;
-					BufferedReader reader( &tmp_1_disks[table_index], 0, buf_size, table_size*entry_size );
+					uint64_t read_position = 0, write_counter = 0;
+					std::mutex sort_mutext;
 					auto threads = std::make_unique<std::thread[]>( num_threads - 1 );
-					std::thread write_thread;
-					bitfieldReader cur_bitfield = bitfieldReader( *current_bitfield );
 
-					{ // Scope for ThreadWriter
-						auto sort_writers = std::make_unique<std::unique_ptr<SortManager::ThreadWriter>[]>( num_threads );
-						for( uint64_t t = 0; t < num_threads; t++ )
-							sort_writers[t].reset( new SortManager::ThreadWriter(*sort_manager.get()) );
+					for( uint64_t t = 0; t < num_threads - 1; t++ )
+						threads[t] = std::thread(	SortRegularTableThreadNew, &tmp_1_disks[table_index], table_size, entry_size, new_entry_size,
+																			 &read_position, &write_counter, current_bitfield.get(),
+																			 index, sort_manager.get(), &sort_mutext, pos_offset_size, k );
 
-						while( reader.MoveNextBuffer() > 0 ){
+					SortRegularTableThreadNew( &tmp_1_disks[table_index], table_size, entry_size, new_entry_size,
+																		 &read_position, &write_counter, current_bitfield.get(),
+																		 index, sort_manager.get(), &sort_mutext, pos_offset_size, k );
 
-							cur_bitfield.setLimits( reader.GetBufferStartPosition()/entry_size, reader.BufferSize()/entry_size );
+					for( uint64_t t = 0; t < num_threads - 1; t++ )
+						threads[t].join();
 
-							// Run threads
-							for( uint64_t t = 0; t < num_threads - 1; t++ )
-								threads[t] = std::thread(SortRegularTableThread, reader.GetBuffer(), reader.BufferSize(), entry_size,
-																				 new_entry_size, write_counter, &cur_bitfield, index,
-																				 log_num_buckets, t, num_threads, sort_writers[t].get(),
-																				 reader.isAtEnd(), pos_offset_size, k );
+//					const uint64_t buf_size = num_threads*(BUF_SIZE/entry_size)*entry_size;
+//					int64_t write_counter = 0;
+//					BufferedReader reader( &tmp_1_disks[table_index], 0, buf_size, table_size*entry_size );
+//					std::thread write_thread;
+//					bitfieldReader cur_bitfield = bitfieldReader( *current_bitfield );
 
-							auto new_write_counter = SortRegularTableThread( reader.GetBuffer(), reader.BufferSize(), entry_size,
-																															 new_entry_size, write_counter, &cur_bitfield, index,
-																															 log_num_buckets, num_threads-1, num_threads,
-																															 sort_writers[num_threads-1].get(),
-																															 reader.isAtEnd(),
-																															 pos_offset_size, k );
+//					{ // Scope for ThreadWriter
+//						auto sort_writers = std::make_unique<std::unique_ptr<SortManager::ThreadWriter>[]>( num_threads );
+//						for( uint64_t t = 0; t < num_threads; t++ )
+//							sort_writers[t].reset( new SortManager::ThreadWriter(*sort_manager.get()) );
 
-							for( uint64_t t = 0; t < num_threads - 1; t++ )
-								threads[t].join();
+//						while( reader.MoveNextBuffer() > 0 ){
 
-							write_counter = new_write_counter;
-							//assert( write_counter == (int64_t)sort_manager->Count() );
-						}
-					} // end of Scope for ThreadWriter
+//							cur_bitfield.setLimits( reader.GetBufferStartPosition()/entry_size, reader.BufferSize()/entry_size );
+
+//							// Run threads
+//							for( uint64_t t = 0; t < num_threads - 1; t++ )
+//								threads[t] = std::thread(SortRegularTableThread, reader.GetBuffer(), reader.BufferSize(), entry_size,
+//																				 new_entry_size, write_counter, &cur_bitfield, index,
+//																				 log_num_buckets, t, num_threads, sort_writers[t].get(),
+//																				 reader.isAtEnd(), pos_offset_size, k );
+
+//							auto new_write_counter = SortRegularTableThread( reader.GetBuffer(), reader.BufferSize(), entry_size,
+//																															 new_entry_size, write_counter, &cur_bitfield, index,
+//																															 log_num_buckets, num_threads-1, num_threads,
+//																															 sort_writers[num_threads-1].get(),
+//																															 reader.isAtEnd(),
+//																															 pos_offset_size, k );
+
+//							for( uint64_t t = 0; t < num_threads - 1; t++ )
+//								threads[t].join();
+
+//							write_counter = new_write_counter;
+//							//assert( write_counter == (int64_t)sort_manager->Count() );
+//						}
+//					} // end of Scope for ThreadWriter
 
 					std::cout << " written: " << write_counter << " entries with size " << (uint32_t)new_entry_size;
-					if( write_counter != (int64_t)sort_manager->Count() )
-						std::cout << "ERROR: Incorrect writing counter written: " << write_counter << " in sorting: " << sort_manager->Count() << std::endl;
 
 					// clear disk caches and memory
+					// TODO real flush by flag.
 					sort_manager->FlushCache();  // close all files
 					//sort_manager->FreeMemory(); // should do nothing at this point
 

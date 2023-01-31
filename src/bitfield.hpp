@@ -163,6 +163,12 @@ struct bitfieldReader
 		}
 	}
 
+	// Evaluates correct in limits
+	int64_t count(int64_t const start_bit, int64_t const end_bit) const 	{
+		return src_.is_readonly()?reader->count(start_bit+start, end_bit + start)
+														:src_.count( start_bit + start, end_bit + start );
+	}
+
 	inline bool get( int64_t const & bit ) const {
 		return src_.is_readonly()?reader->get(bit+start):src_.get( bit + start );
 	}
