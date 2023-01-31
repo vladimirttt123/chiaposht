@@ -18,7 +18,10 @@ Some threads also added to phase 2 of calculations.
 For me overall process of plot creation improved in time by about 20-40%.
 It is still not madmax, but madmax cannot create k35+.
 
-WARNING!!! Still too many bugs. DO NOT USE.
+Creating with 256+ buckets can save disk writtings and temp space. 
+By my measure k32 with 256 buckets use at most 220GiB on temp disk. 
+Than with 256 GiB RAM it is possible to plot in RAM only with ramdisk. 
+It still wouldn't be fast but can save writtigns.
 
 Chia's proof of space is written in C++. Includes a plotter, prover, and
 verifier. It exclusively runs on 64 bit architectures. Read the
