@@ -164,6 +164,11 @@ struct FileDisk {
         f_ = nullptr;
         readPos = 0;
         writePos = 0;
+				{
+					std::lock_guard<std::mutex> lk(mutFileManager);
+					total_bytes_written += bytes_written;
+				}
+				bytes_written = 0;
     }
 
 		void Remove( bool noWarn = false ){
@@ -271,6 +276,7 @@ struct FileDisk {
                 Open(writeFlag | retryOpenFlag);
             }
         } while (amtwritten != length);
+			bytes_written += amtwritten;
 			SetCouldBeClosed();
     }
 
@@ -289,8 +295,6 @@ struct FileDisk {
 			// some debug info
 			if( new_size != 0 && new_size != writeMax )
 				std::cout << "Trancating file " << filename_ << " to " << new_size << ", writeMax = " << writeMax << std::endl;
-
-
     }
 
 		void Flush() {
@@ -299,11 +303,13 @@ struct FileDisk {
 					std::cout << "Fail: Cannot flush file " << filename_ << std::endl;
 		}
 
+		static uint64_t GetTotalBytesWritten() { return total_bytes_written; }
 private:
 
     uint64_t readPos = 0;
     uint64_t writePos = 0;
     uint64_t writeMax = 0;
+		uint64_t bytes_written = 0;
     bool bReading = true;
 
     fs::path filename_;
@@ -322,6 +328,7 @@ private:
 
 		static std::vector<FileDisk*> could_be_closed;
 		static std::mutex mutFileManager;
+		static uint64_t total_bytes_written;
 
 		inline void SetCouldBeClosed(){
 			std::lock_guard<std::mutex> lk(mutFileManager);
@@ -348,6 +355,7 @@ private:
 
 std::vector<FileDisk*> FileDisk::could_be_closed = std::vector<FileDisk*>();
 std::mutex FileDisk::mutFileManager = std::mutex();
+uint64_t FileDisk::total_bytes_written = 0;
 
 struct BufferedDisk : Disk
 {
