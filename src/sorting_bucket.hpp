@@ -88,7 +88,7 @@ struct SortingBucket{
 	uint64_t sort_time = 0;
 
 	// Adds Entry to bucket
-	inline void AddEntry( const uint8_t * &entry, const uint32_t &statistics_bits ){
+	inline void AddEntry( const uint8_t * entry, const uint32_t &statistics_bits ){
 		assert(disk); // Check not closed
 		assert( statistics_bits < ((uint32_t)1<<bucket_bits_count_) );
 		assert( Util::ExtractNum( entry, entry_size_, bits_begin_, bucket_bits_count_ ) == statistics_bits );
@@ -161,7 +161,7 @@ struct SortingBucket{
 	void Remove(){
 		if( !disk ) return; // already removed
 		WaitLastDiskWrite();
-		disk->Remove();
+		disk->Remove( disk_write_position == 0 );
 		disk.reset();
 		statistics.reset();
 		disk_buffer.reset();
@@ -206,6 +206,7 @@ struct SortingBucket{
 
 			while( read_pos < read_size ){
 				auto buf_size = ReadCompactedBuffer( disk, disk_buffer->buffer.get(), disk_buffer->allocated_length, read_pos, read_size );
+				GrowBuffer( disk_buffer->buffer.get(), buf_size );
 
 				FillBuckets( memory, disk_buffer->buffer.get(), buf_size, bucket_positions.get(), entry_size_ );
 			}
@@ -238,6 +239,8 @@ struct SortingBucket{
 						buf_size = ReadCompactedBuffer( disk, buf.get(), disk_buffer->allocated_length, read_pos, read_size );
 						if( buf_size == 0 ) return;
 					}
+					GrowBuffer( buf.get(), buf_size );
+
 					// Extract all bucket_bits
 					uint32_t bucket_bits[buf_size/entry_size_];
 					for( uint64_t buf_ptr = 0; buf_ptr < buf_size; buf_ptr += entry_size_ )
@@ -320,6 +323,8 @@ struct SortingBucket{
 #endif
 	}
 
+	std::unique_ptr<std::mutex> addMutex = std::make_unique<std::mutex>();
+
 private:
 	std::unique_ptr<FileDisk> disk;
 	const uint32_t bucket_no_;
@@ -334,7 +339,6 @@ private:
 	std::unique_ptr<ABuffer> disk_buffer;
 	uint64_t entries_count = 0;
 	std::unique_ptr<uint8_t[]> memory_;
-	std::unique_ptr<std::mutex> addMutex = std::make_unique<std::mutex>();
 
 
 	inline void WaitLastDiskWrite(){
@@ -349,6 +353,10 @@ private:
 		for( uint32_t buf_ptr = 0; buf_ptr < buf_size; buf_ptr += entry_size_ ){
 			// Define bucket to put into
 			uint64_t bucket_bits = Util::ExtractNum64( disk_buffer + buf_ptr, bits_begin_, bucket_bits_count_ );
+
+			// Check overflow
+			assert( bucket_positions[bucket_bits] < Size() );
+
 			// Put next entry to its bucket
 			memcpy( memory + bucket_positions[bucket_bits], disk_buffer + buf_ptr, entry_size_ );
 			// move pointer inside bucket to next entry position
@@ -407,12 +415,18 @@ private:
 		f->Read( read_pos/entry_size_*(entry_size_-1), buffer, compacted_size );
 		read_pos += to_read;
 
-		uint32_t start_bit = bits_begin_ - log_num_buckets_;
+		return to_read;
+	}
+
+	inline void GrowBuffer( uint8_t* buffer, const uint32_t &buf_size ){
+		if( log_num_buckets_ < 8 ) return; // buffer is not compacted
+		const int64_t compacted_size = buf_size/entry_size_ *(entry_size_-1);
+		const uint32_t start_bit = bits_begin_ - log_num_buckets_;
 		uint64_t bytes_before = start_bit/8;
 		uint8_t excluded = bucket_no_ & 255;
 		if( (start_bit&7)==0 ){
 			// if remove alligned by byte
-			for( int64_t i = to_read-1, j = compacted_size-1; i >= 0 ; i-- ){
+			for( int64_t i = buf_size-1, j = compacted_size-1; i >= 0 ; i-- ){
 				assert( j >= -1 );
 				assert( i > 0 || j == -1 ); // lastx
 				if( (i%entry_size_) == (int64_t)bytes_before  )
@@ -422,7 +436,7 @@ private:
 		} else {
 			uint8_t mask = (((uint8_t)0xff)>>(start_bit&7));
 			uint8_t excluded_lo = (excluded>>(start_bit&7)), excluded_hi = excluded<<(8-(start_bit&7));
-			for( int64_t i = to_read-1, j = compacted_size-1; i >= (int64_t)bytes_before ; i-- ){
+			for( int64_t i = buf_size-1, j = compacted_size-1; i >= (int64_t)bytes_before ; i-- ){
 				switch( (i%entry_size_) - bytes_before ){
 				case 0: buffer[i] = (buffer[j--]&(~mask)) | excluded_lo; break;
 				case 1: buffer[i] = (buffer[j]&mask) | excluded_hi; break;
@@ -431,10 +445,10 @@ private:
 			}
 		}
 #ifndef NDEBUG
-		for( uint32_t i = 0; i < to_read/entry_size_; i++ )
+		for( uint32_t i = 0; i < buf_size/entry_size_; i++ )
 			assert( Util::ExtractNum( buffer + i*entry_size_, entry_size_, bits_begin_-log_num_buckets_, log_num_buckets_ ) == bucket_no_ );
 #endif
-		return to_read;
+
 	}
 };
 
