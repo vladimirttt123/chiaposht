@@ -58,7 +58,7 @@ TEST_CASE( "Extract" )
 			CHECK(res2 == res);
 		}
 
-	uint64_t iteration = 100000;
+	uint64_t iteration = 10000;
 	Timer time;
 	for( uint64_t i = 0; i < iteration; i++ ){
 		for( uint32_t start = 0; start < 40; start ++ )
@@ -918,7 +918,7 @@ TEST_CASE("Sort on disk")
 				const uint32_t memory_len = 550000;
 				for( int threads_num = 0; threads_num < 8; threads_num++ ){
 					vector<Bits> input;
-					SortManager manager(memory_len, 16, 4, size, ".", "test-files", 0, 1, std::log2(iters), 1, threads_num);
+					SortManager manager(memory_len, 16, 4, size, ".", "test-files", 0, 1, std::log2(iters), 1, 1, threads_num);
 //					int total_written_1 = 0;
 					for (uint32_t i = 0; i < iters; i++) {
 							vector<unsigned char> hash_input = intToBytes(i, 4);
@@ -996,6 +996,7 @@ TEST_CASE("Sort on disk")
         }
     }
 
+
 		SECTION("Unifomor Sort in Memory")
     {
         uint32_t iters = 100000;
@@ -1071,6 +1072,72 @@ TEST_CASE("Sort on disk")
 						REQUIRE(memcmp(buf, memory6.get() + i * size, size) == 0);
 				}
 		}
+}
+
+TEST_CASE( "SortThreads" ){
+	const uint32_t num_buckets = 256;
+	const uint64_t iters = 50000000;
+	const uint32_t entry_size = 10;
+	const uint32_t memory_len = 50*1024*1024;
+
+	auto data = std::make_unique<uint8_t[]>(iters);
+	for( uint64_t i = 0; i < iters; i++ )
+		data[i] = rand()&255;
+
+	auto fill_thread = [&data](SortManager * manager, bool method, uint8_t thread_no, uint64_t iters ){
+		SortManager::ThreadWriter writer( *manager );
+		for( uint64_t i = 0; i < iters; i++ ){
+			uint8_t buf[entry_size];
+			buf[0] = data[i];
+			((uint64_t*)(buf+1))[0] = i;
+			buf[9] = thread_no;
+
+			if( method ) writer.Add( buf );
+			else manager->AddToCacheTS( buf );
+		}
+	};
+
+	uint32_t thread_nums[] = {1, 2, 3, 8, 16};
+	for( uint32_t t = 0; t < 5; t++ ){
+		uint32_t threads_num = thread_nums[t];
+		std::cout << "Sort in " << threads_num << " threads " << std::endl;
+
+
+		SortManager manager1( memory_len, num_buckets, std::log2(num_buckets), entry_size, ".", "test-files1", 0, 1, std::log2(iters), threads_num, 1, threads_num );
+		SortManager manager2( memory_len, num_buckets, std::log2(num_buckets), entry_size, ".", "test-files2", 0, 1, std::log2(iters), threads_num, 2, threads_num );
+		auto threads = std::make_unique<std::thread[]>(threads_num);
+
+		Timer fill_timer1;
+		for( uint32_t i = 0; i < threads_num; i++ )
+			threads[i] = std::thread( fill_thread, &manager1, true, (uint8_t)i, iters/threads_num );
+
+		for( uint32_t i = 0; i < threads_num; i++ )
+			threads[i].join();
+		fill_timer1.PrintElapsed( "fill time1:" );
+
+		Timer fill_timer2;
+		for( uint32_t i = 0; i < threads_num; i++ )
+			threads[i] = std::thread( fill_thread, &manager2, false, (uint8_t)i, iters/threads_num );
+
+		for( uint32_t i = 0; i < threads_num; i++ )
+			threads[i].join();
+		fill_timer2.PrintElapsed( "fill time2:" );
+
+		Timer sort_timer;
+		REQUIRE( manager1.Count() == manager2.Count() );
+		for( uint64_t i = 0; i < manager1.Count(); i ++ ){
+			auto mem1 = manager1.ReadEntry(i*entry_size);
+			auto mem2 = manager2.ReadEntry(i*entry_size);
+			if( memcmp( mem1, mem2, entry_size ) != 0 ){
+				std::cout << i << std::endl;
+			}
+
+			REQUIRE( memcmp( mem1, mem2, entry_size ) == 0 );
+		}
+		sort_timer.PrintElapsed( "sort time: ");
+		std::cout << std::endl;
+	}
+
 }
 
 TEST_CASE("bitfield-simple")

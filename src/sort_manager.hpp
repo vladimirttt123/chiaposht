@@ -26,23 +26,25 @@
 
 #include "./bits.hpp"
 #include "./calculate_bucket.hpp"
+#include "bitfield.hpp"
 #include "disk.hpp"
 #include "exceptions.hpp"
 #include "sorting_bucket.hpp"
 
+const uint32_t CacheBucketSize = 256;
+// Small bucket used in thread writings
 struct CacheBucket{
 	explicit CacheBucket( SortingBucket &cacheFor )
-		:statistics(new uint32_t[256])
-		, entries(new uint8_t[((uint32_t)cacheFor.EntrySize())<<8])
+		: statistics(new uint32_t[CacheBucketSize])
+		, entries(new uint8_t[((uint32_t)cacheFor.EntrySize())*CacheBucketSize])
 		, parent( cacheFor )
 	{	}
 
 	inline uint64_t Count() const { return (uint64_t)count; }
 	inline void Add( const uint8_t *entry, const uint32_t stats ){
+		if( count == CacheBucketSize ) Flush();
 		statistics[count] = stats;
 		memcpy( entries.get() + ((uint32_t)count)*(uint32_t)parent.EntrySize(), entry, parent.EntrySize() );
-		if( count == 255 )
-			parent.AddBulkTS( entries.get(), statistics.get(), 256 );
 		++count;
 	}
 
@@ -56,7 +58,7 @@ struct CacheBucket{
 private:
 	std::unique_ptr<uint32_t[]> statistics;
 	std::unique_ptr<uint8_t[]> entries;
-	uint8_t count = 0;
+	uint16_t count = 0;
 	SortingBucket &parent;
 };
 
@@ -126,6 +128,12 @@ public:
 				buckets_cache[bucket_index>>parent_.subbucket_bits]->Add( entry, bucket_index & parent_.stats_mask );
 			}
 
+			inline void Add( uint128_t entry ){
+				uint8_t bytes[16];
+				Util::IntTo16Bytes(bytes, entry);
+				Add( bytes );
+			}
+
 			inline void Flush(){
 				for( uint32_t i = 0; i < parent_.buckets_.size(); i++ )
 					buckets_cache[i]->Flush();
@@ -137,6 +145,7 @@ public:
 			std::unique_ptr<std::unique_ptr<CacheBucket>[]> buckets_cache;
 		};
 
+		inline uint16_t EntrySize() const { return entry_size_; }
 		inline uint64_t Count() const {
 			uint64_t res = 0;
 			for( auto &b : buckets_ )
@@ -175,12 +184,6 @@ public:
 		inline void AddAllToCache( const uint8_t *entries, const uint32_t &num_entries, const uint32_t &ext_enrty_size ){
 			for (uint32_t i = 0; i < num_entries; i++) {
 				AddToCache( entries + i * ext_enrty_size );
-			}
-		}
-
-		inline void AddAllToCacheTS( const uint8_t *entries, const uint32_t &num_entries, const uint32_t &ext_enrty_size ){
-			for (uint32_t i = 0; i < num_entries; i++) {
-				AddToCacheTS( entries + i * ext_enrty_size );
 			}
 		}
 
@@ -301,7 +304,7 @@ public:
 
         // Close and delete files in case we exit without doing the sort
 				for (auto& b : buckets_){
-					b.Remove();
+					b.Remove( );
 				}
     }
 
@@ -356,7 +359,7 @@ private:
 
 				std::cout << "\r\tk" << (uint32_t)k_ << " p" << (uint32_t)phase_ << " t" << (uint32_t)table_index_
 									<< " Bucket " << bucket_i << " Ram: " << std::fixed << std::setprecision(3)
-									<< have_ram << "GiB, size: " <<  qs_ram << "GiB" << std::flush;
+									<< have_ram << "GiB, size: " <<  qs_ram << "GiB, count: " << b.Count() << std::flush;
 
 				if( next_bucket_sorting_thread ){
 					next_bucket_sorting_thread->join();
@@ -365,7 +368,7 @@ private:
 				else
 					b.SortToMemory( num_threads );
 
-				std::cout << ", read time: " << b.read_time/1000.0 << "s, sort time: " << b.sort_time/1000.0 << "s" << std::flush;
+				std::cout << ", times: ( read:" << b.read_time/1000.0 << "s, total: " << b.sort_time/1000.0 << "s )" << std::flush;
 
         this->final_position_start = this->final_position_end;
 				this->final_position_end += b.Size();

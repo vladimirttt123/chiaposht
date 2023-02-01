@@ -553,16 +553,15 @@ void* F1thread( int const index, uint8_t const k, const uint8_t* id )
         // to increase CPU efficency.
         f1.CalculateBuckets(x, loopcount, f1_entries.get());
         for (uint32_t i = 0; i < loopcount; i++) {
-            uint128_t entry;
+						uint128_t entry;
 
-            entry = (uint128_t)f1_entries[i] << (128 - kExtraBits - k);
-            entry |= (uint128_t)x << (128 - kExtraBits - 2 * k);
-						uint8_t buf[16];
-						Util::IntTo16Bytes( buf, entry );
-						writer.Add( buf );
-            x++;
-        }
-    }
+						entry = (uint128_t)f1_entries[i] << (128 - kExtraBits - k);
+						entry |= (uint128_t)x << (128 - kExtraBits - 2 * k);
+
+						writer.Add( entry );
+						x++;
+				}
+		}
 
     return 0;
 }
