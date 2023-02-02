@@ -126,13 +126,36 @@ struct ParkWriter{
 	}
 
 	void write( uint128_t first_line_point,
-							const std::vector<uint8_t> &park_deltas,
-							const std::vector<uint64_t> &park_stubs ){
-		WriteParkToFile( disk, table_start, park_index, park_size_bytes, first_line_point, park_deltas, park_stubs, k, table_index, park_buffer.get(), park_buffer_size );
+							std::unique_ptr<std::vector<uint8_t>> &park_deltas,
+							std::unique_ptr<std::vector<uint64_t>> &park_stubs ){
+
+		final_entries_written += park_stubs->size() + 1;
+
+		std::thread *wr = new std::thread( [this, first_line_point]( std::thread * prev, uint64_t park_idx,
+																			 std::vector<uint8_t> *park_deltas, std::vector<uint64_t> *park_stubs){
+			if( prev != nullptr ){
+				prev->join();
+				delete prev;
+			}
+			WriteParkToFile( disk, table_start, park_idx, park_size_bytes, first_line_point, *park_deltas, *park_stubs, k, table_index, park_buffer.get(), park_buffer_size );
+			delete park_deltas;
+			delete park_stubs;
+		}, writing_thread.release(), park_index, park_deltas.release(), park_stubs.release() );
+		writing_thread.reset( wr );
 		park_index++;
-		final_entries_written += park_stubs.size() + 1;
+		park_deltas.reset( new std::vector<uint8_t>() );
+		park_stubs.reset( new std::vector<uint64_t>() );
 	}
 
+	void join() {
+		if(writing_thread) {
+			writing_thread->join();
+			writing_thread.reset();
+		}
+	}
+	~ParkWriter(){
+		if( writing_thread ) writing_thread->join();
+	}
 private:
 	FileDisk &disk;
 	const uint8_t k;
@@ -149,6 +172,8 @@ private:
 	uint64_t park_index = 0;
 	uint64_t final_entries_written = 0;
 	const uint64_t table_start;
+
+	std::unique_ptr<std::thread> writing_thread;
 };
 
 // Compresses the plot file tables into the final file. In order to do this, entries must be
@@ -452,8 +477,8 @@ Phase3Results RunPhase3(
 						table_index + 1,
 						num_threads );
 
-        std::vector<uint8_t> park_deltas;
-        std::vector<uint64_t> park_stubs;
+				auto park_deltas = std::make_unique<std::vector<uint8_t>>();
+				auto park_stubs = std::make_unique<std::vector<uint64_t>>();
         uint128_t checkpoint_line_point = 0;
         uint128_t last_line_point = 0;
 //        uint64_t park_index = 0;
@@ -498,8 +523,8 @@ Phase3Results RunPhase3(
 //                    park_index += 1;
 //                    final_entries_written += (park_stubs.size() + 1);
                 }
-                park_deltas.clear();
-                park_stubs.clear();
+//                park_deltas.clear();
+//                park_stubs.clear();
 
                 checkpoint_line_point = line_point;
             }
@@ -518,8 +543,8 @@ Phase3Results RunPhase3(
             assert(small_delta < 256);
 
             if ((index % kEntriesPerPark != 0)) {
-                park_deltas.push_back(small_delta);
-                park_stubs.push_back(stub);
+								park_deltas->push_back(small_delta);
+								park_stubs->push_back(stub);
             }
             last_line_point = line_point;
         }
@@ -528,7 +553,7 @@ Phase3Results RunPhase3(
 
         computation_pass_2_timer.PrintElapsed("\tSecond computation pass time:");
 
-        if (park_deltas.size() > 0) {
+				if (park_deltas->size() > 0) {
             // Since we don't have a perfect multiple of EPP entries, this writes the last ones
 						park_writer.write( checkpoint_line_point, park_deltas, park_stubs );
 //            WriteParkToFile(
