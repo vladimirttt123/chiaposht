@@ -106,6 +106,51 @@ void WriteParkToFile(
     final_disk.Write(writer, (uint8_t *)park_buffer, park_size_bytes);
 }
 
+struct ParkWriter{
+	ParkWriter( FileDisk &final_disk, uint8_t k, uint8_t table_index, uint64_t table_start )
+		: disk( final_disk ), k(k), table_index(table_index)
+		, park_buffer_size( EntrySizes::CalculateLinePointSize(k)
+											 + EntrySizes::CalculateStubsSize(k) + 2
+											 + EntrySizes::CalculateMaxDeltasSize(k, 1) )
+		, park_buffer(new uint8_t[park_buffer_size])
+		, park_size_bytes( EntrySizes::CalculateParkSize(k, table_index) )
+		, table_start( table_start )
+	{
+
+	}
+
+	inline uint64_t GetFinalEntriesWritten() const { return final_entries_written; }
+	inline uint32_t GetParkSizeBytes() const { return park_size_bytes; }
+	inline uint64_t GetNextTablePointer() const {
+		return table_start + (park_index + 1) * park_size_bytes;
+	}
+
+	void write( uint128_t first_line_point,
+							const std::vector<uint8_t> &park_deltas,
+							const std::vector<uint64_t> &park_stubs ){
+		WriteParkToFile( disk, table_start, park_index, park_size_bytes, first_line_point, park_deltas, park_stubs, k, table_index, park_buffer.get(), park_buffer_size );
+		park_index++;
+		final_entries_written += park_stubs.size() + 1;
+	}
+
+private:
+	FileDisk &disk;
+	const uint8_t k;
+	const uint8_t table_index;
+	const uint64_t park_buffer_size;
+	std::unique_ptr<uint8_t[]> park_buffer;
+
+	// The park size must be constant, for simplicity, but must be big enough to store EPP
+	// entries. entry deltas are encoded with variable length, and thus there is no
+	// guarantee that they won't override into the next park. It is only different (larger)
+	// for table 1
+	uint32_t park_size_bytes;
+
+	uint64_t park_index = 0;
+	uint64_t final_entries_written = 0;
+	const uint64_t table_start;
+};
+
 // Compresses the plot file tables into the final file. In order to do this, entries must be
 // reorganized from the (pos, offset) bucket sorting order, to a more free line_point sorting
 // order. In (pos, offset ordering), we store two pointers two the previous table, (x, y) which
@@ -151,10 +196,10 @@ Phase3Results RunPhase3(
 
     // These variables are used in the WriteParkToFile method. They are preallocatted here
     // to save time.
-    uint64_t const park_buffer_size = EntrySizes::CalculateLinePointSize(k)
-        + EntrySizes::CalculateStubsSize(k) + 2
-        + EntrySizes::CalculateMaxDeltasSize(k, 1);
-    std::unique_ptr<uint8_t[]> park_buffer(new uint8_t[park_buffer_size]);
+//    uint64_t const park_buffer_size = EntrySizes::CalculateLinePointSize(k)
+//        + EntrySizes::CalculateStubsSize(k) + 2
+//        + EntrySizes::CalculateMaxDeltasSize(k, 1);
+//    std::unique_ptr<uint8_t[]> park_buffer(new uint8_t[park_buffer_size]);
 
     // Iterates through all tables, starting at 1, with L and R pointers.
     // For each table, R entries are rewritten with line points. Then, the right table is
@@ -170,11 +215,13 @@ Phase3Results RunPhase3(
                   << std::endl;
         std::cout << "Progress update: " << progress_percent[table_index - 1] << std::endl;
 
+				ParkWriter park_writer = ParkWriter( tmp2_disk, k, table_index, final_table_begin_pointers[table_index] );
+
         // The park size must be constant, for simplicity, but must be big enough to store EPP
         // entries. entry deltas are encoded with variable length, and thus there is no
         // guarantee that they won't override into the next park. It is only different (larger)
         // for table 1
-        uint32_t park_size_bytes = EntrySizes::CalculateParkSize(k, table_index);
+//        uint32_t park_size_bytes = EntrySizes::CalculateParkSize(k, table_index);
 
         Disk& right_disk = res2.disk_for_table(table_index + 1);
         Disk& left_disk = res2.disk_for_table(table_index);
@@ -373,7 +420,7 @@ Phase3Results RunPhase3(
         right_reader_count = 0;
         uint64_t final_table_writer = final_table_begin_pointers[table_index];
 
-        final_entries_written = 0;
+//        final_entries_written = 0;
 
         if (table_index > 1) {
             // Make sure all files are removed
@@ -409,7 +456,7 @@ Phase3Results RunPhase3(
         std::vector<uint64_t> park_stubs;
         uint128_t checkpoint_line_point = 0;
         uint128_t last_line_point = 0;
-        uint64_t park_index = 0;
+//        uint64_t park_index = 0;
 
         // Now we will write on of the final tables, since we have a table sorted by line point.
         // The final table will simply store the deltas between each line_point, in fixed space
@@ -435,20 +482,21 @@ Phase3Results RunPhase3(
             // Every EPP entries, writes a park
             if (index % kEntriesPerPark == 0) {
                 if (index != 0) {
-                    WriteParkToFile(
-                        tmp2_disk,
-                        final_table_begin_pointers[table_index],
-                        park_index,
-                        park_size_bytes,
-                        checkpoint_line_point,
-                        park_deltas,
-                        park_stubs,
-                        k,
-                        table_index,
-                        park_buffer.get(),
-                        park_buffer_size);
-                    park_index += 1;
-                    final_entries_written += (park_stubs.size() + 1);
+									park_writer.write( checkpoint_line_point, park_deltas, park_stubs );
+//                    WriteParkToFile(
+//                        tmp2_disk,
+//                        final_table_begin_pointers[table_index],
+//                        park_index,
+//                        park_size_bytes,
+//                        checkpoint_line_point,
+//                        park_deltas,
+//                        park_stubs,
+//                        k,
+//                        table_index,
+//                        park_buffer.get(),
+//                        park_buffer_size);
+//                    park_index += 1;
+//                    final_entries_written += (park_stubs.size() + 1);
                 }
                 park_deltas.clear();
                 park_stubs.clear();
@@ -482,26 +530,28 @@ Phase3Results RunPhase3(
 
         if (park_deltas.size() > 0) {
             // Since we don't have a perfect multiple of EPP entries, this writes the last ones
-            WriteParkToFile(
-                tmp2_disk,
-                final_table_begin_pointers[table_index],
-                park_index,
-                park_size_bytes,
-                checkpoint_line_point,
-                park_deltas,
-                park_stubs,
-                k,
-                table_index,
-                park_buffer.get(),
-                park_buffer_size);
-            final_entries_written += (park_stubs.size() + 1);
+						park_writer.write( checkpoint_line_point, park_deltas, park_stubs );
+//            WriteParkToFile(
+//                tmp2_disk,
+//                final_table_begin_pointers[table_index],
+//                park_index,
+//                park_size_bytes,
+//                checkpoint_line_point,
+//                park_deltas,
+//                park_stubs,
+//                k,
+//                table_index,
+//                park_buffer.get(),
+//                park_buffer_size);
+//            final_entries_written += (park_stubs.size() + 1);
         }
 
         Encoding::ANSFree(kRValues[table_index - 1]);
+				final_entries_written = park_writer.GetFinalEntriesWritten();
         std::cout << "\tWrote " << final_entries_written << " entries" << std::endl;
 
-        final_table_begin_pointers[table_index + 1] =
-            final_table_begin_pointers[table_index] + (park_index + 1) * park_size_bytes;
+				final_table_begin_pointers[table_index + 1] = park_writer.GetNextTablePointer();
+//						final_table_begin_pointers[table_index] + (park_index + 1) * park_size_bytes;
 
         final_table_writer = header_size - 8 * (10 - table_index);
         Util::IntToEightBytes(table_pointer_bytes, final_table_begin_pointers[table_index + 1]);
@@ -515,8 +565,8 @@ Phase3Results RunPhase3(
         if (flags & SHOW_PROGRESS) { progress(3, table_index, 6); }
     }
 
-    L_sort_manager->FreeMemory();
-    park_buffer.reset();
+		L_sort_manager->FreeMemory();
+//   park_buffer.reset();
 
     // These results will be used to write table P7 and the checkpoint tables in phase 4.
     return Phase3Results{

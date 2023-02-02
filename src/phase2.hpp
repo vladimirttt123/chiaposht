@@ -102,7 +102,6 @@ inline void ScanTable( FileDisk* const disk, int table_index, const int64_t &tab
 					// mark the two matching entries as used (pos and pos+offset)
 					processed[processed_count++] = entry_pos;
 					processed[processed_count++] = entry_pos + entry_offset;
-
 				}
 
 				if( processed_count > 0 ){
