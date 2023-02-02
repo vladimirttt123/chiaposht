@@ -199,59 +199,10 @@ inline void SortTable7( FileDisk* const disk, FileDisk* const result_disk,
 }
 
 
-inline int64_t SortRegularTableThread( const uint8_t *buffer, const uint64_t buf_size,
-																			 int16_t const &entry_size, int16_t const &new_entry_size,
-																			 int64_t start_write_counter, const bitfieldReader *current_bitfield,
-																			 bitfield_index const index, uint32_t const log_num_buckets,
-																			 uint64_t thread_no, uint64_t num_threads,
-																			 SortManager::ThreadWriter * result, bool flash_writer,
-																			 uint8_t const pos_offset_size, uint8_t const k )
-{
-	uint8_t const write_counter_shift = 128 - k;
-	uint8_t const pos_offset_shift = write_counter_shift - pos_offset_size;
-
-	int64_t write_counter = start_write_counter;
-	for( uint64_t buf_ptr = 0; buf_ptr < buf_size; buf_ptr += entry_size ){
-
-		// skipping
-		if( !current_bitfield->get( buf_ptr/entry_size ) ) continue;
-		// check is it for current thread.
-		if( (write_counter%num_threads) == thread_no ){
-			uint8_t const* entry = buffer + buf_ptr;
-
-			uint64_t entry_pos_offset = Util::SliceInt64FromBytes( entry, 0, pos_offset_size );
-			uint64_t entry_pos = entry_pos_offset >> kOffsetSize;
-			uint64_t entry_offset = entry_pos_offset & ((1U << kOffsetSize) - 1);
-
-			// assemble the new entry and write it to the sort manager
-
-			// map the pos and offset to the new, compacted, positions and offsets
-			std::tie(entry_pos, entry_offset) = index.lookup(entry_pos, entry_offset);
-			entry_pos_offset = (entry_pos << kOffsetSize) | entry_offset;
-
-			// The new entry is slightly different. Metadata is dropped, to
-			// save space, and the counter of the entry is written (sort_key). We
-			// use this instead of (y + pos + offset) since its smaller.
-			uint8_t bytes[16];
-			uint128_t new_entry = (uint128_t)write_counter << write_counter_shift;
-			new_entry |= (uint128_t)entry_pos_offset << pos_offset_shift;
-			Util::IntTo16Bytes(bytes, new_entry);
-
-			result->Add( bytes );
-		}
-		++write_counter;
-	}
-
-	if( flash_writer ) result->Flush();
-
-	return write_counter;
-}
-
-
-inline void SortRegularTableThreadNew( FileDisk * disk, const uint64_t &table_size,
+inline void SortRegularTableThread( FileDisk * disk, const uint64_t &table_size,
 																				const int16_t &entry_size, const int16_t &new_entry_size,
 																				uint64_t *read_position, uint64_t *global_write_counter,
-																				bitfield *current_bitfield, const bitfield_index &index,
+																				const bitfield *current_bitfield, const bitfield_index &index,
 																				SortManager * sort_manager, std::mutex *sync_mutex,
 																				const uint8_t &pos_offset_size, const uint8_t &k )
 {
@@ -262,7 +213,6 @@ inline void SortRegularTableThreadNew( FileDisk * disk, const uint64_t &table_si
 	auto buffer = std::make_unique<uint8_t[]>(buf_size);
 	SortManager::ThreadWriter writer = SortManager::ThreadWriter( *sort_manager );
 
-	auto result = std::make_unique<uint8_t[]>(buf_size/entry_size*new_entry_size + /* ensure space for Util::IntTo16Bytes*/ 16);
 	bitfieldReader cur_bitfield = bitfieldReader( *current_bitfield );
 	uint64_t write_counter = 0;
 
@@ -277,8 +227,8 @@ inline void SortRegularTableThreadNew( FileDisk * disk, const uint64_t &table_si
 			*read_position += buf_size;
 			write_counter = *global_write_counter;
 			*global_write_counter += cur_bitfield.count( 0, buf_size/entry_size );
+			assert( *global_write_counter == (uint64_t)current_bitfield->count(0 , *read_position/entry_size) );
 		}
-		assert( *global_write_counter == (uint64_t)current_bitfield->count(0 , *read_position/entry_size) );
 
 		for( uint64_t buf_ptr = 0; buf_ptr < buf_size; buf_ptr += entry_size ){
 
@@ -434,12 +384,12 @@ Phase2Results RunPhase2(
 					auto threads = std::make_unique<std::thread[]>( num_threads - 1 );
 
 					for( uint64_t t = 0; t < num_threads - 1; t++ )
-						threads[t] = std::thread(	SortRegularTableThreadNew, &tmp_1_disks[table_index],
+						threads[t] = std::thread(	SortRegularTableThread, &tmp_1_disks[table_index],
 																			table_size, entry_size, new_entry_size,
 																			&read_position, &write_counter, current_bitfield.get(),
 																			index, sort_manager.get(), &sort_mutext, pos_offset_size, k );
 
-					SortRegularTableThreadNew( &tmp_1_disks[table_index], table_size, entry_size, new_entry_size,
+					SortRegularTableThread( &tmp_1_disks[table_index], table_size, entry_size, new_entry_size,
 																		 &read_position, &write_counter, current_bitfield.get(),
 																		 index, sort_manager.get(), &sort_mutext, pos_offset_size, k );
 
@@ -448,42 +398,6 @@ Phase2Results RunPhase2(
 
 					assert( (uint64_t)current_bitfield->count(0, table_size) == sort_manager->Count() );
 					assert( write_counter == sort_manager->Count() );
-//					const uint64_t buf_size = num_threads*(BUF_SIZE/entry_size)*entry_size;
-//					int64_t write_counter = 0;
-//					BufferedReader reader( &tmp_1_disks[table_index], 0, buf_size, table_size*entry_size );
-//					std::thread write_thread;
-//					bitfieldReader cur_bitfield = bitfieldReader( *current_bitfield );
-
-//					{ // Scope for ThreadWriter
-//						auto sort_writers = std::make_unique<std::unique_ptr<SortManager::ThreadWriter>[]>( num_threads );
-//						for( uint64_t t = 0; t < num_threads; t++ )
-//							sort_writers[t].reset( new SortManager::ThreadWriter(*sort_manager.get()) );
-
-//						while( reader.MoveNextBuffer() > 0 ){
-
-//							cur_bitfield.setLimits( reader.GetBufferStartPosition()/entry_size, reader.BufferSize()/entry_size );
-
-//							// Run threads
-//							for( uint64_t t = 0; t < num_threads - 1; t++ )
-//								threads[t] = std::thread(SortRegularTableThread, reader.GetBuffer(), reader.BufferSize(), entry_size,
-//																				 new_entry_size, write_counter, &cur_bitfield, index,
-//																				 log_num_buckets, t, num_threads, sort_writers[t].get(),
-//																				 reader.isAtEnd(), pos_offset_size, k );
-
-//							auto new_write_counter = SortRegularTableThread( reader.GetBuffer(), reader.BufferSize(), entry_size,
-//																															 new_entry_size, write_counter, &cur_bitfield, index,
-//																															 log_num_buckets, num_threads-1, num_threads,
-//																															 sort_writers[num_threads-1].get(),
-//																															 reader.isAtEnd(),
-//																															 pos_offset_size, k );
-
-//							for( uint64_t t = 0; t < num_threads - 1; t++ )
-//								threads[t].join();
-
-//							write_counter = new_write_counter;
-//							//assert( write_counter == (int64_t)sort_manager->Count() );
-//						}
-//					} // end of Scope for ThreadWriter
 
 					std::cout << " written: " << write_counter << " entries with size " << (uint32_t)new_entry_size;
 
