@@ -26,7 +26,6 @@
 
 #include "./bits.hpp"
 #include "./calculate_bucket.hpp"
-#include "bitfield.hpp"
 #include "disk.hpp"
 #include "exceptions.hpp"
 #include "sorting_bucket.hpp"

@@ -368,7 +368,7 @@ public:
             std::cout << "Final File size: "
                       << static_cast<double>(finalsize) /
                              (1024 * 1024 * 1024)
-											<< " GiB; Total bytes written: "
+											<< " GiB; Total written: "
 											<< (FileDisk::GetTotalBytesWritten()/1024.0/1024/1024)
 											<< " GiB " << std::endl;
             all_phases.PrintElapsed("Total time =");

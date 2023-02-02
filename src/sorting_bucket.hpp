@@ -213,7 +213,7 @@ struct SortingBucket{
 			assert( bucket_positions[0] == statistics[0]*entry_size_ ); // check first bucket is full
 			assert( bucket_positions[buckets_count-1]/entry_size_ == Count() ); // check last bucket is full
 		} else {
-			// read in 2 threads one fills from start and second from back.
+			// read in 2 directions one fills from start and second from back.
 			auto back_bucket_positions = std::make_unique<uint64_t[]>( buckets_count );
 			for( uint32_t i = 0; i < buckets_count - 1; i++ )
 				back_bucket_positions[i] = bucket_positions[i+1]-entry_size_;
