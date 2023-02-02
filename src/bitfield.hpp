@@ -79,11 +79,11 @@ struct bitfield
 			std::memset(buffer_.get(), 0, size_ * 8);
 		}
 
-    int64_t size() const { return size_ * 64; }
-		uint64_t memSize() const { return file_ == nullptr? ((uint64_t)size_ << 3) : 0; }
+		inline int64_t size() const { return size_ * 64; }
+		inline uint64_t memSize() const { return file_ == nullptr? ((uint64_t)size_ << 3) : 0; }
 		static inline uint64_t memSize( uint64_t bits ) { return bits >> 3; }
 
-    int64_t count(int64_t const start_bit, int64_t const end_bit) const
+		inline int64_t count(int64_t const start_bit, int64_t const end_bit) const
     {
         assert((start_bit % 64) == 0);
         assert(start_bit <= end_bit);
@@ -165,8 +165,9 @@ struct bitfieldReader
 
 	// Evaluates correct in limits
 	int64_t count(int64_t const start_bit, int64_t const end_bit) const 	{
-		return src_.is_readonly()?reader->count(start_bit+start, end_bit + start)
-														:src_.count( start_bit + start, end_bit + start );
+		const bitfield * bf = src_.is_readonly()?reader.get():&src_;
+		int64_t start64 = (start+start_bit)&(~(uint64_t)63);
+		return bf->count(start64, end_bit + start) - bf->count( start64, start+start_bit );
 	}
 
 	inline bool get( int64_t const & bit ) const {
