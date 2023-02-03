@@ -43,10 +43,10 @@ struct Phase3Results {
 // have many entries in each park, we can approximate how much space each park with take. Format
 // is: [2k bits of first_line_point]  [EPP-1 stubs] [Deltas size] [EPP-1 deltas]....
 // [first_line_point] ...
-void WriteParkToFile(
-    FileDisk &final_disk,
-    uint64_t table_start,
-    uint64_t park_index,
+void CreatePark(
+//    FileDisk &final_disk,
+//    uint64_t table_start,
+//    uint64_t park_index,
     uint32_t park_size_bytes,
     uint128_t first_line_point,
     const std::vector<uint8_t> &park_deltas,
@@ -58,7 +58,7 @@ void WriteParkToFile(
 {
     // Parks are fixed size, so we know where to start writing. The deltas will not go over
     // into the next park.
-    uint64_t writer = table_start + park_index * park_size_bytes;
+//		uint64_t writer = table_start + park_index * park_size_bytes;
     uint8_t *index = park_buffer;
 
     first_line_point <<= 128 - 2 * k;
@@ -103,18 +103,35 @@ void WriteParkToFile(
     }
     memset(index, 0x00, park_size_bytes - (index - park_buffer));
 
-    final_disk.Write(writer, (uint8_t *)park_buffer, park_size_bytes);
+		//final_disk.Write(writer, (uint8_t *)park_buffer, park_size_bytes);
+}
+
+void WriteParkToFile(
+		FileDisk &final_disk,
+		uint64_t table_start,
+		uint64_t park_index,
+		uint32_t park_size_bytes,
+		uint128_t first_line_point,
+		const std::vector<uint8_t> &park_deltas,
+		const std::vector<uint64_t> &park_stubs,
+		uint8_t k,
+		uint8_t table_index,
+		uint8_t *park_buffer,
+		uint64_t const park_buffer_size){
+	CreatePark( park_size_bytes, first_line_point, park_deltas, park_stubs, k, table_index, park_buffer, park_buffer_size );
+	uint64_t writer = table_start + park_index * park_size_bytes;
+	final_disk.Write(writer, (uint8_t *)park_buffer, park_size_bytes);
 }
 
 struct ParkWriter{
-	ParkWriter( FileDisk &final_disk, uint8_t k, uint8_t table_index, uint64_t table_start )
+	ParkWriter( FileDisk &final_disk, uint8_t k, uint8_t table_index, uint64_t table_start, uint16_t num_threads )
 		: disk( final_disk ), k(k), table_index(table_index)
 		, park_buffer_size( EntrySizes::CalculateLinePointSize(k)
 											 + EntrySizes::CalculateStubsSize(k) + 2
 											 + EntrySizes::CalculateMaxDeltasSize(k, 1) )
-		, park_buffer(new uint8_t[park_buffer_size])
-		, park_size_bytes( EntrySizes::CalculateParkSize(k, table_index) )
 		, table_start( table_start )
+		, num_threads( num_threads )
+		, park_size_bytes( EntrySizes::CalculateParkSize( k, table_index ) )
 	{
 	}
 
@@ -128,24 +145,42 @@ struct ParkWriter{
 							std::unique_ptr<std::vector<uint8_t>> &park_deltas,
 							std::unique_ptr<std::vector<uint64_t>> &park_stubs ){
 		final_entries_written += park_stubs->size() + 1;
-#ifndef USE_THREADS
+		if( num_threads <= 1 ){
+			std::unique_ptr<uint8_t[]> park_buffer = std::make_unique<uint8_t[]>(park_buffer_size);
+			WriteParkToFile( disk, table_start, park_index, park_size_bytes, first_line_point, *park_deltas.get(), *park_stubs.get(), k, table_index, park_buffer.get(), park_buffer_size );
+			park_deltas->clear();
+			park_stubs->clear();
+		}
+		else {
+			while( num_running_threads >= num_threads )
+				std::this_thread::sleep_for( 1ms );
+			{
+				std::lock_guard lk( sync_mutex );
+				num_running_threads++;
+			}
+			std::thread * cur_thread = writing_thread.release();
+			writing_thread.reset( new std::thread( [this, cur_thread]( uint128_t first_line_pnt, uint64_t park_idx,
+																std::vector<uint8_t> *park_deltas, std::vector<uint64_t> *park_stubs){
+					std::unique_ptr<uint8_t[]> park_buffer = std::make_unique<uint8_t[]>(park_buffer_size);
 
-		if( writing_thread ) writing_thread->join();
-		writing_thread.reset(
-		 new std::thread( [this]( uint128_t first_line_pnt, uint64_t park_idx,
-															std::vector<uint8_t> *park_deltas, std::vector<uint64_t> *park_stubs){
-			WriteParkToFile( disk, table_start, park_idx, park_size_bytes, first_line_pnt, *park_deltas, *park_stubs, k, table_index, park_buffer.get(), park_buffer_size );
-			delete park_deltas;
-			delete park_stubs;
-		}, first_line_point, park_index, park_deltas.release(), park_stubs.release() ) );
-		park_deltas.reset( new std::vector<uint8_t>() );
-		park_stubs.reset( new std::vector<uint64_t>() );
-#else
-		WriteParkToFile( disk, table_start, park_index, park_size_bytes, first_line_point, *park_deltas.get(), *park_stubs.get(), k, table_index, park_buffer.get(), park_buffer_size );
-		park_deltas->clear();
-		park_stubs->clear();
+					CreatePark( park_size_bytes, first_line_pnt, *park_deltas, *park_stubs,
+											k, table_index, park_buffer.get(), park_buffer_size );
+					uint64_t writer = table_start + park_idx * park_size_bytes;
+					if( cur_thread != nullptr ) cur_thread->join();
+					disk.Write( writer, park_buffer.get(), park_size_bytes );
+					delete park_deltas;
+					delete park_stubs;
+					if( cur_thread != nullptr)
+						delete cur_thread;
+					{
+						std::lock_guard lk( sync_mutex );
+						num_running_threads--;
+					}
+				}, first_line_point, park_index, park_deltas.release(), park_stubs.release() ) );
+			park_deltas.reset( new std::vector<uint8_t>() );
+			park_stubs.reset( new std::vector<uint64_t>() );
 
-#endif // USE_THREADS
+		}
 		park_index++;
 	}
 
@@ -154,16 +189,19 @@ struct ParkWriter{
 			writing_thread->join();
 			writing_thread.reset();
 		}
+		assert( num_running_threads == 0 );
 	}
 	~ParkWriter(){
 		if( writing_thread ) writing_thread->join();
+		assert( num_running_threads == 0 );
 	}
 private:
 	FileDisk &disk;
 	const uint8_t k;
 	const uint8_t table_index;
 	const uint64_t park_buffer_size;
-	std::unique_ptr<uint8_t[]> park_buffer;
+	const uint64_t table_start;
+	const uint16_t num_threads;
 
 	// The park size must be constant, for simplicity, but must be big enough to store EPP
 	// entries. entry deltas are encoded with variable length, and thus there is no
@@ -173,9 +211,10 @@ private:
 
 	uint64_t park_index = 0;
 	uint64_t final_entries_written = 0;
-	const uint64_t table_start;
 
+	std::mutex sync_mutex;
 	std::unique_ptr<std::thread> writing_thread;
+	uint16_t num_running_threads = 0;
 };
 
 // Compresses the plot file tables into the final file. In order to do this, entries must be
@@ -242,7 +281,7 @@ Phase3Results RunPhase3(
                   << std::endl;
         std::cout << "Progress update: " << progress_percent[table_index - 1] << std::endl;
 
-				ParkWriter park_writer = ParkWriter( tmp2_disk, k, table_index, final_table_begin_pointers[table_index] );
+				ParkWriter park_writer = ParkWriter( tmp2_disk, k, table_index, final_table_begin_pointers[table_index], num_threads );
 
         // The park size must be constant, for simplicity, but must be big enough to store EPP
         // entries. entry deltas are encoded with variable length, and thus there is no

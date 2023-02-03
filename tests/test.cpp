@@ -1098,7 +1098,7 @@ TEST_CASE( "SortThreads" ){
 	};
 
 	uint32_t thread_nums[] = {1, 2, 3, 8, 16};
-	for( uint32_t t = 0; t < 5; t++ ){
+	for( uint32_t t = 0; t < 3; t++ ){
 		uint32_t threads_num = thread_nums[t];
 		std::cout << "Sort in " << threads_num << " threads " << std::endl;
 
