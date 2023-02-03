@@ -116,7 +116,6 @@ struct ParkWriter{
 		, park_size_bytes( EntrySizes::CalculateParkSize(k, table_index) )
 		, table_start( table_start )
 	{
-
 	}
 
 	inline uint64_t GetFinalEntriesWritten() const { return final_entries_written; }
@@ -128,23 +127,26 @@ struct ParkWriter{
 	void write( uint128_t first_line_point,
 							std::unique_ptr<std::vector<uint8_t>> &park_deltas,
 							std::unique_ptr<std::vector<uint64_t>> &park_stubs ){
-
 		final_entries_written += park_stubs->size() + 1;
+#ifndef USE_THREADS
 
-		std::thread *wr = new std::thread( [this, first_line_point]( std::thread * prev, uint64_t park_idx,
-																			 std::vector<uint8_t> *park_deltas, std::vector<uint64_t> *park_stubs){
-			if( prev != nullptr ){
-				prev->join();
-				delete prev;
-			}
-			WriteParkToFile( disk, table_start, park_idx, park_size_bytes, first_line_point, *park_deltas, *park_stubs, k, table_index, park_buffer.get(), park_buffer_size );
+		if( writing_thread ) writing_thread->join();
+		writing_thread.reset(
+		 new std::thread( [this]( uint128_t first_line_pnt, uint64_t park_idx,
+															std::vector<uint8_t> *park_deltas, std::vector<uint64_t> *park_stubs){
+			WriteParkToFile( disk, table_start, park_idx, park_size_bytes, first_line_pnt, *park_deltas, *park_stubs, k, table_index, park_buffer.get(), park_buffer_size );
 			delete park_deltas;
 			delete park_stubs;
-		}, writing_thread.release(), park_index, park_deltas.release(), park_stubs.release() );
-		writing_thread.reset( wr );
-		park_index++;
+		}, first_line_point, park_index, park_deltas.release(), park_stubs.release() ) );
 		park_deltas.reset( new std::vector<uint8_t>() );
 		park_stubs.reset( new std::vector<uint64_t>() );
+#else
+		WriteParkToFile( disk, table_start, park_index, park_size_bytes, first_line_point, *park_deltas.get(), *park_stubs.get(), k, table_index, park_buffer.get(), park_buffer_size );
+		park_deltas->clear();
+		park_stubs->clear();
+
+#endif // USE_THREADS
+		park_index++;
 	}
 
 	void join() {
@@ -167,7 +169,7 @@ private:
 	// entries. entry deltas are encoded with variable length, and thus there is no
 	// guarantee that they won't override into the next park. It is only different (larger)
 	// for table 1
-	uint32_t park_size_bytes;
+	const uint32_t park_size_bytes;
 
 	uint64_t park_index = 0;
 	uint64_t final_entries_written = 0;
@@ -571,6 +573,7 @@ Phase3Results RunPhase3(
 //            final_entries_written += (park_stubs.size() + 1);
         }
 
+				park_writer.join();
         Encoding::ANSFree(kRValues[table_index - 1]);
 				final_entries_written = park_writer.GetFinalEntriesWritten();
         std::cout << "\tWrote " << final_entries_written << " entries" << std::endl;
