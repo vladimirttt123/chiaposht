@@ -45,11 +45,16 @@ struct ABuffer{
 	inline bool IsEmpty() const { return size == 0;}
 	inline bool IsFull() const { return size == allocated_length; }
 	inline uint32_t Size() const { return size; }
+	inline void EnsureAllocated() {
+		if( !buffer )
+			buffer.reset( new uint8_t[allocated_length] );
+	}
 
-	uint8_t * ReleaseBuffer(){
+	uint8_t * ReleaseBuffer( bool allocate_another = true ){
 		auto res = buffer.release();
 		size = 0;
-		buffer.reset( new uint8_t[allocated_length] );
+		if( allocate_another )
+			buffer.reset( new uint8_t[allocated_length] );
 		return res;
 	}
 
@@ -81,7 +86,6 @@ struct SortingBucket{
 	inline uint64_t Size() const { return entry_size_*entries_count; }
 	inline uint64_t Count() const { return entries_count; }
 	inline uint8_t	SubBucketBits() const { return bucket_bits_count_; }
-	inline bool isSorted() const { return !!memory_; }
 	inline uint16_t EntrySize() const { return entry_size_; }
 
 	uint64_t read_time = 0;
@@ -124,7 +128,7 @@ struct SortingBucket{
 	}
 
 	// Flush current buffer to disk
-	void Flush(){
+	void Flush( bool free_memory = false ){
 		if( !disk || disk_buffer->IsEmpty() ) return;
 
 		// If more than 4 ( it should be number of threads ) buffers are waiting to write than wait to finish;
@@ -143,7 +147,7 @@ struct SortingBucket{
 								disk->Flush();
 								delete[] buffer;
 								disk_write_position += buf_size;
-							}, disk_buffer->ReleaseBuffer(), disk_output_thread.release() )
+							}, disk_buffer->ReleaseBuffer( !free_memory ), disk_output_thread.release() )
 					);
 	}
 
@@ -200,7 +204,7 @@ struct SortingBucket{
 			if( !disk_buffer->IsEmpty() )
 				FillBuckets( memory, disk_buffer->buffer.get(), disk_buffer->Size(), bucket_positions.get(), entry_size_ );
 
-
+			disk_buffer->EnsureAllocated();
 			// Wait for last disk write finish
 			WaitLastDiskWrite();
 
@@ -210,6 +214,9 @@ struct SortingBucket{
 
 				FillBuckets( memory, disk_buffer->buffer.get(), buf_size, bucket_positions.get(), entry_size_ );
 			}
+			// Clean Memory
+			disk_buffer->buffer.reset();
+
 			assert( bucket_positions[0] == statistics[0]*entry_size_ ); // check first bucket is full
 			assert( bucket_positions[buckets_count-1]/entry_size_ == Count() ); // check last bucket is full
 		} else {

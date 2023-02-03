@@ -402,7 +402,8 @@ Phase2Results RunPhase2(
 
 					// clear disk caches and memory
 					// TODO real flush by flag.
-					sort_manager->FlushCache();  // close all files
+					// Table 2 is used immediatly after in phase 3 than do not clean it caches fully.
+					sort_manager->FlushCache( table_index != 2 );  // close all files
 					//sort_manager->FreeMemory(); // should do nothing at this point
 
 					output_files[table_index - 2] = std::move(sort_manager);

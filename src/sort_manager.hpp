@@ -71,7 +71,7 @@ public:
         uint16_t const entry_size,
         const std::string &tmp_dirname,
         const std::string &filename,
-        uint32_t begin_bits,
+				uint32_t const begin_bits,
         uint64_t const stripe_size,
 				uint8_t k,
 				uint8_t phase,
@@ -85,9 +85,9 @@ public:
         , prev_bucket_buf_size(
             2 * (stripe_size + 10 * (kBC / pow(2, kExtraBits))) * entry_size)
 				, num_threads( num_threads )
-				, subbucket_bits( std::max( (uint8_t)2, (uint8_t)(k - log_num_buckets - kSubBucketBits) ) )
+				, subbucket_bits( std::min( (uint8_t)32, std::max( (uint8_t)2, (uint8_t)(k - log_num_buckets - kSubBucketBits) ) ) )
 				, k_(k), phase_(phase), table_index_(table_index)
-				, stats_mask( ( (uint32_t)1<<subbucket_bits)-1 )
+				, stats_mask( ( (uint64_t)1<<subbucket_bits)-1 )
     {
         // Cross platform way to concatenate paths, gulrak library.
 				std::vector<fs::path> bucket_filenames = std::vector<fs::path>();
@@ -286,10 +286,11 @@ public:
         this->prev_bucket_position_start = position;
     }
 
-    void FlushCache()
+		void FlushCache( bool isFull = false )
     {
         for (auto& b : buckets_) {
-						// b.Flush();
+						if( isFull )
+							b.Flush( true );
 						b.CloseFile();
 						b.FreeMemory();
 				}
@@ -310,13 +311,13 @@ public:
 private:
 
     // Size of the whole memory array
-    uint64_t memory_size_;
+		const uint64_t memory_size_;
     // Size of each entry
-    uint16_t entry_size_;
+		const uint16_t entry_size_;
     // Bucket determined by the first "log_num_buckets" bits starting at "begin_bits"
-    uint32_t begin_bits_;
+		const uint32_t begin_bits_;
     // Log of the number of buckets; num bits to use to determine bucket
-    uint32_t log_num_buckets_;
+		const uint32_t log_num_buckets_;
 
 		std::vector<SortingBucket> buckets_;
 
