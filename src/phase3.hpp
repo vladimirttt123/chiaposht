@@ -132,6 +132,7 @@ struct ParkWriter{
 		, table_start( table_start )
 		, num_threads( num_threads )
 		, park_size_bytes( EntrySizes::CalculateParkSize( k, table_index ) )
+		, park_buffer( new uint8_t[park_buffer_size] )
 	{
 	}
 
@@ -152,34 +153,17 @@ struct ParkWriter{
 			park_stubs->clear();
 		}
 		else {
-			while( num_running_threads >= num_threads )
-				std::this_thread::sleep_for( 1ms );
-			{
-				std::lock_guard lk( sync_mutex );
-				num_running_threads++;
-			}
-			std::thread * cur_thread = writing_thread.release();
-			writing_thread.reset( new std::thread( [this, cur_thread]( uint128_t first_line_pnt, uint64_t park_idx,
-																std::vector<uint8_t> *park_deltas, std::vector<uint64_t> *park_stubs){
-					std::unique_ptr<uint8_t[]> park_buffer = std::make_unique<uint8_t[]>(park_buffer_size);
+			if( writing_thread ) writing_thread->join();
+			writing_thread.reset( new std::thread( [this]( uint64_t park_idx,uint128_t first_line_pnt,
+																						 std::vector<uint8_t> *park_deltas, std::vector<uint64_t> *park_stubs ){
+				WriteParkToFile( disk, table_start, park_idx, park_size_bytes, first_line_pnt, *park_deltas, *park_stubs,
+															k, table_index, park_buffer.get(), park_buffer_size );
+				delete park_deltas;
+				delete park_stubs;
+			}, park_index, first_line_point, park_deltas.release(), park_stubs.release() ) );
 
-					CreatePark( park_size_bytes, first_line_pnt, *park_deltas, *park_stubs,
-											k, table_index, park_buffer.get(), park_buffer_size );
-					uint64_t writer = table_start + park_idx * park_size_bytes;
-					if( cur_thread != nullptr ) cur_thread->join();
-					disk.Write( writer, park_buffer.get(), park_size_bytes );
-					delete park_deltas;
-					delete park_stubs;
-					if( cur_thread != nullptr)
-						delete cur_thread;
-					{
-						std::lock_guard lk( sync_mutex );
-						num_running_threads--;
-					}
-				}, first_line_point, park_index, park_deltas.release(), park_stubs.release() ) );
 			park_deltas.reset( new std::vector<uint8_t>() );
 			park_stubs.reset( new std::vector<uint64_t>() );
-
 		}
 		park_index++;
 	}
@@ -191,6 +175,7 @@ struct ParkWriter{
 		}
 		assert( num_running_threads == 0 );
 	}
+
 	~ParkWriter(){
 		if( writing_thread ) writing_thread->join();
 		assert( num_running_threads == 0 );
@@ -208,13 +193,13 @@ private:
 	// guarantee that they won't override into the next park. It is only different (larger)
 	// for table 1
 	const uint32_t park_size_bytes;
+	std::unique_ptr<uint8_t[]> park_buffer;
 
 	uint64_t park_index = 0;
 	uint64_t final_entries_written = 0;
 
 	std::mutex sync_mutex;
 	std::unique_ptr<std::thread> writing_thread;
-	uint16_t num_running_threads = 0;
 };
 
 // Compresses the plot file tables into the final file. In order to do this, entries must be
