@@ -130,7 +130,7 @@ struct ParkWriter{
 											 + EntrySizes::CalculateStubsSize(k) + 2
 											 + EntrySizes::CalculateMaxDeltasSize(k, 1) )
 		, table_start( table_start )
-		, num_threads( num_threads )
+		, num_threads( 0 )
 		, park_size_bytes( EntrySizes::CalculateParkSize( k, table_index ) )
 		, park_buffer( new uint8_t[park_buffer_size] )
 	{
@@ -147,8 +147,9 @@ struct ParkWriter{
 							std::unique_ptr<std::vector<uint64_t>> &park_stubs ){
 		final_entries_written += park_stubs->size() + 1;
 		if( num_threads <= 1 ){
-			std::unique_ptr<uint8_t[]> park_buffer = std::make_unique<uint8_t[]>(park_buffer_size);
-			WriteParkToFile( disk, table_start, park_index, park_size_bytes, first_line_point, *park_deltas.get(), *park_stubs.get(), k, table_index, park_buffer.get(), park_buffer_size );
+			WriteParkToFile( disk, table_start, park_index, park_size_bytes,
+											 first_line_point, *park_deltas.get(), *park_stubs.get(),
+											 k, table_index, park_buffer.get(), park_buffer_size );
 			park_deltas->clear();
 			park_stubs->clear();
 		}
@@ -173,12 +174,12 @@ struct ParkWriter{
 			writing_thread->join();
 			writing_thread.reset();
 		}
-		assert( num_running_threads == 0 );
+		// assert( num_running_threads == 0 );
 	}
 
 	~ParkWriter(){
 		if( writing_thread ) writing_thread->join();
-		assert( num_running_threads == 0 );
+		// assert( num_running_threads == 0 );
 	}
 private:
 	FileDisk &disk;

@@ -289,8 +289,7 @@ public:
 		void FlushCache( bool isFull = false )
     {
         for (auto& b : buckets_) {
-						if( isFull )
-							b.Flush( true );
+						if( isFull ) b.Flush( true );
 						b.CloseFile();
 						b.FreeMemory();
 				}
