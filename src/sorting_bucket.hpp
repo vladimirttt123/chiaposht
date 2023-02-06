@@ -16,7 +16,6 @@
 #define SRC_CPP_SORTING_BUCKET_HPP_
 
 #include <mutex>
-#include "disk.hpp"
 #include "util.hpp"
 #include "quicksort.hpp"
 #include "disk_streams.hpp"
@@ -172,7 +171,7 @@ struct SortingBucket{
 		assert( bucket_positions[buckets_count-1]/entry_size_ + statistics[buckets_count-1] == Count() );
 
 		auto start_time = std::chrono::high_resolution_clock::now();
-		uint64_t read_pos = 0, read_size = Size() - disk_buffer->Size();
+		uint64_t read_size = Size() - disk_buffer->Size();
 
 
 		// Read from file to buckets, do not run threads if less than 1024 entries to read
@@ -188,12 +187,6 @@ struct SortingBucket{
 			while( ( buf_size = disk->Read( disk_buffer->buffer ) ) > 0 )
 				 FillBuckets( memory, disk_buffer->buffer.get(), buf_size, bucket_positions.get(), entry_size_ );
 
-//			while( read_pos < read_size ){
-//				// auto buf_size = ReadCompactedBuffer( disk, disk_buffer->buffer.get(), disk_buffer->allocated_length, read_pos, read_size );
-//				// GrowBuffer( disk_buffer->buffer.get(), buf_size );
-
-//				FillBuckets( memory, disk_buffer->buffer.get(), buf_size, bucket_positions.get(), entry_size_ );
-//			}
 			// Clean Memory
 			disk_buffer->buffer.reset();
 
@@ -217,14 +210,6 @@ struct SortingBucket{
 				uint32_t buf_size;
 				auto buf = std::make_unique<uint8_t[]>( disk->MaxBufferSize() );
 				while( (buf_size = disk->Read( buf ) ) > 0 ){
-//					uint64_t buf_size;
-//					auto buf = std::make_unique<uint8_t[]>( disk_buffer->allocated_length );
-//					{
-//						std::lock_guard<std::mutex> lk(*mutRead);
-//						buf_size = ReadCompactedBuffer( disk, buf.get(), disk_buffer->allocated_length, read_pos, read_size );
-//						if( buf_size == 0 ) return;
-//					}
-//					GrowBuffer( buf.get(), buf_size );
 
 					// Extract all bucket_bits
 					uint32_t bucket_bits[buf_size/entry_size_];
@@ -342,92 +327,6 @@ private:
 		}
 	}
 
-
-//	inline uint32_t CompactBuffer( uint8_t * buffer, uint32_t buf_size ){
-//		if( log_num_buckets_ < 8 ) return buf_size;
-//		uint32_t res = buf_size;
-//		uint64_t new_entry_size = entry_size_;
-//		// Stage I: remove bucket number if possible by bytes alignings
-
-//		uint32_t start_bit = bits_begin_ - log_num_buckets_;
-//		uint64_t bytes_before = start_bit/8;
-//		new_entry_size--;
-//		if( (start_bit&7)==0 ){
-//			// if remove alligned by byte
-//			for( uint32_t i = bytes_before, j = i; i < buf_size; i++ )
-//				if( (i%entry_size_) != bytes_before )
-//					buffer[j++] = buffer[i];
-//				else {
-//					assert( buffer[i] == (bucket_no_&255) );
-//				}
-//		} else {
-//			uint8_t mask = (((uint8_t)0xff)>>(start_bit&7));
-//			for( uint32_t i = bytes_before, j = i; i < buf_size; i++ ){
-//				switch( (i%entry_size_) - bytes_before ){
-//					case 0:
-//						assert( (buffer[i]&mask) == (((bucket_no_>>(start_bit&7))&mask) ) );
-//						buffer[j] = buffer[i]&~mask;
-//						break;
-//					case 1:
-
-//						buffer[j++] |= buffer[i]&mask;
-//					break;
-//					default: buffer[j++] = buffer[i]; break;
-//				}
-//			}
-//		}
-//		res = buf_size - buf_size/entry_size_;
-
-//		return res;
-//	}
-
-//	inline uint32_t ReadCompactedBuffer( std::unique_ptr<FileDisk> &f, uint8_t *buffer, const uint32_t &buf_size, uint64_t &read_pos, const uint64_t &read_size ){
-//		auto to_read = std::min( (uint64_t)buf_size, read_size - read_pos );
-//		if( !to_read || log_num_buckets_ < 8 ) {
-//			if( to_read ) f->Read( read_pos, buffer, to_read );
-//			read_pos += to_read;
-//			return to_read;
-//		}
-
-//		int64_t compacted_size = to_read/entry_size_ *(entry_size_-1);
-//		f->Read( read_pos/entry_size_*(entry_size_-1), buffer, compacted_size );
-//		read_pos += to_read;
-
-//		return to_read;
-//	}
-
-//	inline void GrowBuffer( uint8_t* buffer, const uint32_t &buf_size ){
-//		if( log_num_buckets_ < 8 ) return; // buffer is not compacted
-//		const int64_t compacted_size = buf_size/entry_size_ *(entry_size_-1);
-//		const uint32_t start_bit = bits_begin_ - log_num_buckets_;
-//		uint64_t bytes_before = start_bit/8;
-//		uint8_t excluded = bucket_no_ & 255;
-//		if( (start_bit&7)==0 ){
-//			// if remove alligned by byte
-//			for( int64_t i = buf_size-1, j = compacted_size-1; i >= 0 ; i-- ){
-//				assert( j >= -1 );
-//				assert( i > 0 || j == -1 ); // lastx
-//				if( (i%entry_size_) == (int64_t)bytes_before  )
-//					buffer[i] = excluded;
-//				else buffer[i] = buffer[j--];
-//			}
-//		} else {
-//			uint8_t mask = (((uint8_t)0xff)>>(start_bit&7));
-//			uint8_t excluded_lo = (excluded>>(start_bit&7)), excluded_hi = excluded<<(8-(start_bit&7));
-//			for( int64_t i = buf_size-1, j = compacted_size-1; i >= (int64_t)bytes_before ; i-- ){
-//				switch( (i%entry_size_) - bytes_before ){
-//				case 0: buffer[i] = (buffer[j--]&(~mask)) | excluded_lo; break;
-//				case 1: buffer[i] = (buffer[j]&mask) | excluded_hi; break;
-//				default: 	buffer[i] =  buffer[j--]; break;
-//				}
-//			}
-//		}
-//#ifndef NDEBUG
-//		for( uint32_t i = 0; i < buf_size/entry_size_; i++ )
-//			assert( Util::ExtractNum( buffer + i*entry_size_, entry_size_, bits_begin_-log_num_buckets_, log_num_buckets_ ) == bucket_no_ );
-//#endif
-
-//	}
 };
 
 #endif // SRC_CPP_SORTING_BUCKET_HPP_
