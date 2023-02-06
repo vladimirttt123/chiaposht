@@ -27,6 +27,7 @@
 #include "serialize.hpp"
 #include "sort_manager.hpp"
 #include "verifier.hpp"
+#include "disk_streams.hpp"
 
 using namespace std;
 
@@ -47,6 +48,64 @@ vector<unsigned char> intToBytes(uint32_t paramInt, uint32_t numBytes)
 }
 
 static uint128_t to_uint128(uint64_t hi, uint64_t lo) { return (uint128_t)hi << 64 | lo; }
+
+TEST_CASE( "DISK_STREAMS" ){
+	const uint64_t iteration = 3000;
+	const uint16_t bucket_no = 0xaaaa;
+	const uint32_t begins[] = { 3, 7, 16, 19, 0 };
+	const auto cur_buf_size = BUF_SIZE;
+	BUF_SIZE = 1024;
+
+	auto randEntry = []( uint8_t *buf, uint64_t entry_size ){
+		buf[entry_size-1] = 0;
+		for( uint8_t i = 0; i < entry_size - 1; i ++){
+			buf[entry_size-1] ^= (buf[i] = rand()&0xff);
+		}
+	};
+	auto fillBuf = [&randEntry]( uint8_t *buf, uint64_t entry_size, uint16_t bits_begin, uint16_t num_buckets, uint64_t count ){
+		for( uint64_t i = 0; i < count; i++ ){
+			do{
+				randEntry( buf + i*entry_size, entry_size );
+			} while( Util::ExtractNum64(buf+i*entry_size, bits_begin, log2(num_buckets) ) != (bucket_no%num_buckets) );
+		}
+	};
+	for( uint16_t num_buckets = 64; num_buckets < 2048; num_buckets *= 2 ){
+		for( uint16_t entry_size = 7; entry_size < 16; entry_size += 3 ){
+			for( uint32_t bits_begin : begins ){
+				std::cout << "BucketStream test - num_buckets: " << num_buckets << ", entry_size: " << entry_size << ", bits_begin: " << bits_begin << std::endl;
+
+				BucketStream stream = BucketStream( "bucket.stream.tmp", bucket_no % num_buckets, log2(num_buckets), entry_size, bits_begin + log2(num_buckets) );
+
+				auto buf = std::make_unique<uint8_t[]>(stream.MaxBufferSize());
+				for( uint64_t i = 0; i < iteration; i += stream.MaxBufferSize()/entry_size ){
+					auto count = std::min( (uint32_t)(iteration - i), stream.MaxBufferSize()/entry_size );
+					fillBuf( buf.get(), entry_size, bits_begin, num_buckets, count );
+					stream.Write( buf, count*entry_size );
+				}
+
+				stream.EndToWrite();
+				stream.StartToRead();
+				uint32_t buf_size = 0;
+				uint64_t total_read = 0;
+				while( (buf_size = stream.Read( buf ) ) > 0 ){
+					total_read += buf_size/entry_size;
+					for( uint64_t i = 0; i < buf_size; i += entry_size ){
+						if( Util::ExtractNum64( buf.get()+i, bits_begin, log2(num_buckets) ) != (bucket_no%num_buckets) )
+							cout << "h";
+						REQUIRE( Util::ExtractNum64( buf.get()+i, bits_begin, log2(num_buckets) ) == (bucket_no%num_buckets) );
+						uint8_t hash = 0;
+						for( uint32_t j = 0; j < (entry_size-1); j++ )
+							hash ^= buf.get()[i+j];
+						REQUIRE( hash == buf.get()[i+entry_size-1] );
+					}
+				}
+				REQUIRE( total_read == iteration );
+			}
+		}
+	}
+
+	BUF_SIZE = cur_buf_size;
+}
 
 TEST_CASE( "Extract" )
 {

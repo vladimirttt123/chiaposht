@@ -19,8 +19,9 @@
 
 
 
+// This stream not garantee same read order as write order
 struct BucketStream{
-	BucketStream( const std::string &fileName, uint16_t bucket_no, uint8_t log_num_buckets, uint16_t entry_size, uint16_t bits_begin )
+	BucketStream( const std::string &fileName, uint16_t bucket_no, uint8_t log_num_buckets, uint16_t entry_size, uint16_t bits_begin, bool compact = true )
 		: disk( new FileDisk(fileName) )
 		, bucket_no_( bucket_no )
 		, log_num_buckets_( log_num_buckets )
@@ -28,6 +29,7 @@ struct BucketStream{
 		, bits_begin_(bits_begin)
 		, buffer_size( BUF_SIZE/entry_size*entry_size )
 		, buffer( new uint8_t[buffer_size] )
+		, compact( compact&(log_num_buckets_>7) )
 	{
 
 	}
@@ -39,12 +41,16 @@ struct BucketStream{
 	void Write( std::unique_ptr<uint8_t[]> &buf, uint32_t buf_size ){
 		assert( (buf_size % entry_size_) == 0 );
 
+		std::unique_ptr<uint8_t[]> compact_buffer;
+		if( compact )
+			buf_size = CompactBuffer( buf.get(), buf_size );
+
 		if( buf_size == 0 ) return;
 		std::lock_guard<std::mutex> lk( sync_mutex );
 		if( disk_io_thread ) disk_io_thread->join();
 		buffer.swap( buf );
 
-		assert( Util::ExtractNum64( buffer.get(), bits_begin_-log_num_buckets_, log_num_buckets_ ) == bucket_no_ );
+		assert( compact || Util::ExtractNum64( buffer.get(), bits_begin_-log_num_buckets_, log_num_buckets_ ) == bucket_no_ );
 
 		disk_io_thread.reset( new std::thread( [this, buf_size](){
 			disk->Write( disk_write_position, buffer.get(), buf_size );
@@ -69,28 +75,36 @@ struct BucketStream{
 
 	uint32_t Read( std::unique_ptr<uint8_t[]> &buf ){
 		assert( disk_read_position <= disk_write_position );
-		std::lock_guard<std::mutex> lk( sync_mutex );
 
-		if( disk_read_position >= disk_write_position )
-			return 0;
+		uint32_t to_read = 0;
+		{
+			std::lock_guard<std::mutex> lk( sync_mutex );
 
-		assert( disk_io_thread );
-		disk_io_thread->join();
+			if( disk_read_position >= disk_write_position )
+				return 0;
 
-		uint32_t to_read = std::min( buffer_size, (uint32_t)(disk_write_position - disk_read_position) );
-		assert( Util::ExtractNum64( buffer.get(), bits_begin_-log_num_buckets_, log_num_buckets_ ) == bucket_no_ );
-		buf.swap( buffer );
-		assert( Util::ExtractNum64( buf.get(), bits_begin_-log_num_buckets_, log_num_buckets_ ) == bucket_no_ );
+			assert( disk_io_thread );
+			disk_io_thread->join();
 
-		disk_read_position += to_read;
-		if( disk_read_position >= disk_write_position ){
-			disk->Remove();
-			disk.reset();
-			buffer.reset();
-			disk_io_thread.reset();
+			to_read = GetNextReadSize();
+			assert( compact || Util::ExtractNum64( buffer.get(), bits_begin_-log_num_buckets_, log_num_buckets_ ) == bucket_no_ );
+			buf.swap( buffer );
+			assert( compact || Util::ExtractNum64( buf.get(), bits_begin_-log_num_buckets_, log_num_buckets_ ) == bucket_no_ );
+
+			disk_read_position += to_read;
+			if( disk_read_position >= disk_write_position ){
+				disk->Remove();
+				disk.reset();
+				buffer.reset();
+				disk_io_thread.reset();
+			}
+			else
+				disk_io_thread.reset( new std::thread([this](){ReadBuffer();}) );
+
+			assert(  compact || Util::ExtractNum64( buf.get(), bits_begin_-log_num_buckets_, log_num_buckets_ ) == bucket_no_ );
 		}
-		else
-			disk_io_thread.reset( new std::thread([this](){ReadBuffer();}) );
+		if( compact )
+			to_read = GrowBuffer( buf.get(), to_read );
 
 		assert( Util::ExtractNum64( buf.get(), bits_begin_-log_num_buckets_, log_num_buckets_ ) == bucket_no_ );
 
@@ -119,12 +133,72 @@ private:
 
 	const uint32_t buffer_size;
 	std::unique_ptr<uint8_t[]> buffer;
+	const bool compact;
 
 	void ReadBuffer(){
-		uint32_t to_read = std::min( buffer_size, (uint32_t)(disk_write_position - disk_read_position) );
+		uint32_t to_read = GetNextReadSize();
 		assert( to_read > 0 );
 		disk->Read( disk_read_position, buffer.get(), to_read );
-		assert( Util::ExtractNum64( buffer.get(), bits_begin_-log_num_buckets_, log_num_buckets_ ) == bucket_no_ );
+		assert( compact || Util::ExtractNum64( buffer.get(), bits_begin_-log_num_buckets_, log_num_buckets_ ) == bucket_no_ );
+	}
+
+
+	uint32_t GetNextReadSize() const {
+		return std::min( compact?(buffer_size/entry_size_*(entry_size_-1)) : buffer_size,
+										 (uint32_t)(disk_write_position - disk_read_position) );
+	}
+
+	uint32_t CompactBuffer( uint8_t *buf, uint32_t buf_size ){
+		uint8_t bytes_begin = (bits_begin_-log_num_buckets_)>>3;
+
+		// extract current bucket
+		if( (bits_begin_ - log_num_buckets_)&7 ){
+			uint8_t mask = 0xff<<(8-((bits_begin_-log_num_buckets_)&7));
+			for( uint32_t i = bytes_begin + 1; i < buf_size; i += entry_size_ )
+				buf[i] = (buf[i-1]&mask) | (buf[i]&(~mask));
+		}
+
+		// remove current bucket
+		uint32_t i = bytes_begin + 1, j = bytes_begin;
+		for( ;i < (buf_size - entry_size_); i += entry_size_, j += entry_size_ - 1 )
+			memmove( buf + j, buf + i, entry_size_ - 1 );
+		// last tail
+		memmove( buf + j, buf + i, entry_size_ - 1 - bytes_begin );
+
+		return buf_size/entry_size_ * (entry_size_-1);
+	}
+
+	uint32_t GrowBuffer( uint8_t * buf, uint32_t buf_size ){
+		uint8_t bytes_begin = (bits_begin_-log_num_buckets_)>>3;
+		uint32_t full_buf_size = buf_size/(entry_size_-1)*entry_size_;
+		assert( full_buf_size <= buffer_size );
+
+		// copy last entry
+		uint64_t tail_idx = full_buf_size - entry_size_ + bytes_begin + 1;
+		int64_t compacted_idx = buf_size - entry_size_ + bytes_begin + 1;
+		memmove( buf + tail_idx, buf + compacted_idx, entry_size_ - bytes_begin - 1 );
+		for( tail_idx -= entry_size_, compacted_idx -= entry_size_ - 1;
+				 compacted_idx >= 0;
+				 tail_idx -= entry_size_, compacted_idx -= entry_size_ - 1 )
+			memmove( buf + tail_idx, buf + compacted_idx, entry_size_ - 1 );
+
+		// Now insert bucket
+		const uint8_t removed = bucket_no_ >> (log_num_buckets_-8);
+		if( (bits_begin_ - log_num_buckets_)&7 ){
+			const uint8_t shift = (bits_begin_-log_num_buckets_)&7;
+			const uint8_t mask = 0xff<<(8-shift);
+			const uint8_t insert_hi = (removed)>>shift;
+			const uint8_t insert_lo = (removed)<<(8-shift);
+			for( uint32_t i = bytes_begin; i < full_buf_size; i += entry_size_ ){
+				buf[i] = (buf[i+1]&mask) | insert_hi;
+				buf[i+1] = (buf[i+1]&~mask) | insert_lo;
+			}
+		}else{
+			for( uint32_t i = bytes_begin; i < full_buf_size; i += entry_size_ )
+				buf[i] = removed;
+		}
+
+		return full_buf_size;
 	}
 };
 
