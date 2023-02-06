@@ -38,12 +38,8 @@ struct BucketStream{
 	uint64_t WritePosition() const { return disk_write_position; }
 	uint32_t MaxBufferSize() const { return buffer_size; }
 
-	void Write( std::unique_ptr<uint8_t[]> &buf, uint32_t buf_size ){
+	void Write( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ){
 		assert( (buf_size % entry_size_) == 0 );
-
-		std::unique_ptr<uint8_t[]> compact_buffer;
-		if( compact )
-			buf_size = CompactBuffer( buf.get(), buf_size );
 
 		if( buf_size == 0 ) return;
 		std::lock_guard<std::mutex> lk( sync_mutex );
@@ -52,10 +48,12 @@ struct BucketStream{
 
 		assert( compact || Util::ExtractNum64( buffer.get(), bits_begin_-log_num_buckets_, log_num_buckets_ ) == bucket_no_ );
 
-		disk_io_thread.reset( new std::thread( [this, buf_size](){
+		disk_io_thread.reset( new std::thread( [this](uint32_t buf_size){
+			if( compact )
+				buf_size = CompactBuffer( buffer.get(), buf_size );
 			disk->Write( disk_write_position, buffer.get(), buf_size );
 			disk_write_position += buf_size;
-		}));
+		}, buf_size) );
 	}
 
 	void EndToWrite(){
