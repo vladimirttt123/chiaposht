@@ -21,12 +21,12 @@
 
 // This stream not garantee same read order as write order
 struct BucketStream{
-	BucketStream( const std::string &fileName, uint16_t bucket_no, uint8_t log_num_buckets, uint16_t entry_size, uint16_t bits_begin, bool compact = true )
+	BucketStream( const std::string &fileName, uint16_t bucket_no, uint8_t log_num_buckets, uint16_t entry_size, uint16_t begin_bits, bool compact = true )
 		: disk( new FileDisk(fileName) )
 		, bucket_no_( bucket_no )
 		, log_num_buckets_( log_num_buckets )
 		, entry_size_(entry_size)
-		, bits_begin_(bits_begin)
+		, begin_bits_(begin_bits)
 		, buffer_size( BUF_SIZE/entry_size*entry_size )
 		, buffer( new uint8_t[buffer_size] )
 		, compact( compact&(log_num_buckets_>7) )
@@ -46,7 +46,7 @@ struct BucketStream{
 		if( disk_io_thread ) disk_io_thread->join();
 		buffer.swap( buf );
 
-		assert( compact || Util::ExtractNum64( buffer.get(), bits_begin_-log_num_buckets_, log_num_buckets_ ) == bucket_no_ );
+		assert( compact || Util::ExtractNum64( buffer.get(), begin_bits_-log_num_buckets_, log_num_buckets_ ) == bucket_no_ );
 
 		disk_io_thread.reset( new std::thread( [this](uint32_t buf_size){
 			if( compact )
@@ -85,9 +85,9 @@ struct BucketStream{
 			disk_io_thread->join();
 
 			to_read = GetNextReadSize();
-			assert( compact || Util::ExtractNum64( buffer.get(), bits_begin_-log_num_buckets_, log_num_buckets_ ) == bucket_no_ );
+			assert( compact || Util::ExtractNum64( buffer.get(), begin_bits_-log_num_buckets_, log_num_buckets_ ) == bucket_no_ );
 			buf.swap( buffer );
-			assert( compact || Util::ExtractNum64( buf.get(), bits_begin_-log_num_buckets_, log_num_buckets_ ) == bucket_no_ );
+			assert( compact || Util::ExtractNum64( buf.get(), begin_bits_-log_num_buckets_, log_num_buckets_ ) == bucket_no_ );
 
 			disk_read_position += to_read;
 			if( disk_read_position >= disk_write_position ){
@@ -99,12 +99,12 @@ struct BucketStream{
 			else
 				disk_io_thread.reset( new std::thread([this](){ReadBuffer();}) );
 
-			assert(  compact || Util::ExtractNum64( buf.get(), bits_begin_-log_num_buckets_, log_num_buckets_ ) == bucket_no_ );
+			assert(  compact || Util::ExtractNum64( buf.get(), begin_bits_-log_num_buckets_, log_num_buckets_ ) == bucket_no_ );
 		}
 		if( compact )
 			to_read = GrowBuffer( buf.get(), to_read );
 
-		assert( Util::ExtractNum64( buf.get(), bits_begin_-log_num_buckets_, log_num_buckets_ ) == bucket_no_ );
+		assert( Util::ExtractNum64( buf.get(), begin_bits_-log_num_buckets_, log_num_buckets_ ) == bucket_no_ );
 
 		return to_read;
 	}
@@ -126,7 +126,7 @@ private:
 	uint64_t disk_write_position = 0;
 	uint64_t disk_read_position = 0;
 	const uint16_t entry_size_;
-	const uint16_t bits_begin_;
+	const uint16_t begin_bits_;
 	std::mutex sync_mutex;
 
 	const uint32_t buffer_size;
@@ -137,7 +137,7 @@ private:
 		uint32_t to_read = GetNextReadSize();
 		assert( to_read > 0 );
 		disk->Read( disk_read_position, buffer.get(), to_read );
-		assert( compact || Util::ExtractNum64( buffer.get(), bits_begin_-log_num_buckets_, log_num_buckets_ ) == bucket_no_ );
+		assert( compact || Util::ExtractNum64( buffer.get(), begin_bits_-log_num_buckets_, log_num_buckets_ ) == bucket_no_ );
 	}
 
 
@@ -147,11 +147,11 @@ private:
 	}
 
 	uint32_t CompactBuffer( uint8_t *buf, uint32_t buf_size ){
-		uint8_t bytes_begin = (bits_begin_-log_num_buckets_)>>3;
+		uint8_t bytes_begin = (begin_bits_-log_num_buckets_)>>3;
 
 		// extract current bucket
-		if( (bits_begin_ - log_num_buckets_)&7 ){
-			uint8_t mask = 0xff<<(8-((bits_begin_-log_num_buckets_)&7));
+		if( (begin_bits_ - log_num_buckets_)&7 ){
+			uint8_t mask = 0xff<<(8-((begin_bits_-log_num_buckets_)&7));
 			for( uint32_t i = bytes_begin + 1; i < buf_size; i += entry_size_ )
 				buf[i] = (buf[i-1]&mask) | (buf[i]&(~mask));
 		}
@@ -167,7 +167,7 @@ private:
 	}
 
 	uint32_t GrowBuffer( uint8_t * buf, uint32_t buf_size ){
-		uint8_t bytes_begin = (bits_begin_-log_num_buckets_)>>3;
+		uint8_t bytes_begin = (begin_bits_-log_num_buckets_)>>3;
 		uint32_t full_buf_size = buf_size/(entry_size_-1)*entry_size_;
 		assert( full_buf_size <= buffer_size );
 
@@ -182,8 +182,8 @@ private:
 
 		// Now insert bucket
 		const uint8_t removed = bucket_no_ >> (log_num_buckets_-8);
-		if( (bits_begin_ - log_num_buckets_)&7 ){
-			const uint8_t shift = (bits_begin_-log_num_buckets_)&7;
+		if( (begin_bits_ - log_num_buckets_)&7 ){
+			const uint8_t shift = (begin_bits_-log_num_buckets_)&7;
 			const uint8_t mask = 0xff<<(8-shift);
 			const uint8_t insert_hi = (removed)>>shift;
 			const uint8_t insert_lo = (removed)<<(8-shift);

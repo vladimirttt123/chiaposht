@@ -64,13 +64,13 @@ struct ABuffer{
 
 // ==================================================================================================
 struct SortingBucket{
-	SortingBucket( const std::string &fileName, uint16_t bucket_no, uint32_t log_num_buckets, uint16_t entry_size, uint32_t bits_begin, uint8_t bucket_bits_count )
-		:	disk( new BucketStream(fileName, bucket_no, log_num_buckets, entry_size, bits_begin ) )
+	SortingBucket( const std::string &fileName, uint16_t bucket_no, uint8_t log_num_buckets, uint16_t entry_size, uint32_t begin_bits, uint8_t bucket_bits_count )
+		:	disk( new BucketStream(fileName, bucket_no, log_num_buckets, entry_size, begin_bits ) )
 		, bucket_no_( bucket_no )
 		, log_num_buckets_( log_num_buckets )
 		, bucket_bits_count_(bucket_bits_count)
 		, entry_size_(entry_size)
-		, bits_begin_(bits_begin)
+		, begin_bits_(begin_bits)
 		, statistics( new uint32_t[1<<bucket_bits_count] )
 		, disk_buffer( new ABuffer( disk->MaxBufferSize() ) )
 	{
@@ -90,7 +90,7 @@ struct SortingBucket{
 	inline void AddEntry( const uint8_t * entry, const uint32_t &statistics_bits ){
 		assert(disk); // Check not closed
 		assert( statistics_bits < ((uint32_t)1<<bucket_bits_count_) );
-		assert( Util::ExtractNum( entry, entry_size_, bits_begin_, bucket_bits_count_ ) == statistics_bits );
+		assert( Util::ExtractNum( entry, entry_size_, begin_bits_, bucket_bits_count_ ) == statistics_bits );
 
 		statistics[statistics_bits]++;
 		entries_count++;
@@ -116,7 +116,7 @@ struct SortingBucket{
 
 		// Adding to statistics
 		for( uint32_t i = 0; i < count; i++ )	{
-			assert( Util::ExtractNum( entries + i*entry_size_, entry_size_, bits_begin_, bucket_bits_count_ ) == stats[i] );
+			assert( Util::ExtractNum( entries + i*entry_size_, entry_size_, begin_bits_, bucket_bits_count_ ) == stats[i] );
 			statistics[stats[i]]++;
 		}
 		entries_count += count;
@@ -214,7 +214,7 @@ struct SortingBucket{
 					// Extract all bucket_bits
 					uint32_t bucket_bits[buf_size/entry_size_];
 					for( uint64_t buf_ptr = 0; buf_ptr < buf_size; buf_ptr += entry_size_ )
-						bucket_bits[buf_ptr/entry_size_] = (uint32_t)Util::ExtractNum64( buf.get() + buf_ptr, bits_begin_, bucket_bits_count_ );
+						bucket_bits[buf_ptr/entry_size_] = (uint32_t)Util::ExtractNum64( buf.get() + buf_ptr, begin_bits_, bucket_bits_count_ );
 
 					for( uint32_t l = 0; l < num_sub_locks; l++ ){
 						std::lock_guard lk(mutWrite[l]);
@@ -265,10 +265,10 @@ struct SortingBucket{
 
 		if( num_threads <= 1 ){
 			// Sort first bucket
-			QuickSort::Sort( memory, entry_size_, statistics[0], bits_begin_ + bucket_bits_count_ );
+			QuickSort::Sort( memory, entry_size_, statistics[0], begin_bits_ + bucket_bits_count_ );
 			for( uint32_t i = 1; i < buckets_count; i++ ){
 				assert( bucket_positions[i] == (bucket_positions[i-1] + statistics[i]*entry_size_) ); // check any bucket is full
-				QuickSort::Sort( memory + bucket_positions[i-1], entry_size_, statistics[i], bits_begin_ + bucket_bits_count_ );
+				QuickSort::Sort( memory + bucket_positions[i-1], entry_size_, statistics[i], begin_bits_ + bucket_bits_count_ );
 			}
 		}else {
 			// Sort in threads
@@ -277,7 +277,7 @@ struct SortingBucket{
 				threads[i] = std::thread( [&num_threads, &buckets_count, this, &bucket_positions, &memory]( uint32_t thread_no ){
 						for( uint32_t i = thread_no; i < buckets_count; i += num_threads ){
 							assert( i == 0 || bucket_positions[i] == (bucket_positions[i-1] + statistics[i]*entry_size_) ); // check any bucket is full
-							QuickSort::Sort( memory + (i == 0 ? 0 : bucket_positions[i-1]), entry_size_, statistics[i], bits_begin_ + bucket_bits_count_ );
+							QuickSort::Sort( memory + (i == 0 ? 0 : bucket_positions[i-1]), entry_size_, statistics[i], begin_bits_ + bucket_bits_count_ );
 						}
 					}, i );
 
@@ -289,7 +289,7 @@ struct SortingBucket{
 #ifndef NDEBUG
 		// Check sort
 		for( uint64_t i = 1; i < entries_count; i++ )
-			assert( Util::MemCmpBits( memory + (i-1) * entry_size_, memory + i*entry_size_, entry_size_, bits_begin_ ) < 0 );
+			assert( Util::MemCmpBits( memory + (i-1) * entry_size_, memory + i*entry_size_, entry_size_, begin_bits_ ) < 0 );
 #endif
 	}
 
@@ -297,12 +297,12 @@ struct SortingBucket{
 
 private:
 	std::unique_ptr<BucketStream> disk;
-	const uint32_t bucket_no_;
-	const uint32_t log_num_buckets_;
+	const uint16_t bucket_no_;
+	const uint8_t log_num_buckets_;
 	const uint8_t bucket_bits_count_;
 
 	const uint16_t entry_size_;
-	uint32_t bits_begin_;
+	const uint16_t begin_bits_;
 	std::unique_ptr<uint32_t[]> statistics;
 	std::unique_ptr<ABuffer> disk_buffer;
 	uint64_t entries_count = 0;
@@ -314,11 +314,11 @@ private:
 	inline void FillBuckets( uint8_t* memory, const uint8_t* disk_buffer, const uint64_t &buf_size, uint64_t * bucket_positions, int64_t direction ){
 		for( uint32_t buf_ptr = 0; buf_ptr < buf_size; buf_ptr += entry_size_ ){
 			// Define bucket to put into
-			uint64_t bucket_bits = Util::ExtractNum64( disk_buffer + buf_ptr, bits_begin_, bucket_bits_count_ );
+			uint64_t bucket_bits = Util::ExtractNum64( disk_buffer + buf_ptr, begin_bits_, bucket_bits_count_ );
 
 			// Check overflow
 			assert( bucket_positions[bucket_bits] < Size() );
-			assert( Util::ExtractNum64( disk_buffer + buf_ptr, bits_begin_ - log_num_buckets_, log_num_buckets_ ) == bucket_no_ );
+			assert( Util::ExtractNum64( disk_buffer + buf_ptr, begin_bits_ - log_num_buckets_, log_num_buckets_ ) == bucket_no_ );
 
 			// Put next entry to its bucket
 			memcpy( memory + bucket_positions[bucket_bits], disk_buffer + buf_ptr, entry_size_ );

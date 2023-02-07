@@ -94,7 +94,7 @@ TEST_CASE( "DISK_STREAMS" ){
 							cout << "h";
 						REQUIRE( Util::ExtractNum64( buf.get()+i, bits_begin, log2(num_buckets) ) == (bucket_no%num_buckets) );
 						uint8_t hash = 0;
-						for( uint32_t j = 0; j < (entry_size-1); j++ )
+						for( uint32_t j = 0; (j+1) < entry_size; j++ )
 							hash ^= buf.get()[i+j];
 						REQUIRE( hash == buf.get()[i+entry_size-1] );
 					}
