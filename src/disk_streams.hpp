@@ -142,8 +142,8 @@ private:
 
 
 	uint32_t GetNextReadSize() const {
-		return std::min( compact?(buffer_size/entry_size_*(entry_size_-1)) : buffer_size,
-										 (uint32_t)(disk_write_position - disk_read_position) );
+		return std::min( (uint64_t)(compact?(buffer_size/entry_size_*(entry_size_-1)) : buffer_size),
+										 disk_write_position - disk_read_position );
 	}
 
 	uint32_t CompactBuffer( uint8_t *buf, uint32_t buf_size ){
@@ -199,5 +199,34 @@ private:
 		return full_buf_size;
 	}
 };
+
+//uint32_t SequencedEntryOptimizer( uint8_t * entry, uint8_t *result_entry, uint16_t entry_size, uint16_t start_bit, uint64_t &last_value, bool can_be_negative = true ){
+//	uint32_t bytes_begin = start_bit>>8;
+//	// need additional buffer in case of size going to grow...
+
+//	for( uint32_t i = bytes_begin; i < buf_size; i+=entry_size){
+
+//		uint64_t next_val = Util::ExtractNum64( buf + i*entry_size, start_bit, 4 );
+//		if( can_be_negative ){
+//			uint64_t diff = last_value > next_val ? (last_value - next_val):(next_val-last_value);
+
+//		}else {
+//			uint64_t diff = next_val-last_value;
+//			if( diff <= 252 ){
+//				// to save one byte of diff
+//			} else if( diff <= 507 ){
+//				// to save 2 bytes 253 & diff - 252;
+//			} else if( diff <= 16132 ){
+//				// to save 3 bytes 254 & diff - 252;
+//			} else {
+//				// to save 5 bytes 255 & next_val
+//			}
+
+//			last_value = next_val;
+//		}
+//	}
+
+//	return buf_size;
+//}
 
 #endif  // SRC_CPP_DISK_STREAMS_HPP_
