@@ -63,21 +63,138 @@ private:
 
 
 struct SequenceCompacterStream : public IDiskStream{
-	SequenceCompacterStream( IDiskStream &base_stream ) : disk( base_stream ) {
+	SequenceCompacterStream( IDiskStream *base_stream, const uint32_t &max_buffer_size,
+													 const uint16_t &entry_size, uint8_t begin_bits )
+		: disk( base_stream )
+		, buf_size( max_buffer_size/entry_size*(entry_size+1) )
+		, buffer( new uint8_t[buf_size] )
+		, entry_size(entry_size), begin_bits_( begin_bits&7 ), begin_bytes( begin_bits>>3 )
+		, mask( 0xff00 >> begin_bits_ )
+	{
 	}
 
 	void Write( uint8_t *buf, const uint32_t &buf_size ){
-		disk.Write( buf, buf_size );
-	}
-	uint32_t Read( uint8_t *buf, const uint32_t &buf_size ){
-		return disk.Read( buf, buf_size );
+		num_entries_written += buf_size/entry_size;
+		disk->Write( buffer.get(), CompactBuffer( buf, buf_size ) );
 	}
 
-	uint64_t LeftToRead() const { return disk.LeftToRead(); }
-	void Close() { disk.Close(); }
-	void Remove() { disk.Remove(); }
+	uint32_t Read( uint8_t *buf, const uint32_t &buf_size ){
+		return GrowBuffer( buf, buf_size );
+	}
+
+	uint64_t LeftToRead() const { return (num_entries_written - num_entries_read)*entry_size; }
+	void Close() { disk->Close(); }
+	void Remove() { disk->Remove(); disk.reset(); }
+
 private:
-	IDiskStream &disk;
+	std::unique_ptr<IDiskStream> disk;
+	uint64_t last_value = 0;
+	uint64_t last_write_value = 0;
+	const uint32_t buf_size;
+	std::unique_ptr<uint8_t[]> buffer;
+	uint32_t processed_of_buffer = 0;
+	uint32_t buf_fillness = 0;
+	const uint16_t entry_size;
+	const uint8_t begin_bits_;
+	const uint8_t begin_bytes;
+	uint64_t num_entries_written = 0;
+	uint64_t num_entries_read = 0;
+	const uint8_t mask;
+
+	uint32_t CompactBuffer( uint8_t *buf, uint32_t buf_size ){
+		uint32_t buf_idx = 0;
+		auto setNext = [&buf_idx,this]( uint8_t v ){ buffer.get()[buf_idx++] = v;};
+
+		for( uint32_t i = 0; i < buf_size; ){
+			uint64_t next_val = Util::ExtractNum64( buf + i + begin_bytes, begin_bits_, 32 );
+			uint64_t diff = next_val - last_write_value;
+			if( diff <= 252 ){
+				// to save one byte of diff
+				setNext( diff );
+			} else if( diff <= 507 ){
+				// to save 2 bytes 253 & diff - 252;
+				setNext( 253 );
+				setNext( diff - 252 );
+			} else if( diff <= 16132 ){
+				// to save 3 bytes 254 & diff - 252;
+				setNext( 254 );
+				setNext( (diff -= 252)>>8 );
+				setNext( diff );
+			} else {
+				// save 255 & full value
+				setNext( 255 );
+				((uint32_t*)(buffer.get() + buf_idx))[0] = bswap_32( next_val );
+				buf_idx += 4;
+			}
+
+			// Process cuted entry
+			for( uint32_t j = 0; j < begin_bytes; j++ )
+				setNext( buf[i++] );
+			setNext( (buf[i]&mask) | (buf[i+4]&~mask) );
+			i += 5;
+			for( uint32_t j = begin_bytes + 5; j < entry_size; j++ )
+				setNext( buf[i++] );
+
+			// set result
+			last_write_value = next_val;
+		}
+
+		return buf_idx;
+	}
+
+	uint32_t GrowBuffer( uint8_t * buf, uint32_t buf_size ){
+		assert( buf_size%entry_size  == 0 );
+
+		uint32_t i = 0, value_to_insert;
+		while( i < buf_size && num_entries_read < num_entries_written ){
+			num_entries_read++;
+
+			uint8_t compress_code = NextByte();
+
+			switch( compress_code ){
+				case 255: // reconstruct full value
+					value_to_insert = (NextByte()<<24) | (NextByte()<<16) | (NextByte()<<8) | NextByte();
+				break;
+
+				case 254: // reconstruct from 2 bytes value;
+					value_to_insert = last_value + (NextByte()<<8) + NextByte() + 252;
+				break;
+
+				case 253: // reconstruct from 1 bytes value;
+					value_to_insert = last_value + NextByte() + 252;
+				break;
+
+				default: // one byte value
+					value_to_insert = last_value + compress_code;
+				break;
+			}
+
+			// recreate the entry
+			for( uint32_t j = 0; j < begin_bytes; j++ )
+				buf[i++] = NextByte();
+			auto splitted = NextByte();
+			buf[i++] = (splitted&mask)|(value_to_insert>>(24+begin_bits_));
+			buf[i++] = value_to_insert >> (16+begin_bits_);
+			buf[i++] = value_to_insert >> (8+begin_bits_);
+			buf[i++] = value_to_insert >> begin_bits_;
+			buf[i++] = (value_to_insert<<(8-begin_bits_)) | (splitted&~mask);
+			for( uint32_t j = begin_bytes + 5; j < entry_size; j++ )
+				buf[i++] = NextByte();
+
+			last_value = value_to_insert;
+		}
+
+		return i;
+	}
+
+	inline uint32_t NextByte(){
+		if( buf_fillness <= processed_of_buffer ){
+			buf_fillness = disk->Read( buffer.get(), buf_size );
+			processed_of_buffer = 0;
+		}
+
+		return buffer[processed_of_buffer++];
+	}
 };
 
 
@@ -172,10 +289,15 @@ struct BucketStream{
 		, buffer( new uint8_t[buffer_size] )
 		, compact( compact&(log_num_buckets_>7) )
 	{
-		if( this->compact )
+		if( this->compact ){
+			if( sequence_start_bit >= begin_bits )
+				disk.reset( new SequenceCompacterStream( disk.release(), buffer_size,
+																								 entry_size-1, sequence_start_bit - 8 ) );
+
 			disk.reset( new ByteRemoverStream( disk.release(),
 																				 entry_size, begin_bits_ - log_num_buckets,
 																				 bucket_no_ >> (log_num_buckets_-8) ) );
+		}
 	}
 
 	uint32_t MaxBufferSize() const { return buffer_size; }
