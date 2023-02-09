@@ -331,8 +331,9 @@ private:
 		const uint8_t subbucket_bits;
 		std::unique_ptr<std::thread> next_bucket_sorting_thread;
 
-		uint8_t k_, phase_, table_index_;
+		const uint8_t k_, phase_, table_index_;
 		const uint32_t stats_mask;
+		uint64_t time_total_wait = 0;
 
 		const inline uint8_t* memory_start() const {return buckets_[next_bucket_to_sort-1].get();}
 
@@ -357,8 +358,11 @@ private:
 				double const qs_ram = entry_size_ * b.Count() / (1024.0 * 1024.0 * 1024.0);
 
 				std::cout << "\r\tk" << (uint32_t)k_ << " p" << (uint32_t)phase_ << " t" << (uint32_t)table_index_
-									<< " Bucket " << bucket_i << " Ram: " << std::fixed << std::setprecision(3)
-									<< have_ram << "GiB, size: " <<  qs_ram << "GiB, count: " << b.Count() << std::flush;
+									<< " Bucket " << bucket_i << " Ram: " << std::fixed
+									<< std::setprecision( have_ram > 10 ? 1:( have_ram>1? 2 : 3) ) << have_ram << "GiB, size: "
+									<< std::setprecision( qs_ram > 10 ? 1:( qs_ram>1? 2 : 3) ) <<  qs_ram << "GiB" << std::flush;
+
+				auto start_time = std::chrono::high_resolution_clock::now();
 
 				if( next_bucket_sorting_thread ){
 					next_bucket_sorting_thread->join();
@@ -367,20 +371,34 @@ private:
 				else
 					b.SortToMemory( num_threads );
 
-				std::cout << ", times: ( read:" << b.read_time/1000.0 << "s, total: " << b.sort_time/1000.0 << "s )" << std::flush;
+				auto end_time = std::chrono::high_resolution_clock::now();
+				auto wait_time = (end_time - start_time)/std::chrono::milliseconds(1);
+				time_total_wait += wait_time;
+				std::cout << ", times: ( wait:" << wait_time/1000.0 << ", read:" << b.read_time/1000.0 << "s, total: "
+									<< b.sort_time/1000.0 << "s )" << std::flush;
 
         this->final_position_start = this->final_position_end;
 				this->final_position_end += b.Size();
 				this->next_bucket_to_sort += 1;
 
-				if( this->next_bucket_to_sort >= buckets_.size() || buckets_[this->next_bucket_to_sort].Size() == 0 )
-					std::cout << std::endl; // final endline
+				if( this->next_bucket_to_sort >= buckets_.size() || buckets_[this->next_bucket_to_sort].Size() == 0 ){
+					// final bucket - show some stats
+					uint64_t read_time = 0, sort_time = 0;
+					for(uint32_t i = 0; i < next_bucket_to_sort; i++ ){
+						read_time += buckets_[i].read_time;
+						sort_time += buckets_[i].sort_time;
+					}
+					std::cout << std::endl << "\tk" << (uint32_t)k_ << " p" << (uint32_t)phase_ << " t" << (uint32_t)table_index_
+										<< " avg times:( wait: " << time_total_wait/1000.0/next_bucket_to_sort << "s, read: "
+										<< read_time/1000.0/next_bucket_to_sort << "s, total sort:"
+										<< sort_time/1000.0/next_bucket_to_sort << "s )" << std::endl;
+				}
 
 				if( num_threads > 1 && this->next_bucket_to_sort < buckets_.size() &&
 						( b.Size() + buckets_[this->next_bucket_to_sort].Size() ) < memory_size_ ){
 					// we have memory to sort next bucket
 					next_bucket_sorting_thread.reset(
-								new std::thread( [this](){ buckets_[this->next_bucket_to_sort].SortToMemory( num_threads - 1 );} ) );
+								new std::thread( [this](){ buckets_[this->next_bucket_to_sort].SortToMemory( num_threads >> 1 );} ) );
 				}
 
 				// Deletes the bucket file
