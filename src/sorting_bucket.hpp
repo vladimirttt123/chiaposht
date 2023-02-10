@@ -64,8 +64,9 @@ struct ABuffer{
 
 // ==================================================================================================
 struct SortingBucket{
-	SortingBucket( const std::string &fileName, uint16_t bucket_no, uint8_t log_num_buckets, uint16_t entry_size, uint32_t begin_bits, uint8_t bucket_bits_count )
-		:	disk( new BucketStream(fileName, bucket_no, log_num_buckets, entry_size, begin_bits ) )
+	SortingBucket( const std::string &fileName, uint16_t bucket_no, uint8_t log_num_buckets, uint16_t entry_size, uint32_t begin_bits, uint8_t bucket_bits_count,
+								 bool enable_compression = true, uint16_t sequence_start_bit = -1 )
+		:	disk( new BucketStream(fileName, bucket_no, log_num_buckets, entry_size, begin_bits, enable_compression, sequence_start_bit ) )
 		, bucket_no_( bucket_no )
 		, log_num_buckets_( log_num_buckets )
 		, bucket_bits_count_(bucket_bits_count)

@@ -85,6 +85,7 @@ public:
         , prev_bucket_buf_size(
             2 * (stripe_size + 10 * (kBC / pow(2, kExtraBits))) * entry_size)
 				, num_threads( num_threads )
+				, num_background_treads( num_threads >> 1 )
 				, subbucket_bits( std::min( (uint8_t)32, std::max( (uint8_t)2, (uint8_t)(k - log_num_buckets - kSubBucketBits) ) ) )
 				, k_(k), phase_(phase), table_index_(table_index)
 				, stats_mask( ( (uint64_t)1<<subbucket_bits)-1 )
@@ -101,7 +102,8 @@ public:
                 fs::path(tmp_dirname) /
                 fs::path(filename + ".sort_bucket_" + bucket_number_padded.str() + ".tmp");
 						buckets_.emplace_back( SortingBucket( bucket_filename.string(), bucket_i, log_num_buckets_,
-																									entry_size, begin_bits_ + log_num_buckets, subbucket_bits ) );
+																									entry_size, begin_bits_ + log_num_buckets, subbucket_bits,
+																									true, (k >= 32 && phase == 1) ? (table_index == 1 ? k : (k+kExtraBits)) : -1 ) );
         }
     }
 
@@ -327,7 +329,7 @@ private:
     uint64_t final_position_start = 0;
     uint64_t final_position_end = 0;
     uint64_t next_bucket_to_sort = 0;
-		uint32_t num_threads;
+		uint32_t num_threads, num_background_treads;
 		const uint8_t subbucket_bits;
 		std::unique_ptr<std::thread> next_bucket_sorting_thread;
 
@@ -362,18 +364,25 @@ private:
 									<< std::setprecision( have_ram > 10 ? 1:( have_ram>1? 2 : 3) ) << have_ram << "GiB, size: "
 									<< std::setprecision( qs_ram > 10 ? 1:( qs_ram>1? 2 : 3) ) <<  qs_ram << "GiB" << std::flush;
 
-				auto start_time = std::chrono::high_resolution_clock::now();
 
+				int64_t wait_time = 0;
 				if( next_bucket_sorting_thread ){
+					std::cout << ", bg thr: " << num_background_treads << std::flush;
+					auto start_time = std::chrono::high_resolution_clock::now();
 					next_bucket_sorting_thread->join();
+					auto end_time = std::chrono::high_resolution_clock::now();
 					next_bucket_sorting_thread.reset();
+
+					wait_time = (end_time - start_time)/std::chrono::milliseconds(1);
+					time_total_wait += wait_time;
+					// if we are waiting for sorts than we can add threads to it
+					if( wait_time > 10 && num_background_treads < num_threads )
+						num_background_treads++;
 				}
 				else
 					b.SortToMemory( num_threads );
 
-				auto end_time = std::chrono::high_resolution_clock::now();
-				auto wait_time = (end_time - start_time)/std::chrono::milliseconds(1);
-				time_total_wait += wait_time;
+
 				std::cout << ", times: ( wait:" << wait_time/1000.0 << ", read:" << b.read_time/1000.0 << "s, total: "
 									<< b.sort_time/1000.0 << "s )" << std::flush;
 
@@ -398,7 +407,7 @@ private:
 						( b.Size() + buckets_[this->next_bucket_to_sort].Size() ) < memory_size_ ){
 					// we have memory to sort next bucket
 					next_bucket_sorting_thread.reset(
-								new std::thread( [this](){ buckets_[this->next_bucket_to_sort].SortToMemory( num_threads >> 1 );} ) );
+								new std::thread( [this](){ buckets_[this->next_bucket_to_sort].SortToMemory( num_background_treads );} ) );
 				}
 
 				// Deletes the bucket file
