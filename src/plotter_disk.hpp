@@ -135,13 +135,20 @@ public:
             }
             num_buckets = kMinBuckets;
         } else if (num_buckets > kMaxBuckets) {
-            if (num_buckets_input != 0) {
-                throw InvalidValueException("Maximum buckets is " + std::to_string(kMaxBuckets));
-            }
-            double required_mem =
-								(max_table_size / num_buckets) / kMemSortProportion / (1024 * 1024) + sub_mbytes;
-            throw InsufficientMemoryException(
-                "Do not have enough memory. Need " + std::to_string(required_mem) + " MiB");
+//            if (num_buckets_input != 0) {
+//                throw InvalidValueException("Maximum buckets is " + std::to_string(kMaxBuckets));
+//            }
+						if( num_buckets_input == 0 ){
+							std::cout << "Number of buckets is not proveded and automaticly selected to be "
+												<< num_buckets << " that is not enough for proveded buffer size "
+												<< buf_megabytes_input
+												<< "MiB. Please increase buffer or override numer of buckets manually."
+												<< std::endl;
+							double required_mem =
+									(max_table_size / num_buckets) / kMemSortProportion / (1024 * 1024) + sub_mbytes;
+							throw InsufficientMemoryException(
+									"Do not have enough memory. Need " + std::to_string(required_mem) + " MiB");
+						}
         }
         uint32_t log_num_buckets = log2(num_buckets);
         assert(log2(num_buckets) == ceil(log2(num_buckets)));
