@@ -121,7 +121,8 @@ TEST_CASE( "DISK_STREAMS" ){
 				for( uint32_t bits_begin : begins ){
 					std::cout << "BucketStream test - num_buckets: " << num_buckets << ", entry_size: " << entry_size << ", bits_begin: " << bits_begin << std::endl;
 
-					BucketStream stream = BucketStream( "bucket.stream.tmp", bucket_no % num_buckets, log2(num_buckets), entry_size, bits_begin + log2(num_buckets) );
+					BucketStream stream = BucketStream( "bucket.stream.tmp", bucket_no % num_buckets
+																							, log2(num_buckets), entry_size, bits_begin + log2(num_buckets) );
 
 					auto buf = std::make_unique<uint8_t[]>(stream.MaxBufferSize());
 					for( uint64_t i = 0; i < iteration; i += stream.MaxBufferSize()/entry_size ){
@@ -131,7 +132,6 @@ TEST_CASE( "DISK_STREAMS" ){
 					}
 
 					stream.EndToWrite();
-					stream.StartToRead();
 					uint32_t buf_size = 0;
 					uint64_t total_read = 0;
 					while( (buf_size = stream.Read( buf ) ) > 0 ){

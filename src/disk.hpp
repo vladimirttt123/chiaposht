@@ -37,9 +37,9 @@ using namespace std::chrono_literals; // for operator""min;
 #include "./util.hpp"
 #include "threading.hpp"
 
-constexpr uint64_t write_cache = 1024 * 1024;
-constexpr uint64_t read_ahead = 1024 * 1024;
-uint64_t BUF_SIZE = 1024*1024;
+constexpr uint64_t write_cache = 256 * 1024;
+constexpr uint64_t read_ahead = 256 * 1024;
+uint64_t BUF_SIZE = 256*1024;
 bool LEAVE_FILES = false;
 
 struct Disk {
@@ -102,15 +102,14 @@ void disk_log(fs::path const& filename, op_t const op, uint64_t offset, uint64_t
 #endif
 
 struct FileDisk {
-		explicit FileDisk( const fs::path &filename, bool withPreRemove = false )
+		explicit FileDisk( const fs::path &filename, bool forWrite = true )
     {
         filename_ = filename;
 
-				if( withPreRemove && fs::remove( filename ) )
-					std::cout << "Removed pre exists file " << filename << std::endl;
-
-				Open(writeFlag);
-				SetCouldBeClosed();
+				if( forWrite ) {
+					Open( writeFlag );
+					SetCouldBeClosed();
+				}
     }
 
     void Open(uint8_t flags = 0)

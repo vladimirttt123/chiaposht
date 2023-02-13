@@ -71,7 +71,7 @@ public:
             fs::path bucket_filename =
                 fs::path(tmp_dirname) /
                 fs::path(filename + ".sort_bucket_" + bucket_number_padded.str() + ".tmp");
-						this->bucket_files.push_back(FileDisk(bucket_filename, true));
+						this->bucket_files.push_back(FileDisk(bucket_filename));
         }
         this->final_position_start = 0;
         this->final_position_end = 0;

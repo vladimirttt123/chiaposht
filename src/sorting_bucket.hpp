@@ -154,7 +154,6 @@ struct SortingBucket{
 
 	void SortToMemory( uint32_t num_threads = 2 ){
 		if( memory_ ) return; // already sorted;
-		disk->StartToRead(); // initialize reading
 
 		// Init memory to sort into
 		memory_.reset( new uint8_t[Size()] );
