@@ -40,7 +40,7 @@ struct Phase2Results
 };
 
 
-inline void ScanTable( FileDisk* const disk, int table_index, const int64_t &table_size, int16_t const &entry_size,
+inline void ScanTable( IReadDiskStream *disk, int table_index, const int64_t &table_size, int16_t const &entry_size,
 											 bitfield &current_bitfield, bitfield &next_bitfield, const uint32_t &num_threads,
 											 uint8_t const pos_offset_size, uint8_t const k ){
 	Timer scan_timer;
@@ -61,7 +61,7 @@ inline void ScanTable( FileDisk* const disk, int table_index, const int64_t &tab
 	// Run the threads
 	for( uint32_t i = 0; i < max_threads; i++ ){
 		threads[i] = std::thread( [table_index, table_size, entry_size, pos_offset_size, k, read_bufsize, &read_mutex, &union_mutex]
-															(FileDisk* disk, int64_t *read_cursor, const bitfield * current_bitfield, bitfield *next_bitfield){
+															(IReadDiskStream *disk, int64_t *read_cursor, const bitfield * current_bitfield, bitfield *next_bitfield){
 			auto buffer = std::make_unique<uint8_t[]>(read_bufsize);
 			bitfieldReader cur_bitfield( *current_bitfield );
 			while( true ){
@@ -72,7 +72,7 @@ inline void ScanTable( FileDisk* const disk, int table_index, const int64_t &tab
 					buf_size = std::min( read_bufsize, (table_size*(int64_t)entry_size) - *read_cursor );
 					if( buf_size == 0 ) return;// nothing to read -> exit
 
-					disk->Read( *read_cursor, buffer.get(), buf_size );
+					disk->Read( buffer, buf_size );
 					*read_cursor += buf_size;
 					cur_bitfield.setLimits( buf_start/entry_size, buf_size/entry_size );
 				}
@@ -157,7 +157,7 @@ inline void SortTable7Thread( const uint8_t *buffer, const uint64_t buf_size,
 }
 
 
-inline void SortTable7( FileDisk* const disk, FileDisk* const result_disk,
+inline void SortTable7( IReadDiskStream &disk, IWriteDiskStream &result_disk,
 												bitfield_index const &index, const int64_t &table_size,
 												int16_t const &entry_size, uint32_t num_threads,
 												uint8_t const pos_offset_size, uint8_t const k){
@@ -167,22 +167,21 @@ inline void SortTable7( FileDisk* const disk, FileDisk* const result_disk,
 
 	auto threads = std::make_unique<std::thread[]>(num_threads);
 	uint64_t buf_size = ((uint64_t)num_threads)*(BUF_SIZE/entry_size)*entry_size;
-	auto reader = BufferedReader( disk, 0, buf_size , table_size*entry_size );
+	auto buf = std::make_unique<uint8_t[]>(buf_size);
 	auto result = std::make_unique<uint8_t[]>(buf_size);
-	uint64_t file_size = 0;
 
-	while( (buf_size = reader.MoveNextBuffer() ) > 0 ){
+	while( (buf_size = disk.Read( buf, buf_size ) ) > 0 ){
 
 		uint64_t from_ptr = 0, size_per_thread = (buf_size/num_threads/entry_size)*entry_size;
 
 		// Run threads
 		if( size_per_thread > MIN_SIZE_PER_THREAD )
 			for( uint64_t t = 0; t < num_threads-1; t++, from_ptr += size_per_thread )
-				threads[t] = std::thread( SortTable7Thread, reader.GetBuffer(), buf_size, entry_size, &index,
+				threads[t] = std::thread( SortTable7Thread, buf.get(), buf_size, entry_size, &index,
 																	from_ptr, from_ptr+size_per_thread, result.get(), pos_offset_size, k );
 
 		// Do some work in current thread
-		SortTable7Thread( reader.GetBuffer(), buf_size, entry_size, &index, from_ptr, buf_size, result.get(),
+		SortTable7Thread( buf.get(), buf_size, entry_size, &index, from_ptr, buf_size, result.get(),
 											pos_offset_size, k );
 
 		// Wait for threads
@@ -190,11 +189,8 @@ inline void SortTable7( FileDisk* const disk, FileDisk* const result_disk,
 			for( uint32_t t = 0; t < num_threads-1; t++ )
 				threads[t].join();
 
-		result_disk->Write( reader.GetBufferStartPosition(), result.get(), buf_size );
-		file_size += buf_size;
+		result_disk.Write( result, buf_size );
 	}
-	result_disk->Truncate( file_size ); // do not think this is necessary
-	std::cout << " entry size: " << entry_size << " file_size=" << file_size << std::flush;
 }
 
 
@@ -308,9 +304,6 @@ Phase2Results RunPhase2(
     // Only table 2-6 are passed on as SortManagers, to phase3
     output_files.resize(7 - 2);
 
-		FileDisk *table7_rewrited = &tmp_1_disks.emplace_back(
-					fs::path(tmp_dirname) / fs::path(filename + ".table7.p2.tmp") );
-
     // note that we don't iterate over table_index=1. That table is special
     // since it contains different data. We'll do an extra scan of table 1 at
     // the end, just to compact it.
@@ -336,9 +329,13 @@ Phase2Results RunPhase2(
 				}
 				auto next_bitfield = std::make_unique<bitfield>( std::max( current_bitfield->size(), table_size ) );
 
-				ScanTable( &tmp_1_disks[table_index], table_index, table_size, entry_size,
-									 *current_bitfield.get(), *next_bitfield.get(), num_threads, pos_offset_size, k );
-
+				{ // Scope for reader
+					auto table_reader = std::unique_ptr<IReadDiskStream>( table_index == 7 ?
+										CreateLastTableReader( &tmp_1_disks[table_index], k, entry_size ):
+										new ReadFileStream( &tmp_1_disks[table_index], table_size * entry_size ) );
+					ScanTable( table_reader.get(), table_index, table_size, entry_size,
+										 *current_bitfield.get(), *next_bitfield.get(), num_threads, pos_offset_size, k );
+				}
 				std::cout << "\ttable " << table_index << ": sort " << std::flush;
         Timer sort_timer;
 
@@ -358,7 +355,9 @@ Phase2Results RunPhase2(
 				bitfield_index const index(*next_bitfield.get());
 
 				if( table_index == 7 ){
-					SortTable7( &tmp_1_disks[table_index], table7_rewrited, index, table_size,
+					auto table7_reader = std::unique_ptr<IReadDiskStream>(CreateLastTableReader(&tmp_1_disks[7], k, entry_size ) );
+					auto table7_writer =  std::unique_ptr<IWriteDiskStream>(CreateLastTableWriter( &tmp_1_disks[8], k, entry_size ) );
+					SortTable7( *table7_reader.get(), *table7_writer.get(), index, table_size,
 											entry_size, num_threads, pos_offset_size, k );
 					// we do not need any more table 7 file from phase 1
 					tmp_1_disks[table_index].Truncate(0);
@@ -448,7 +447,7 @@ Phase2Results RunPhase2(
 		BufferedDisk disk_table1(&tmp_1_disks[1], table_size * entry_size);
 		return {
 				FilteredDisk(std::move(disk_table1), current_bitfield.release(), entry_size)
-				, BufferedDisk(table7_rewrited, new_table_sizes[7] * new_entry_size)
+				, BufferedDisk(&tmp_1_disks[8], new_table_sizes[7] * new_entry_size)
         , std::move(output_files)
         , std::move(new_table_sizes)
     };

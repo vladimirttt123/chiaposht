@@ -197,6 +197,9 @@ public:
             tmp_1_filenames.push_back(
                 fs::path(tmp_dirname) / fs::path(filename + ".table" + std::to_string(i) + ".tmp"));
         }
+				// for rewrited table 7
+				tmp_1_filenames.push_back( fs::path(tmp_dirname) / fs::path(filename + ".table7.p2.tmp") );
+
         fs::path tmp_2_filename = fs::path(tmp2_dirname) / fs::path(filename + ".2.tmp");
         fs::path final_2_filename = fs::path(final_dirname) / fs::path(filename + ".2.tmp");
         fs::path final_filename = fs::path(final_dirname) / fs::path(filename);

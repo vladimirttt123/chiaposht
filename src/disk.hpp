@@ -150,6 +150,7 @@ struct FileDisk {
         filename_ = std::move(fd.filename_);
         f_ = fd.f_;
         fd.f_ = nullptr;
+				writeMax = fd.writeMax;
     }
 
     FileDisk(const FileDisk &) = delete;

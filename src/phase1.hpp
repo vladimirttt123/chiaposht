@@ -74,6 +74,7 @@ struct GlobalData {
     uint64_t right_writer;
     uint64_t stripe_size;
     uint8_t num_threads;
+		IWriteDiskStream *table7;
 };
 
 GlobalData globals;
@@ -510,10 +511,11 @@ void* phase1_thread(THREADDATA* ptd)
 					globals.R_sort_manager->AddAllToCache( right_writer_buf.get(), right_writer_count, right_entry_size_bytes );
         } else {
             // Writes out the right table for table 7
-            (*ptmp_1_disks)[table_index + 1].Write(
-                globals.right_writer,
-                right_writer_buf.get(),
-                right_writer_count * right_entry_size_bytes);
+//            (*ptmp_1_disks)[table_index + 1].Write(
+//                globals.right_writer,
+//                right_writer_buf.get(),
+//                right_writer_count * right_entry_size_bytes);
+						globals.table7->Write( right_writer_buf, right_writer_count * right_entry_size_bytes );
         }
         globals.right_writer += right_writer_count * right_entry_size_bytes;
         globals.right_writer_count += right_writer_count;
@@ -607,6 +609,8 @@ std::vector<uint64_t> RunPhase1(
 				1, // Phase
 				2, // table
 				num_threads );
+
+		globals.table7 = CreateLastTableWriter( &tmp_1_disks[7], k, EntrySizes::GetMaxEntrySize(k, 7, true ) );
 
     // These are used for sorting on disk. The sort on disk code needs to know how
     // many elements are in each bucket.
@@ -754,6 +758,9 @@ std::vector<uint64_t> RunPhase1(
     }
     table_sizes[0] = 0;
     globals.R_sort_manager.reset();
+		globals.table7->Close();
+		delete globals.table7;
+
     return table_sizes;
 }
 

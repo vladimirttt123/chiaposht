@@ -35,16 +35,18 @@ struct IReadDiskStream{
 
 // This class not thread safe!!!
 struct AsyncStreamWriter : public IWriteDiskStream {
-	AsyncStreamWriter( IWriteDiskStream * disk, uint32_t buf_size )
-		: max_buffer_size(buf_size), disk(disk) {}
-
-	const uint32_t max_buffer_size;
+	AsyncStreamWriter( IWriteDiskStream * disk, const uint32_t max_buffer_size = 0 )
+		: disk(disk), last_buf_size(max_buffer_size) {}
 
 	void Write( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) override {
-		if( io_thread != nullptr ) io_thread->join();
-		if( !buffer ) buffer.reset( new uint8_t[max_buffer_size] );
+		if( io_thread != nullptr ) {
+			io_thread->join();
+			delete io_thread;
+		}
+		if( !buffer || last_buf_size < buf_size )
+			buffer.reset( new uint8_t[last_buf_size = buf_size] );
 		buf.swap( buffer );
-		io_thread = new std::thread( [this](uint32_t size){ disk->Write(buffer, size);}, buf_size );
+		io_thread = new std::thread( [this](uint32_t b_size){ disk->Write(buffer, b_size);}, buf_size );
 	};
 
 	void Close() override {
@@ -62,6 +64,7 @@ private:
 	std::unique_ptr<IWriteDiskStream> disk;
 	std::unique_ptr<uint8_t[]> buffer;
 	std::thread *io_thread = nullptr;
+	uint32_t last_buf_size = 0;
 };
 
 // ====================================================
@@ -187,7 +190,7 @@ struct ReadFileStream : public IReadDiskStream{
 		}
 	};
 
-	~ReadFileStream() { if(disk) disk->Close(); }
+	~ReadFileStream() { Close(); }
 private:
 	std::unique_ptr<FileDisk> disk;
 	uint64_t read_position = 0;
@@ -196,10 +199,9 @@ private:
 
 
 struct SequenceCompacterWriter : public IWriteDiskStream{
-	SequenceCompacterWriter( IWriteDiskStream *disk, const uint32_t &max_buffer_size,
+	SequenceCompacterWriter( IWriteDiskStream *disk,
 													 const uint16_t &entry_size, const uint8_t &begin_bits )
 		: disk( disk )
-		, buffer( new uint8_t[max_buffer_size/entry_size*(entry_size+1)] )
 		, entry_size(entry_size), begin_bits_( begin_bits&7 ), begin_bytes( begin_bits>>3 )
 		, mask( 0xff00 >> begin_bits_ )
 	{
@@ -207,15 +209,21 @@ struct SequenceCompacterWriter : public IWriteDiskStream{
 
 	void Write( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) override {
 		num_entries_written += buf_size/entry_size;
+		if( last_buffer_size != buf_size )
+			buffer.reset( new uint8_t[(last_buffer_size=buf_size)/entry_size*(entry_size+1)] );
 		disk->Write( buffer, CompactBuffer( buf.get(), buf_size ) );
 	}
 
-	void Close() override { if(disk){ disk->Close(); disk.reset(); } }
+	void Close() override {
+		if(disk){ disk->Close(); disk.reset(); }
+		buffer.reset();
+	}
 
 	~SequenceCompacterWriter(){if(disk) disk->Close();}
 private:
 	std::unique_ptr<IWriteDiskStream> disk;
 	uint64_t last_write_value = 0;
+	uint32_t last_buffer_size = 0;
 	std::unique_ptr<uint8_t[]> buffer;
 	const uint16_t entry_size;
 	const uint8_t begin_bits_;
@@ -731,13 +739,13 @@ struct BucketStream{
 			disk_output.reset( new WriteFileStream( bucket_file = new FileDisk( fileName ) ) );
 			if( compact ){
 				if( sequence_start_bit >= begin_bits_ )
-					disk_output.reset( new SequenceCompacterWriter( disk_output.release(), buffer_size,
-																													entry_size_-1, sequence_start_bit - 8 ) );
+					disk_output.reset( new SequenceCompacterWriter( disk_output.release(),
+																					entry_size_-1, sequence_start_bit - 8 ) );
 
 				disk_output.reset( new ByteCutterStream( disk_output.release(),
 																	entry_size_, begin_bits_ - log_num_buckets_ ) );
 			}
-			disk_output.reset( new AsyncStreamWriter(disk_output.release(), buf_size ) );
+			disk_output.reset( new AsyncStreamWriter(disk_output.release() ) );
 		}
 
 		disk_output->Write( buf, buf_size );
@@ -805,6 +813,22 @@ private:
 	const bool compact;
 
 };
+
+
+IReadDiskStream * CreateLastTableReader(FileDisk * file, uint8_t k, uint16_t entry_size){
+	IReadDiskStream *res = new ReadFileStream( file, file->GetWriteMax() );
+
+	if( k >= 32 )
+		res = new SequenceCompacterReader( res, entry_size, k );
+
+	return res;
+}
+IWriteDiskStream * CreateLastTableWriter( FileDisk * file, uint8_t k, uint16_t entry_size ){
+	IWriteDiskStream * res = new WriteFileStream( file );
+	if( k >= 32 )
+		res = new SequenceCompacterWriter( res, entry_size, k );
+	return res;
+}
 
 
 #endif  // SRC_CPP_DISK_STREAMS_HPP_
