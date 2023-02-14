@@ -76,18 +76,25 @@ TEST_CASE( "DISK_STREAMS" ){
 					for( uint32_t j = 7; j< entry_size; j++ )
 						buf.get()[i*entry_size+j] = rand();
 				}
-				SequenceCompacterStream stream = SequenceCompacterStream(
-							new SimpleDiskStream("sequence.stream.tmp"), entries_per_buffer*entry_size,
-							entry_size, bits_begin );
-				for( uint64_t i = 0; i < iteration; i+=entries_per_buffer ){
-						stream.Write( buf.get()+ i*entry_size,
-													((i+entries_per_buffer) < iteration ? entries_per_buffer : iteration%entries_per_buffer) *entry_size );
+				FileDisk disk = FileDisk("sequence.stream.tmp");
+				{
+					SequenceCompacterWriter wstream = SequenceCompacterWriter(
+								new WriteFileStream(&disk), entry_size, bits_begin );
+
+					for( uint64_t i = 0; i < iteration; i+=entries_per_buffer ){
+						auto subBuf = std::unique_ptr<uint8_t[]>( buf.get() + i*entry_size );
+						wstream.Write( subBuf, ((i+entries_per_buffer) < iteration ?
+																			entries_per_buffer : iteration%entries_per_buffer) *entry_size );
+						subBuf.release();
+					}
 				}
 
+				SequenceCompacterReader rstream = SequenceCompacterReader(
+							new ReadFileStream(&disk, disk.GetWriteMax() ), entry_size, bits_begin );
 				auto rbuf = make_unique<uint8_t[]>(entries_per_buffer*entry_size);
 				uint64_t buf_ptr = 0;
-				for( uint32_t buf_size = stream.Read(rbuf.get(), entries_per_buffer*entry_size);
-						 buf_size > 0; buf_size = stream.Read(rbuf.get(), entries_per_buffer*entry_size) ){
+				for( uint32_t buf_size = rstream.Read( rbuf, entries_per_buffer*entry_size);
+						 buf_size > 0; buf_size = rstream.Read( rbuf, entries_per_buffer*entry_size) ){
 					for( uint32_t i = 0; i < buf_size; i++ )
 						REQUIRE( rbuf.get()[i] == buf.get()[buf_ptr++] );
 				}
