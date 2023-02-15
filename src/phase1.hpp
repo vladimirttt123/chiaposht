@@ -609,9 +609,10 @@ std::vector<uint64_t> RunPhase1(
 				1, // Phase
 				2, // table
 				num_threads,
-				(flags&ENABLE_COMPACTION)!=0);
+				(flags&NO_COMPACTION)==0);
 
-		globals.table7 = CreateLastTableWriter( &tmp_1_disks[7], k, EntrySizes::GetKeyPosOffsetSize(k) );
+		globals.table7 = CreateLastTableWriter( &tmp_1_disks[7], k,
+										EntrySizes::GetKeyPosOffsetSize(k), (flags&NO_COMPACTION)==0 );
 
     // These are used for sorting on disk. The sort on disk code needs to know how
     // many elements are in each bucket.
@@ -684,7 +685,7 @@ std::vector<uint64_t> RunPhase1(
 						1, // Phase
 						table_index+2,
 						num_threads,
-						(flags&ENABLE_COMPACTION)!=0 );
+						(flags&NO_COMPACTION)==0 );
 
         globals.L_sort_manager->TriggerNewBucket(0);
 

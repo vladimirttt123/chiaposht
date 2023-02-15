@@ -212,7 +212,8 @@ Phase3Results RunPhase3(
 						k,
 						3, // Phase
 						table_index,
-						num_threads );
+						num_threads,
+						(flags&NO_COMPACTION)==0 );
 
 				bool should_read_entry = true;
 				std::vector<uint64_t> left_new_pos(kCachedPositionsSize);
@@ -403,7 +404,8 @@ Phase3Results RunPhase3(
 						k,
 						3, // Phase
 						table_index + 1,
-						num_threads );
+						num_threads,
+						(flags&NO_COMPACTION)==0 );
 
 				std::vector<uint8_t> park_deltas;
 				std::vector<uint64_t> park_stubs;

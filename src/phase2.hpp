@@ -19,6 +19,7 @@
 
 #include "disk.hpp"
 #include "entry_sizes.hpp"
+#include "phases.hpp"
 #include "sort_manager.hpp"
 #include "bitfield.hpp"
 #include "bitfield_index.hpp"
@@ -331,7 +332,7 @@ Phase2Results RunPhase2(
 
 				{ // Scope for reader
 					auto table_reader = std::unique_ptr<IReadDiskStream>( table_index == 7 ?
-										CreateLastTableReader( &tmp_1_disks[table_index], k, entry_size ):
+										CreateLastTableReader( &tmp_1_disks[table_index], k, entry_size, (flags&NO_COMPACTION)==0 ):
 										new ReadFileStream( &tmp_1_disks[table_index], table_size * entry_size ) );
 					ScanTable( table_reader.get(), table_index, table_size, entry_size,
 										 *current_bitfield.get(), *next_bitfield.get(), num_threads, pos_offset_size, k );
@@ -355,8 +356,10 @@ Phase2Results RunPhase2(
 				bitfield_index const index(*next_bitfield.get());
 
 				if( table_index == 7 ){
-					auto table7_reader = std::unique_ptr<IReadDiskStream>(CreateLastTableReader(&tmp_1_disks[7], k, entry_size ) );
-					auto table7_writer =  std::unique_ptr<IWriteDiskStream>(CreateLastTableWriter( &tmp_1_disks[8], k, entry_size ) );
+					auto table7_reader = std::unique_ptr<IReadDiskStream>(CreateLastTableReader(&tmp_1_disks[7], k, entry_size,
+																				(flags&NO_COMPACTION)==0, ((uint32_t)num_threads)*(BUF_SIZE/entry_size)*entry_size ) );
+					auto table7_writer =  std::unique_ptr<IWriteDiskStream>(CreateLastTableWriter( &tmp_1_disks[8], k, entry_size,
+																				(flags&NO_COMPACTION)==0, ((uint32_t)num_threads)*(BUF_SIZE/entry_size)*entry_size ) );
 					SortTable7( *table7_reader.get(), *table7_writer.get(), index, table_size,
 											entry_size, num_threads, pos_offset_size, k );
 					// we do not need any more table 7 file from phase 1
@@ -375,7 +378,8 @@ Phase2Results RunPhase2(
 							k,
 							2, // Phase
 							table_index,
-							num_threads );
+							num_threads,
+							(flags&NO_COMPACTION)==0 );
 
 					uint64_t read_position = 0, write_counter = 0;
 					std::mutex sort_mutext;
@@ -447,7 +451,7 @@ Phase2Results RunPhase2(
 		BufferedDisk disk_table1(&tmp_1_disks[1], table_size * entry_size);
 		return {
 				FilteredDisk(std::move(disk_table1), current_bitfield.release(), entry_size)
-				, ReadStreamToDisk( CreateLastTableReader( &tmp_1_disks[8], k, new_entry_size ), new_entry_size )
+				, ReadStreamToDisk( CreateLastTableReader( &tmp_1_disks[8], k, new_entry_size, (flags&NO_COMPACTION)==0 ), new_entry_size )
         , std::move(output_files)
         , std::move(new_table_sizes)
     };

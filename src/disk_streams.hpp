@@ -38,34 +38,58 @@ struct AsyncStreamWriter : public IWriteDiskStream {
 		: disk(disk), last_buf_size(max_buffer_size) {}
 
 	void Write( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) override {
-		if( io_thread != nullptr ) {
-			io_thread->join();
-			delete io_thread;
-		}
+		if( io_thread ) io_thread->join();
 		if( !buffer || last_buf_size < buf_size )
 			buffer.reset( new uint8_t[last_buf_size = buf_size] );
 		buf.swap( buffer );
-		io_thread = new std::thread( [this](uint32_t b_size){ disk->Write(buffer, b_size);}, buf_size );
+		io_thread.reset( new std::thread( [this](uint32_t b_size){ disk->Write(buffer, b_size);}, buf_size ) );
 	};
 
 	void Close() override {
-		if( io_thread != nullptr ){
+		if( io_thread ){
 			io_thread->join();
-			delete io_thread;
-			io_thread = nullptr;
+			io_thread.reset();
 		}
-		disk.reset();
+		disk.reset();// may be close it before reset?
 		buffer.reset();
 	};
 
-	~AsyncStreamWriter(){ Close(); }
+	~AsyncStreamWriter(){ if( io_thread ) io_thread->join(); }
 private:
 	std::unique_ptr<IWriteDiskStream> disk;
 	std::unique_ptr<uint8_t[]> buffer;
-	std::thread *io_thread = nullptr;
+	std::unique_ptr<std::thread> io_thread;
 	uint32_t last_buf_size = 0;
 };
 
+// This class not thread safe!!!
+struct AsyncCopyStreamWriter : public IWriteDiskStream {
+	AsyncCopyStreamWriter( IWriteDiskStream * disk ) : disk(disk) {}
+
+	void Write( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) override {
+		if( io_thread ) io_thread->join();
+		if( !buffer || last_buf_size < buf_size )
+			buffer.reset( new uint8_t[last_buf_size = buf_size] );
+		memcpy( buffer.get(), buf.get(), buf_size );
+		io_thread.reset( new std::thread( [this](uint32_t b_size){ disk->Write(buffer, b_size);}, buf_size ) );
+	};
+
+	void Close() override {
+		if( io_thread ){
+			io_thread->join();
+			io_thread.reset();
+		}
+		disk.reset();// may be close it before reset?
+		buffer.reset();
+	};
+
+	~AsyncCopyStreamWriter(){ if( io_thread ) io_thread->join(); }
+private:
+	std::unique_ptr<IWriteDiskStream> disk;
+	std::unique_ptr<uint8_t[]> buffer;
+	std::unique_ptr<std::thread> io_thread;
+	uint32_t last_buf_size = 0;
+};
 // ====================================================
 struct AsyncStreamReader : public IReadDiskStream {
 	AsyncStreamReader( IReadDiskStream * disk, uint32_t buf_size )
@@ -77,7 +101,7 @@ struct AsyncStreamReader : public IReadDiskStream {
 	const uint32_t max_buffer_size;
 
 	uint32_t Read( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) override {
-		assert( buf_size == max_buffer_size );
+		assert( io_thread == nullptr || buf_size == max_buffer_size );
 		uint32_t res;
 		{
 			std::lock_guard<std::mutex> lk(sync_mutex);
@@ -453,8 +477,37 @@ private:
 };
 
 
-struct BucketWriter{
+struct BufferedWriter : IWriteDiskStream{
+	BufferedWriter( IWriteDiskStream* disk, const uint32_t &entry_size )
+		: disk(disk), allocated_size( BUF_SIZE/entry_size*entry_size ), buffer( new uint8_t[allocated_size] )
+	{}
 
+	void Write( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ){
+		uint32_t processed = 0;
+		while( processed < buf_size ){
+			uint32_t to_process = std::min( allocated_size - buffer_used, buf_size - processed );
+			memcpy( buffer.get() + buffer_used, buf.get() + processed, to_process );
+			processed += to_process;
+			buffer_used += to_process;
+			if( buffer_used == allocated_size ){
+				disk->Write( buffer, buffer_used );
+				buffer_used = 0;
+			}
+		}
+	};
+	void Close(){
+		if(buffer_used) disk->Write( buffer, buffer_used );
+		buffer_used = 0;
+		disk->Close();
+		buffer.reset();
+		disk.reset();
+	};
+
+private:
+	std::unique_ptr<IWriteDiskStream> disk;
+	const uint32_t allocated_size;
+	uint32_t buffer_used = 0;
+	std::unique_ptr<uint8_t[]> buffer;
 };
 
 // This stream not garantee same read order as write order
@@ -478,10 +531,6 @@ struct BucketStream{
 		if( buf_size == 0 ) return;
 
 		std::lock_guard<std::mutex> lk( sync_mutex );
-		if( disk_output ) {
-			disk_output->Close();
-			disk_output.reset();
-		}
 		if( !disk_output ){
 			bucket_file.reset( new FileDisk( fileName ) );
 			disk_output.reset( new WriteFileStream( bucket_file.get() ) );
@@ -562,19 +611,29 @@ private:
 };
 
 
-IReadDiskStream * CreateLastTableReader(FileDisk * file, uint8_t k, uint16_t entry_size){
+IReadDiskStream * CreateLastTableReader(FileDisk * file, uint8_t k, uint16_t entry_size,
+																				bool withCompaction, uint32_t max_buffer_size = 0 ){
 	IReadDiskStream *res = new ReadFileStream( file, file->GetWriteMax() );
 
-	if( k >= 20 )
+	if( withCompaction && k >= 20 )
 		res = new SequenceCompacterReader( res, entry_size, k );
+
+	if( max_buffer_size > 0 )
+		res = new AsyncStreamReader( res, max_buffer_size );
 
 	return res;
 }
 
-IWriteDiskStream * CreateLastTableWriter( FileDisk * file, uint8_t k, uint16_t entry_size ){
+IWriteDiskStream * CreateLastTableWriter( FileDisk * file, uint8_t k, uint16_t entry_size,
+																					bool withCompaction, uint32_t max_buffer_size = 0 ){
 	IWriteDiskStream * res = new WriteFileStream( file );
-	if( k >= 20 )
+	if( withCompaction && k >= 20 )
 		res = new SequenceCompacterWriter( res, entry_size, k );
+
+	res = max_buffer_size > 0 ?
+				new AsyncStreamWriter( res, max_buffer_size )
+			: (IWriteDiskStream*)new AsyncCopyStreamWriter( res );
+
 	return res;
 }
 

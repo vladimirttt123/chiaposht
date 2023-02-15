@@ -72,7 +72,7 @@ public:
         uint32_t num_buckets_input = 0,
         uint64_t stripe_size_input = 0,
         uint8_t num_threads_input = 0,
-				uint8_t phases_flags = ENABLE_BITFIELD | ENABLE_COMPACTION)
+				uint8_t phases_flags = ENABLE_BITFIELD )
     {
         // Increases the open file limit, we will open a lot of files.
 #ifndef _WIN32
@@ -181,7 +181,9 @@ public:
 				std::cout << "Memo: " << Util::HexStr( memo, memo_len ) << std:: endl;
         std::cout << "Plot size is: " << static_cast<int>(k) << std::endl;
         std::cout << "Buffer size is: " << buf_megabytes << "MiB" << std::endl;
-        std::cout << "Using " << num_buckets << " buckets" << std::endl;
+				std::cout << "Buckets number: " << num_buckets << std::endl;
+				std::cout << "Flags: " << ( phases_flags&ENABLE_BITFIELD ? " using bitfield" : " NO bitfield" )
+									<< ", "<< (phases_flags&NO_COMPACTION ? "NO compaction" : "with compaction" ) << std::endl;
         std::cout << "Final Directory is: " << final_dirname << std::endl;
         std::cout << "Using " << (int)num_threads << " threads of stripe size " << stripe_size
                   << std::endl;

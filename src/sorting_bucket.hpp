@@ -153,7 +153,12 @@ struct SortingBucket{
 	}
 
 	void SortToMemory( uint32_t num_threads = 2 ){
+		assert( disk );
+
 		if( memory_ ) return; // already sorted;
+
+		// Eensure writing is finished
+		disk->EndToWrite();
 
 		// Init memory to sort into
 		memory_.reset( new uint8_t[Size()] );

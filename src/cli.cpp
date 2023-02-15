@@ -82,6 +82,7 @@ int main(int argc, char *argv[]) try {
     string memo = "0102030405";
     string id = "022fb42c08c12de3a6af053880199806532e79515f94e83461612101f9412f9e";
     bool nobitfield = false;
+		bool nocompaction = false;
     bool show_progress = false;
     bool parallel_read = true;
     uint32_t buffmegabytes = 0;
@@ -98,8 +99,9 @@ int main(int argc, char *argv[]) try {
         "f, file", "Filename", cxxopts::value<string>(filename))(
         "m, memo", "Memo to insert into the plot", cxxopts::value<string>(memo))(
         "i, id", "Unique 32-byte seed for the plot", cxxopts::value<string>(id))(
-        "e, nobitfield", "Disable bitfield", cxxopts::value<bool>(nobitfield))(
-        "b, buffer",
+				"e, nobitfield", "Disable bitfield", cxxopts::value<bool>(nobitfield))(
+				"c, nocompaction", "Disable IO compaction", cxxopts::value<bool>(nocompaction))(
+				"b, buffer",
         "Megabytes to be used as buffer for sorting and plotting",
         cxxopts::value<uint32_t>(buffmegabytes))(
 				"B, file-buffer", "Per file read/write buffer size in KiB",
@@ -147,6 +149,9 @@ int main(int argc, char *argv[]) try {
         if (!nobitfield) {
             phases_flags = ENABLE_BITFIELD;
         }
+				if( nocompaction ) {
+					phases_flags |= NO_COMPACTION;
+				}
 				BUF_SIZE = std::max( (uint64_t)64, (uint64_t)filebufkb ) << 10;
         if (show_progress) {
             phases_flags = phases_flags | SHOW_PROGRESS;
