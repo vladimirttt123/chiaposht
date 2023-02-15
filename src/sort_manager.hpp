@@ -76,7 +76,8 @@ public:
 				uint8_t k,
 				uint8_t phase,
 				uint8_t table_index,
-				uint32_t num_threads = 2)
+				uint32_t num_threads = 2,
+				bool enable_compaction = true )
 
         : memory_size_(memory_size)
         , entry_size_(entry_size)
@@ -103,7 +104,7 @@ public:
                 fs::path(filename + ".sort_bucket_" + bucket_number_padded.str() + ".tmp");
 						buckets_.emplace_back( SortingBucket( bucket_filename.string(), bucket_i, log_num_buckets_,
 																									entry_size, begin_bits_ + log_num_buckets, subbucket_bits,
-																									true, (k >= 32 && phase == 1) ? (table_index == 1 ? k : (k+kExtraBits)) : -1 ) );
+																									enable_compaction, (k >= 32 && phase == 1) ? (table_index == 1 ? k : (k+kExtraBits)) : -1 ) );
         }
     }
 

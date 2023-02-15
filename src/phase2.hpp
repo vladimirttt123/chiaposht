@@ -34,7 +34,7 @@ struct Phase2Results
         else return *output_files[table_index - 2];
     }
     FilteredDisk table1;
-    BufferedDisk table7;
+		ReadStreamToDisk table7;
     std::vector<std::unique_ptr<SortManager>> output_files;
     std::vector<uint64_t> table_sizes;
 };
@@ -447,7 +447,7 @@ Phase2Results RunPhase2(
 		BufferedDisk disk_table1(&tmp_1_disks[1], table_size * entry_size);
 		return {
 				FilteredDisk(std::move(disk_table1), current_bitfield.release(), entry_size)
-				, BufferedDisk(&tmp_1_disks[8], new_table_sizes[7] * new_entry_size)
+				, ReadStreamToDisk( CreateLastTableReader( &tmp_1_disks[8], k, new_entry_size ), new_entry_size )
         , std::move(output_files)
         , std::move(new_table_sizes)
     };

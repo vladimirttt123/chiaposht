@@ -608,9 +608,10 @@ std::vector<uint64_t> RunPhase1(
 				k,
 				1, // Phase
 				2, // table
-				num_threads );
+				num_threads,
+				(flags&ENABLE_COMPACTION)!=0);
 
-		globals.table7 = CreateLastTableWriter( &tmp_1_disks[7], k, EntrySizes::GetMaxEntrySize(k, 7, true ) );
+		globals.table7 = CreateLastTableWriter( &tmp_1_disks[7], k, EntrySizes::GetKeyPosOffsetSize(k) );
 
     // These are used for sorting on disk. The sort on disk code needs to know how
     // many elements are in each bucket.
@@ -682,7 +683,8 @@ std::vector<uint64_t> RunPhase1(
 						k,
 						1, // Phase
 						table_index+2,
-						num_threads );
+						num_threads,
+						(flags&ENABLE_COMPACTION)!=0 );
 
         globals.L_sort_manager->TriggerNewBucket(0);
 
@@ -740,7 +742,7 @@ std::vector<uint64_t> RunPhase1(
             globals.R_sort_manager->FlushCache();
             globals.L_sort_manager = std::move(globals.R_sort_manager);
         } else {
-            tmp_1_disks[table_index + 1].Truncate(globals.right_writer);
+//            tmp_1_disks[table_index + 1].Truncate(globals.right_writer);
         }
 
         // Resets variables

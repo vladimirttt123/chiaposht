@@ -18,7 +18,6 @@
 #include "util.hpp"
 
 
-
 struct IWriteDiskStream{
 	virtual void Write( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) = 0;
 	virtual void Close() = 0;
@@ -138,7 +137,7 @@ private:
 };
 
 struct WriteFileStream : public IWriteDiskStream{
-	WriteFileStream( const std::string &fileName ) : disk( new FileDisk(fileName) )	{	}
+	WriteFileStream( std::string fileName ) : disk( new FileDisk(fileName) )	{	}
 	WriteFileStream( FileDisk * file ) : disk( file ), external_file(true)	{	}
 
 	uint64_t WritePosition() const { return write_position; }
@@ -151,11 +150,9 @@ struct WriteFileStream : public IWriteDiskStream{
 
 	void Close() override {
 		if( disk ) {
+			disk->Close();
 			if( external_file ) disk.release();
-			else {
-				disk->Close();
-				disk.reset();
-			}
+			else	disk.reset();
 		} };
 
 	~WriteFileStream() { Close(); }
@@ -198,7 +195,6 @@ private:
 	const bool external_file = false;
 };
 
-
 struct SequenceCompacterWriter : public IWriteDiskStream{
 	SequenceCompacterWriter( IWriteDiskStream *disk,
 													 const uint16_t &entry_size, const uint8_t &begin_bits )
@@ -209,7 +205,6 @@ struct SequenceCompacterWriter : public IWriteDiskStream{
 	}
 
 	void Write( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) override {
-		num_entries_written += buf_size/entry_size;
 		if( last_buffer_size != buf_size )
 			buffer.reset( new uint8_t[(last_buffer_size=buf_size)/entry_size*(entry_size+1)] );
 		disk->Write( buffer, CompactBuffer( buf.get(), buf_size ) );
@@ -229,7 +224,6 @@ private:
 	const uint16_t entry_size;
 	const uint8_t begin_bits_;
 	const uint8_t begin_bytes;
-	uint64_t num_entries_written = 0;
 	const uint8_t mask;
 
 	uint32_t CompactBuffer( uint8_t *buf, uint32_t buf_size ){
@@ -354,6 +348,8 @@ private:
 			processed_of_buffer = 0;
 		}
 
+		assert( buf_fillness > 0 );
+
 		return buffer.get()[processed_of_buffer++];
 	}
 };
@@ -456,9 +452,14 @@ private:
 	}
 };
 
+
+struct BucketWriter{
+
+};
+
 // This stream not garantee same read order as write order
 struct BucketStream{
-	BucketStream( const std::string &fileName, uint16_t bucket_no, uint8_t log_num_buckets, uint16_t entry_size,
+	BucketStream( std::string fileName, uint16_t bucket_no, uint8_t log_num_buckets, uint16_t entry_size,
 								uint16_t begin_bits, bool compact = true, int8_t sequence_start_bit = -1 )
 		: fileName(fileName)
 		, bucket_no_( bucket_no )
@@ -477,8 +478,13 @@ struct BucketStream{
 		if( buf_size == 0 ) return;
 
 		std::lock_guard<std::mutex> lk( sync_mutex );
+		if( disk_output ) {
+			disk_output->Close();
+			disk_output.reset();
+		}
 		if( !disk_output ){
-			disk_output.reset( new WriteFileStream( bucket_file = new FileDisk( fileName ) ) );
+			bucket_file.reset( new FileDisk( fileName ) );
+			disk_output.reset( new WriteFileStream( bucket_file.get() ) );
 			if( compact ){
 				if( sequence_start_bit >= begin_bits_ )
 					disk_output.reset( new SequenceCompacterWriter( disk_output.release(),
@@ -487,7 +493,7 @@ struct BucketStream{
 				disk_output.reset( new ByteCutterStream( disk_output.release(),
 																	entry_size_, begin_bits_ - log_num_buckets_ ) );
 			}
-			disk_output.reset( new AsyncStreamWriter(disk_output.release() ) );
+			disk_output.reset( new AsyncStreamWriter( disk_output.release() ) );
 		}
 
 		disk_output->Write( buf, buf_size );
@@ -507,7 +513,7 @@ struct BucketStream{
 			std::lock_guard<std::mutex> lk( sync_mutex );
 			if( !bucket_file ) return 0;// nothing has been written
 			if (!disk_input ){
-				disk_input.reset( new ReadFileStream( bucket_file, bucket_file->GetWriteMax() ) );
+				disk_input.reset( new ReadFileStream( bucket_file.get(), bucket_file->GetWriteMax() ) );
 				if( compact ){
 					if( sequence_start_bit >= begin_bits_ )
 						disk_input.reset( new SequenceCompacterReader( disk_input.release(),
@@ -533,14 +539,13 @@ struct BucketStream{
 		}
 		if( bucket_file ) {
 			bucket_file->Remove();
-			delete bucket_file;
+			bucket_file.reset();
 		}
-
 	}
 
 private:
 	const std::string fileName;
-	FileDisk * bucket_file = nullptr;
+	std::unique_ptr<FileDisk> bucket_file;
 	std::unique_ptr<IWriteDiskStream> disk_output;
 	std::unique_ptr<IReadDiskStream> disk_input;
 	const uint16_t bucket_no_;
@@ -560,7 +565,7 @@ private:
 IReadDiskStream * CreateLastTableReader(FileDisk * file, uint8_t k, uint16_t entry_size){
 	IReadDiskStream *res = new ReadFileStream( file, file->GetWriteMax() );
 
-	if( k >= 32 )
+	if( k >= 20 )
 		res = new SequenceCompacterReader( res, entry_size, k );
 
 	return res;
@@ -568,10 +573,46 @@ IReadDiskStream * CreateLastTableReader(FileDisk * file, uint8_t k, uint16_t ent
 
 IWriteDiskStream * CreateLastTableWriter( FileDisk * file, uint8_t k, uint16_t entry_size ){
 	IWriteDiskStream * res = new WriteFileStream( file );
-	if( k >= 32 )
+	if( k >= 20 )
 		res = new SequenceCompacterWriter( res, entry_size, k );
 	return res;
 }
 
+struct ReadStreamToDisk : Disk {
+	ReadStreamToDisk( IReadDiskStream *strm, uint16_t entry_size)
+		: allocated_size( BUF_SIZE/entry_size*entry_size )
+		, buffer(new uint8_t[allocated_size] )
+		, read_stream( new AsyncStreamReader( strm, allocated_size ) )
+	{	}
+
+	uint8_t const* Read(uint64_t begin, uint64_t length) override{
+		assert( length <= allocated_size );
+		assert( buffer && read_stream );
+
+		while( begin >= (buffer_begin + buf_size) ){
+			buffer_begin += buf_size;
+			buf_size = read_stream->Read( buffer, allocated_size );
+		}
+
+		assert( (begin+length) <= (buffer_begin + buf_size) );
+		return buffer.get() + ( begin - buffer_begin );
+	};
+	void Write(uint64_t begin, const uint8_t *memcache, uint64_t length) override {
+		throw InvalidStateException( "Write impossible to read only disk" );
+	};
+
+	void Truncate(uint64_t new_size) override {
+		throw InvalidStateException( "Truncate impossible to read only disk" );
+	};
+	std::string GetFileName() override { return "read_disk"; };
+	void FreeMemory() override { buffer.reset(); read_stream.reset(); };
+
+private:
+	const uint32_t allocated_size;
+	uint64_t buffer_begin = 0;
+	uint64_t buf_size = 0;
+	std::unique_ptr<uint8_t[]> buffer;
+	std::unique_ptr<IReadDiskStream> read_stream;
+};
 
 #endif  // SRC_CPP_DISK_STREAMS_HPP_

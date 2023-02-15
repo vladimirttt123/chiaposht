@@ -1227,6 +1227,7 @@ TEST_CASE( "SortThreads" ){
 
 		for( uint32_t i = 0; i < threads_num; i++ )
 			threads[i].join();
+		manager1.FlushCache();
 		fill_timer1.PrintElapsed( "fill time1:" );
 
 		Timer fill_timer2;

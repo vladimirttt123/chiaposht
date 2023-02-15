@@ -72,7 +72,7 @@ public:
         uint32_t num_buckets_input = 0,
         uint64_t stripe_size_input = 0,
         uint8_t num_threads_input = 0,
-        uint8_t phases_flags = ENABLE_BITFIELD)
+				uint8_t phases_flags = ENABLE_BITFIELD | ENABLE_COMPACTION)
     {
         // Increases the open file limit, we will open a lot of files.
 #ifndef _WIN32
