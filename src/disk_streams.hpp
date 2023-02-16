@@ -219,6 +219,8 @@ private:
 	const bool external_file = false;
 };
 
+
+// ============== Sequenc Compacter ========================
 struct SequenceCompacterWriter : public IWriteDiskStream{
 	SequenceCompacterWriter( IWriteDiskStream *disk,
 													 const uint16_t &entry_size, const uint8_t &begin_bits )
@@ -254,7 +256,8 @@ private:
 		assert( (buf_size%entry_size) == 0 );
 
 		uint32_t buf_idx = 0;
-		auto setNext = [&buf_idx,this]( uint8_t v ){ buffer.get()[buf_idx++] = v;};
+		auto cur_buf = buffer.get();
+#define setNext( v ) cur_buf[buf_idx++] = v
 
 		for( uint32_t i = 0; i < buf_size; ){
 			uint64_t next_val = Util::ExtractNum64( buf + i + begin_bytes, begin_bits_, 32 );
@@ -274,7 +277,7 @@ private:
 			} else {
 				// save 255 & full value
 				setNext( 255 );
-				((uint32_t*)(buffer.get() + buf_idx))[0] = bswap_32( next_val );
+				((uint32_t*)(cur_buf + buf_idx))[0] = bswap_32( next_val );
 				buf_idx += 4;
 			}
 
