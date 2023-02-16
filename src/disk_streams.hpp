@@ -262,19 +262,27 @@ private:
 		for( uint32_t i = 0; i < buf_size; ){
 			uint64_t next_val = Util::ExtractNum64( buf + i + begin_bytes, begin_bits_, 32 );
 			uint64_t diff = next_val - last_write_value;
-			if( diff <= 252 ){
+			if( diff < 128 ){
 				// to save one byte of diff
 				setNext( diff );
-			} else if( diff <= 507 ){
-				// to save 2 bytes 253 & diff - 252;
-				setNext( 253 );
-				setNext( diff - 252 );
-			} else if( diff <= 16132 ){
-				// to save 3 bytes 254 & diff - 252;
-				setNext( 254 );
-				setNext( (diff -= 252)>>8 );
+			} else if( diff < 16512 /* 2^14+128 */ ){
+				// to save 2 bytes b10xx xxxx xxxx xxxx: x = diff - 128;
+				diff -= 128;
+				assert( (diff >> 8) < 64 );
+				setNext( 128 + (diff>>8) );
 				setNext( diff );
-			} else {
+			} else if( diff < 2113664 /* 2^21 + 128 + 2^14 */ ){
+				// to save 3 bytes ;
+				diff -= 16512;
+				setNext( 192 + (diff>>16) );
+				setNext( diff>>8 );
+				setNext( diff );
+			} else if( diff < 270549120 /* 2^28 + 2^21 + 2^14 + 128 */){
+				// to save 4 bytes
+				diff = (diff-2113664) + (((uint32_t)0xe)<<28);
+				((uint32_t*)(cur_buf + buf_idx))[0] = bswap_32( diff );
+				buf_idx += 4;
+			}	else {
 				// save 255 & full value
 				setNext( 255 );
 				((uint32_t*)(cur_buf + buf_idx))[0] = bswap_32( next_val );
@@ -332,22 +340,17 @@ private:
 
 			uint8_t compress_code = NextByte();
 
-			switch( compress_code ){
-				case 255: // reconstruct full value
-					value_to_insert = (NextByte()<<24) | (NextByte()<<16) | (NextByte()<<8) | NextByte();
-				break;
-
-				case 254: // reconstruct from 2 bytes value;
-					value_to_insert = last_value + (NextByte()<<8) + NextByte() + 252;
-				break;
-
-				case 253: // reconstruct from 1 bytes value;
-					value_to_insert = last_value + NextByte() + 252;
-				break;
-
-				default: // one byte value
-					value_to_insert = last_value + compress_code;
-				break;
+			if( compress_code < 128 )
+				value_to_insert = last_value + compress_code;
+			else if( compress_code < 192 ){
+				value_to_insert = last_value + 128 + ((((uint32_t)(compress_code - 128))<<8) | NextByte());
+			} else if( compress_code < 224 ){
+				value_to_insert = last_value + 16512 + ((((uint32_t)(compress_code-192))<<16) | (NextByte()<<8) | NextByte());
+			} else if( compress_code < 240 ){
+				value_to_insert = last_value + 2113664 + ((((uint32_t)(compress_code-224))<<24) | (NextByte()<<16) | (NextByte()<<8) | NextByte());
+			} else {
+				assert( compress_code == 255 );
+				value_to_insert = (NextByte()<<24) | (NextByte()<<16) | (NextByte()<<8) | NextByte();
 			}
 
 			// recreate the entry
