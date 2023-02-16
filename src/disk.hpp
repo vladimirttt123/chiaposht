@@ -42,6 +42,7 @@ constexpr uint64_t read_ahead = 256 * 1024;
 uint64_t BUF_SIZE = 256*1024;
 bool LEAVE_FILES = false;
 
+
 struct Disk {
     virtual uint8_t const* Read(uint64_t begin, uint64_t length) = 0;
     virtual void Write(uint64_t begin, const uint8_t *memcache, uint64_t length) = 0;
@@ -356,6 +357,8 @@ private:
 std::vector<FileDisk*> FileDisk::could_be_closed = std::vector<FileDisk*>();
 std::mutex FileDisk::mutFileManager = std::mutex();
 uint64_t FileDisk::total_bytes_written = 0;
+
+uint64_t GetTotalBytesWritten(){ return FileDisk::GetTotalBytesWritten(); }
 
 struct BufferedDisk : Disk
 {

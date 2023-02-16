@@ -82,10 +82,13 @@ inline uint64_t bswap_64(uint64_t x) { return __builtin_bswap64(x); }
 #include <cpuid.h>
 #endif
 
+uint64_t GetTotalBytesWritten();
+
 class Timer {
 public:
     Timer()
     {
+				write_byte_start = GetTotalBytesWritten();
         wall_clock_time_start_ = std::chrono::steady_clock::now();
 #if _WIN32
         ::GetProcessTimes(::GetCurrentProcess(), &ft_[3], &ft_[2], &ft_[1], &ft_[0]);
@@ -130,7 +133,8 @@ public:
         double cpu_ratio = static_cast<int>(10000 * (cpu_time_ms / wall_clock_ms)) / 100.0;
 
         std::cout << name << " " << (wall_clock_ms / 1000.0) << " seconds. CPU (" << cpu_ratio
-                  << "%) " << Timer::GetNow();
+									<< "%), written " << ( GetTotalBytesWritten() - write_byte_start)/1024.0/1024/1024 << " GiB."
+									<< Timer::GetNow();
     }
 
 private:
@@ -140,7 +144,7 @@ private:
 #else
     clock_t cpu_time_start_;
 #endif
-
+		uint64_t write_byte_start;
 };
 
 namespace Util {

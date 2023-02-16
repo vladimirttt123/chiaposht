@@ -401,7 +401,7 @@ Phase2Results RunPhase2(
 					assert( (uint64_t)current_bitfield->count(0, table_size) == sort_manager->Count() );
 					assert( write_counter == sort_manager->Count() );
 
-					std::cout << " written: " << write_counter << " entries with size " << (uint32_t)new_entry_size;
+					std::cout << write_counter << " entries ";
 
 					// clear disk caches and memory
 					// TODO real flush by flag.
