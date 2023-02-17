@@ -102,9 +102,15 @@ public:
             fs::path const bucket_filename =
                 fs::path(tmp_dirname) /
                 fs::path(filename + ".sort_bucket_" + bucket_number_padded.str() + ".tmp");
+						uint16_t sequence_start = -1;
+						if( k >= 32 ){
+							if( phase == 1 )
+								sequence_start = table_index == 1 ? k : (k+kExtraBits);
+							else if( phase == 2 ) sequence_start = 0;
+						}
 						buckets_.emplace_back( SortingBucket( bucket_filename.string(), bucket_i, log_num_buckets_,
 																									entry_size, begin_bits_ + log_num_buckets, subbucket_bits,
-																									enable_compaction, (k >= 32 && phase == 1) ? (table_index == 1 ? k : (k+kExtraBits)) : -1 ) );
+																									enable_compaction, sequence_start ) );
         }
     }
 

@@ -541,9 +541,9 @@ struct BucketStream{
 			bucket_file.reset( new FileDisk( fileName ) );
 			disk_output.reset( new WriteFileStream( bucket_file.get() ) );
 			if( compact ){
-				if( sequence_start_bit >= begin_bits_ )
-					disk_output.reset( new SequenceCompacterWriter( disk_output.release(),
-																					entry_size_-1, sequence_start_bit - 8 ) );
+				if( sequence_start_bit >= 0 )
+					disk_output.reset( new SequenceCompacterWriter( disk_output.release(), entry_size_-1,
+																sequence_start_bit - (sequence_start_bit > begin_bits_ ? 8 : 0 ) ) );
 
 				disk_output.reset( new ByteCutterStream( disk_output.release(),
 																	entry_size_, begin_bits_ - log_num_buckets_ ) );
@@ -570,9 +570,9 @@ struct BucketStream{
 			if (!disk_input ){
 				disk_input.reset( new ReadFileStream( bucket_file.get(), bucket_file->GetWriteMax() ) );
 				if( compact ){
-					if( sequence_start_bit >= begin_bits_ )
+					if( sequence_start_bit >= 0 )
 						disk_input.reset( new SequenceCompacterReader( disk_input.release(),
-																				entry_size_-1, sequence_start_bit - 8 ) );
+																				entry_size_-1, sequence_start_bit - (sequence_start_bit > begin_bits_ ? 8 : 0 ) ) );
 
 					disk_input.reset( new ByteInserterStream( disk_input.release(),
 																		entry_size_, begin_bits_ - log_num_buckets_,
