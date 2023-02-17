@@ -14,7 +14,10 @@
 
 #ifndef SRC_CPP_DISK_STREAMS_HPP_
 #define SRC_CPP_DISK_STREAMS_HPP_
+#include "bitfield.hpp"
+#include "bitfield_index.hpp"
 #include "disk.hpp"
+#include "pos_constants.hpp"
 #include "util.hpp"
 
 
@@ -95,13 +98,13 @@ struct AsyncStreamReader : public IReadDiskStream {
 	AsyncStreamReader( IReadDiskStream * disk, uint32_t buf_size )
 		: max_buffer_size(buf_size), disk(disk)
 	{
-		ReadNext();
 	}
 
 	const uint32_t max_buffer_size;
 
 	uint32_t Read( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) override {
 		assert( io_thread == nullptr || buf_size == max_buffer_size );
+		if( !started ) ReadNext();
 		uint32_t res;
 		{
 			std::lock_guard<std::mutex> lk(sync_mutex);
@@ -138,12 +141,14 @@ private:
 	uint32_t buf_size = 0;
 	std::thread *io_thread = nullptr;
 	std::mutex sync_mutex;
+	bool started = false;
 
 private:
 	inline void ReadNext(){
 		// at this point thread should not exists!!!
 
 		std::lock_guard<std::mutex> lk(sync_mutex);
+		started = true;
 
 		// Start next read if need or close the resources
 		if( !disk || disk->atEnd() ){
@@ -157,6 +162,7 @@ private:
 				if( !buffer ) buffer.reset( new uint8_t[max_buffer_size] );
 				buf_size = disk->Read( buffer, max_buffer_size );
 			});
+
 	}
 };
 
@@ -516,6 +522,53 @@ private:
 	std::unique_ptr<uint8_t[]> buffer;
 };
 
+
+struct RamStream : IWriteDiskStream, IReadDiskStream{
+
+	void Write( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) override{
+		assert( read_position == 0 ); // can't write after read
+		for( uint64_t done = 0; done < buf_size; ){
+			if( (write_position%BUF_SIZE) == 0 )
+				ram.push( new uint8_t[BUF_SIZE] );
+			auto to_add = std::min( ram.size()*BUF_SIZE - write_position, buf_size - done );
+			memcpy( ram.back(), buf.get(), to_add );
+			write_position += to_add;
+			done += to_add;
+		}
+	}
+
+	uint32_t Read( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) override{
+		for( uint64_t done = 0; done < buf_size; ){
+			auto to_add = std::min( std::min( write_position - read_position, BUF_SIZE - (read_position%BUF_SIZE) ), buf_size - done );
+			if( to_add == 0 ){
+				delete ram.front();
+				ram.pop();
+				return done;
+			}
+			memcpy( buf.get(), ram.front(), to_add );
+			done += to_add;
+			read_position += to_add;
+			if( (read_position%BUF_SIZE) == 0 ){
+				// Clear ram after read;
+				delete ram.front();
+				ram.pop();
+			}
+		}
+		return 0;
+	};
+	bool atEnd() const override { return write_position <= read_position; };
+	void Close() override {};
+
+	~RamStream(){
+		for( ; !ram.empty(); ram.pop() )
+			delete ram.front();
+	}
+private:
+	std::queue<uint8_t*> ram;
+	uint64_t write_position = 0;
+	uint64_t read_position = 0;
+};
+
 // This stream not garantee same read order as write order
 struct BucketStream{
 	BucketStream( std::string fileName, uint16_t bucket_no, uint8_t log_num_buckets, uint16_t entry_size,
@@ -616,8 +669,83 @@ private:
 
 };
 
+struct LastTableRewrited : IReadDiskStream {
+	LastTableRewrited( IReadDiskStream *disk, const uint8_t k,const uint16_t entry_size,
+											const uint64_t num_entries, const fs::path &filename )
+		: k(k), f7_shift( 128 - k ), pos_offset_size( k + kOffsetSize )
+		, t7_pos_offset_shift( f7_shift - pos_offset_size ), entry_size(entry_size)
+		, num_entries(num_entries), filename_(filename), disk(disk)
+	{
+	}
 
-IReadDiskStream * CreateLastTableReader(FileDisk * file, uint8_t k, uint16_t entry_size,
+
+	uint32_t Read( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) override {
+		if( !bitfield_ ){
+			bitfield_.reset( new bitfield( num_entries, filename_ ) );
+			index.reset( new bitfield_index( *bitfield_.get() ) );
+		}
+
+		auto read = disk->Read( buf, buf_size );
+
+		// clear ram as soon as possible
+		if( read == 0 ){
+			index.reset();
+			bitfield_.reset();
+		}
+
+		for( uint64_t buf_ptr = 0; buf_ptr < read; buf_ptr += entry_size ){
+
+			uint8_t * entry = buf.get() + buf_ptr;
+
+			// table 7 is special, we never drop anything, so just build
+			// next_bitfield
+			uint64_t entry_f7 = Util::SliceInt64FromBytes(entry, 0, k);
+			uint64_t entry_pos_offset = Util::SliceInt64FromBytes(entry, k, pos_offset_size);
+
+			uint64_t entry_pos = entry_pos_offset >> kOffsetSize;
+			uint64_t entry_offset = entry_pos_offset & ((1U << kOffsetSize) - 1);
+
+			// assemble the new entry and write it to the sort manager
+
+			// map the pos and offset to the new, compacted, positions and
+			// offsets
+			std::tie(entry_pos, entry_offset) = index->lookup(entry_pos, entry_offset);
+			entry_pos_offset = (entry_pos << kOffsetSize) | entry_offset;
+
+			// table 7 is already sorted by pos, so we just rewrite the
+			// pos and offset in-place
+			uint8_t tmp[16];
+			uint128_t new_entry = (uint128_t)entry_f7 << f7_shift;
+			new_entry |= (uint128_t)entry_pos_offset << t7_pos_offset_shift;
+			Util::IntTo16Bytes( tmp, new_entry );
+			memcpy( entry, tmp, entry_size );
+		}
+		return read;
+	};
+
+	bool atEnd() const override { return disk->atEnd(); }
+	void Close() override {
+		bitfield_.reset();
+		index.reset();
+		if(disk ) disk->Close();
+		disk.reset();
+	};
+
+private:
+	const uint8_t k;
+	uint8_t const f7_shift;
+	uint8_t const pos_offset_size;
+	uint8_t const t7_pos_offset_shift;
+	uint16_t const entry_size;
+	const uint64_t num_entries;
+	fs::path filename_;
+
+	std::unique_ptr<IReadDiskStream> disk;
+	std::unique_ptr<bitfield> bitfield_;
+	std::unique_ptr<bitfield_index> index;
+};
+
+IReadDiskStream * CreateLastTableReader( FileDisk * file, uint8_t k, uint16_t entry_size,
 																				bool withCompaction, uint32_t max_buffer_size = 0 ){
 	IReadDiskStream *res = new ReadFileStream( file, file->GetWriteMax() );
 
@@ -629,6 +757,23 @@ IReadDiskStream * CreateLastTableReader(FileDisk * file, uint8_t k, uint16_t ent
 
 	return res;
 }
+
+IReadDiskStream * CreateLastTableReader( FileDisk * file, uint8_t k, uint16_t entry_size,
+																				 uint64_t num_entries, const fs::path &bitfield_filename,
+																				 bool withCompaction, uint32_t max_buffer_size = 0 ){
+	IReadDiskStream *res = new ReadFileStream( file, file->GetWriteMax() );
+
+	if( withCompaction && k >= 20 )
+		res = new SequenceCompacterReader( res, entry_size, k );
+
+	res = new LastTableRewrited( res, k, entry_size, num_entries, bitfield_filename );
+
+	if( max_buffer_size > 0 )
+		res = new AsyncStreamReader( res, max_buffer_size );
+
+	return res;
+}
+
 
 IWriteDiskStream * CreateLastTableWriter( FileDisk * file, uint8_t k, uint16_t entry_size,
 																					bool withCompaction, uint32_t max_buffer_size = 0 ){
@@ -679,5 +824,7 @@ private:
 	std::unique_ptr<uint8_t[]> buffer;
 	std::unique_ptr<IReadDiskStream> read_stream;
 };
+
+
 
 #endif  // SRC_CPP_DISK_STREAMS_HPP_

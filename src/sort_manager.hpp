@@ -104,9 +104,11 @@ public:
                 fs::path(filename + ".sort_bucket_" + bucket_number_padded.str() + ".tmp");
 						uint16_t sequence_start = -1;
 						if( k >= 32 ){
-							if( phase == 1 )
-								sequence_start = table_index == 1 ? k : (k+kExtraBits);
-							else if( phase == 2 ) sequence_start = 0;
+							switch (phase) {
+								case 1: sequence_start = table_index == 1 ? k : (k+kExtraBits); break;
+								case 2: sequence_start = 0; break;
+								case 4: sequence_start = k; break;
+							}
 						}
 						buckets_.emplace_back( SortingBucket( bucket_filename.string(), bucket_i, log_num_buckets_,
 																									entry_size, begin_bits_ + log_num_buckets, subbucket_bits,

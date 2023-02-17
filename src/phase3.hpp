@@ -402,7 +402,7 @@ Phase3Results RunPhase3(
 						0,
 						0,
 						k,
-						3, // Phase
+						4, // Phase
 						table_index + 1,
 						num_threads,
 						(flags&NO_COMPACTION)==0 );
