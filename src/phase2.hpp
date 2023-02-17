@@ -353,19 +353,21 @@ Phase2Results RunPhase2(
 
 				// as we scan the table for the second time, we'll also need to remap
 				// the positions and offsets based on the next_bitfield.
-				bitfield_index const index(*next_bitfield.get());
 
 				if( table_index == 7 ){
-					auto table7_reader = std::unique_ptr<IReadDiskStream>(CreateLastTableReader(&tmp_1_disks[7], k, entry_size,
-																				(flags&NO_COMPACTION)==0, ((uint32_t)num_threads)*(BUF_SIZE/entry_size)*entry_size ) );
-					auto table7_writer =  std::unique_ptr<IWriteDiskStream>(CreateLastTableWriter( &tmp_1_disks[8], k, entry_size,
-																				(flags&NO_COMPACTION)==0, ((uint32_t)num_threads)*(BUF_SIZE/entry_size)*entry_size ) );
-					SortTable7( *table7_reader.get(), *table7_writer.get(), index, table_size,
-											entry_size, num_threads, pos_offset_size, k );
-					// we do not need any more table 7 file from phase 1
-					tmp_1_disks[table_index].Truncate(0);
+//					auto table7_reader = std::unique_ptr<IReadDiskStream>(CreateLastTableReader(&tmp_1_disks[7], k, entry_size,
+//																				(flags&NO_COMPACTION)==0, ((uint32_t)num_threads)*(BUF_SIZE/entry_size)*entry_size ) );
+//					auto table7_writer =  std::unique_ptr<IWriteDiskStream>(CreateLastTableWriter( &tmp_1_disks[8], k, entry_size,
+//																				(flags&NO_COMPACTION)==0, ((uint32_t)num_threads)*(BUF_SIZE/entry_size)*entry_size ) );
+//					SortTable7( *table7_reader.get(), *table7_writer.get(), index, table_size,
+//											entry_size, num_threads, pos_offset_size, k );
+//					// we do not need any more table 7 file from phase 1
+//					tmp_1_disks[table_index].Truncate(0);
+					next_bitfield->FlushToDisk( tmp_1_disks[table_index].GetFileName() + ".bitfield.tmp" );
 				}
 				else{
+					bitfield_index const index(*next_bitfield.get());
+
 					auto sort_manager = std::make_unique<SortManager>(
 							table_index == 2 ? memory_size : memory_size / 2,
 							num_buckets,
@@ -415,7 +417,7 @@ Phase2Results RunPhase2(
 
 			sort_timer.PrintElapsed( ", time =" );
 			current_bitfield.swap(next_bitfield);
-			next_bitfield->FreeMemory();
+			next_bitfield->FreeMemory( table_index != 6 );
 
 			// The files for Table 1 and 7 are re-used, overwritten and passed on to
 			// the next phase. However, table 2 through 6 are all written to sort
@@ -451,7 +453,9 @@ Phase2Results RunPhase2(
 		BufferedDisk disk_table1(&tmp_1_disks[1], table_size * entry_size);
 		return {
 				FilteredDisk(std::move(disk_table1), current_bitfield.release(), entry_size)
-				, ReadStreamToDisk( CreateLastTableReader( &tmp_1_disks[8], k, new_entry_size, (flags&NO_COMPACTION)==0 ), new_entry_size )
+				, ReadStreamToDisk( CreateLastTableReader( &tmp_1_disks[7], k, new_entry_size,
+														new_table_sizes[7], tmp_1_disks[7].GetFileName() + ".bitfield.tmp",
+														(flags&NO_COMPACTION)==0 ), new_entry_size )
         , std::move(output_files)
         , std::move(new_table_sizes)
     };

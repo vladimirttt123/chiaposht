@@ -23,17 +23,23 @@ struct bitfield
 		explicit bitfield(int64_t size)
         : buffer_(new uint64_t[(size + 63) / 64])
 				, size_((size + 63) / 64)
-				, file_( nullptr)
-				, b_file_( nullptr )
     {
         clear();
     }
 
+		// Restore from file
+		bitfield( int64_t size, const fs::path &filename, bool with_file_remove = true )
+			: buffer_(new uint64_t[(size + 63) / 64])
+			, size_((size + 63) / 64)
+		{
+			FileDisk file = FileDisk( filename, false );
+			file.Read( 0 , (uint8_t*)buffer_.get(), size_*8 );
+			if( with_file_remove ) file.Remove();
+		}
+
 		bitfield( const bitfield &other, int64_t start_bit, int64_t size )
 				: buffer_(new uint64_t[(size + 63) / 64])
 				, size_((size + 63) / 64)
-				, file_( nullptr)
-				, b_file_( nullptr )
 		{
 			assert((start_bit % 64) == 0);
 			assert( size >= 0 );
@@ -114,14 +120,15 @@ struct bitfield
         return ret;
     }
 
-		void FreeMemory()
+		void FreeMemory( bool with_file_remove = true )
     {
 				buffer_.reset();
 				if( b_file_ != nullptr ){
 					b_file_->FreeMemory();
 					delete b_file_;
 					b_file_ = nullptr;
-					file_->Remove();
+					if( with_file_remove )
+						file_->Remove();
 					delete file_;
 					file_ = nullptr;
 				}
@@ -129,6 +136,7 @@ struct bitfield
     }
 
 		void FlushToDisk( const fs::path &filename ){
+			if( file_ != nullptr ) return;
 			auto const length = memSize();
 			file_ = new FileDisk( filename );
 			file_->Write( 0, (uint8_t*)buffer_.get(), length );
@@ -144,8 +152,8 @@ private:
     // number of 64-bit words
     int64_t size_;
 
-		FileDisk * file_;
-		BufferedDisk * b_file_;
+		FileDisk * file_ = nullptr;
+		BufferedDisk * b_file_ = nullptr;
 };
 
 
