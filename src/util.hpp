@@ -133,7 +133,7 @@ public:
         double cpu_ratio = static_cast<int>(10000 * (cpu_time_ms / wall_clock_ms)) / 100.0;
 
         std::cout << name << " " << (wall_clock_ms / 1000.0) << " seconds. CPU (" << cpu_ratio
-									<< "%), written " << ( GetTotalBytesWritten() - write_byte_start)/1024.0/1024/1024 << " GiB."
+									<< "%), written " << ( GetTotalBytesWritten() - write_byte_start)/1024.0/1024/1024 << " GiB. "
 									<< Timer::GetNow();
     }
 

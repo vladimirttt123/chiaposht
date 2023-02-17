@@ -8,20 +8,18 @@
 [![Language grade: Python](https://img.shields.io/lgtm/grade/python/g/Chia-Network/chiapos.svg?logo=lgtm&logoWidth=18)](https://lgtm.com/projects/g/Chia-Network/chiapos/context:python)
 [![Language grade: C/C++](https://img.shields.io/lgtm/grade/cpp/g/Chia-Network/chiapos.svg?logo=lgtm&logoWidth=18)](https://lgtm.com/projects/g/Chia-Network/chiapos/context:cpp)
 
-With this fork of chiapos I try to add some threads.
-I added threads to sorts and added new sort BSort.
-This is type of union sort used here but with bigger buckets.
-For enough threads BSort works as fast as union sort with much less memory use.
+With this fork of chiapos I try to add some threads to improve plot creation time.
+Now sortings done with threads and added threads to phase2.
+To increase nubmer of threads next bucket is sorted in background (in case of enough buffer size)
 
-Some threads also added to phase 2 of calculations.
-
-For me overall process of plot creation improved in time by about 20-40%.
-It is still not madmax, but madmax cannot create k35+.
-
-Creating with 256+ buckets can save disk writtings and temp space. 
-By my measure k32 with 256 buckets use at most 220GiB on temp disk. 
-Than with 256 GiB RAM it is possible to plot in RAM only with ramdisk. 
-It still wouldn't be fast but can save writtigns.
+In addition added IO compaction that can lead to faster 
+creation with HDD plotting or prolonge SSD life with less writtings.
+But compaction do some more work than on slow CPUs or in systems 
+where IO is not a botleneck creation will be slower.
+To use all implemented compactions buckets number should be at least 256.
+It is possible to plot with ram disk. 
+By my measures to create k32 it needed around 170GiB space in temp directory 
+when using compaction with 256 (or more) buckets.
 
 Chia's proof of space is written in C++. Includes a plotter, prover, and
 verifier. It exclusively runs on 64 bit architectures. Read the
