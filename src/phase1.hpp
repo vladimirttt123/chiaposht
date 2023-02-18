@@ -511,10 +511,6 @@ void* phase1_thread(THREADDATA* ptd)
 					globals.R_sort_manager->AddAllToCache( right_writer_buf.get(), right_writer_count, right_entry_size_bytes );
         } else {
             // Writes out the right table for table 7
-//            (*ptmp_1_disks)[table_index + 1].Write(
-//                globals.right_writer,
-//                right_writer_buf.get(),
-//                right_writer_count * right_entry_size_bytes);
 						globals.table7->Write( right_writer_buf, right_writer_count * right_entry_size_bytes );
         }
         globals.right_writer += right_writer_count * right_entry_size_bytes;
@@ -743,7 +739,8 @@ std::vector<uint64_t> RunPhase1(
             globals.R_sort_manager->FlushCache();
             globals.L_sort_manager = std::move(globals.R_sort_manager);
         } else {
-//            tmp_1_disks[table_index + 1].Truncate(globals.right_writer);
+						globals.table7->Close();
+						delete globals.table7;
         }
 
         // Resets variables
@@ -761,8 +758,6 @@ std::vector<uint64_t> RunPhase1(
     }
     table_sizes[0] = 0;
     globals.R_sort_manager.reset();
-		globals.table7->Close();
-		delete globals.table7;
 
     return table_sizes;
 }

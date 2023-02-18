@@ -313,9 +313,8 @@ public:
 					next_bucket_sorting_thread->join();
 
         // Close and delete files in case we exit without doing the sort
-				for (auto& b : buckets_){
+				for (auto& b : buckets_)
 					b.Remove( );
-				}
     }
 
 private:

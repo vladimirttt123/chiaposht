@@ -125,23 +125,21 @@ struct bitfield
 				buffer_.reset();
 				if( b_file_ != nullptr ){
 					b_file_->FreeMemory();
-					delete b_file_;
-					b_file_ = nullptr;
+					b_file_.reset();
 					if( with_file_remove )
 						file_->Remove();
-					delete file_;
-					file_ = nullptr;
+					file_.reset();
 				}
 				size_ = 0;
     }
 
 		void FlushToDisk( const fs::path &filename ){
-			if( file_ != nullptr ) return;
+			if( !file_ ) return;
 			auto const length = memSize();
-			file_ = new FileDisk( filename );
+			file_.reset( new FileDisk( filename ) );
 			file_->Write( 0, (uint8_t*)buffer_.get(), length );
 			file_->Flush();
-			b_file_ = new BufferedDisk( file_, length );
+			b_file_.reset( new BufferedDisk( file_.get(), length ) );
 			// free memory
 			buffer_.reset();
 		}
@@ -152,8 +150,8 @@ private:
     // number of 64-bit words
     int64_t size_;
 
-		FileDisk * file_ = nullptr;
-		BufferedDisk * b_file_ = nullptr;
+		std::unique_ptr<FileDisk> file_;
+		std::unique_ptr<BufferedDisk> b_file_;
 };
 
 

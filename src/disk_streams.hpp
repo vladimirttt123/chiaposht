@@ -584,6 +584,7 @@ struct BucketStream{
 	{}
 
 	uint32_t MaxBufferSize() const { return buffer_size; }
+	const std::string getFileName() const {return fileName;}
 
 	void Write( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ){
 		assert( (buf_size % entry_size_) == 0 );

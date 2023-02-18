@@ -455,7 +455,7 @@ struct BufferedDisk : Disk
 
     std::string GetFileName() override { return disk_->GetFileName(); }
 
-		void FreeMemory( ) override{
+		void FreeMemory( ) override {
 			FreeMemory( true );
 		}
 

@@ -49,9 +49,10 @@ struct ABuffer{
 			buffer.reset( new uint8_t[allocated_length] );
 	}
 
-	inline void FlushToStream( BucketStream * disk ){
+	inline void FlushToStream( BucketStream * disk, bool free_buffer = false ){
 		disk->Write( buffer, size );
 		size = 0;
+		if( free_buffer ) buffer.reset();
 	}
 
 	// size of used buffer
@@ -124,9 +125,17 @@ struct SortingBucket{
 	}
 
 	// Flush current buffer to disk
+	// It should be at end of writting.
 	void Flush( bool free_memory = false ){
 		if( !disk || disk_buffer->IsEmpty() ) return;
-		disk_buffer->FlushToStream( disk.get() );
+		disk_buffer->FlushToStream( disk.get(), free_memory );
+		if( free_memory ){
+			// Save statistics to file
+			auto statistcs_file = FileDisk(disk->getFileName() + ".statistics.tmp" );
+			statistcs_file.Write( 0, (uint8_t*)statistics.get(), sizeof(uint32_t)<<bucket_bits_count_ );
+			statistcs_file.Close();
+			statistics.reset();
+		}
 	}
 
 	void CloseFile(){
@@ -142,6 +151,7 @@ struct SortingBucket{
 	void Remove(){
 		if( !disk ) return; // already removed
 		disk->EndToRead();
+		FileDisk(disk->getFileName() + ".statistics.tmp" ).Remove( true );
 		disk.reset();
 		statistics.reset();
 		disk_buffer.reset();
@@ -156,6 +166,15 @@ struct SortingBucket{
 		assert( disk );
 
 		if( memory_ ) return; // already sorted;
+
+		if(!statistics){
+			// Read statistics from file
+			statistics.reset( new uint32_t[1<<bucket_bits_count_] );
+			auto statistcs_file = FileDisk(disk->getFileName() + ".statistics.tmp", false );
+			statistcs_file.Read( 0, (uint8_t*)statistics.get(), sizeof(uint32_t)<<bucket_bits_count_ );
+			statistcs_file.Close();
+			statistcs_file.Remove();
+		}
 
 		// Eensure writing is finished
 		disk->EndToWrite();
