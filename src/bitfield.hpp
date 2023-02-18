@@ -134,7 +134,7 @@ struct bitfield
     }
 
 		void FlushToDisk( const fs::path &filename ){
-			if( !file_ ) return;
+			if( file_ ) return;
 			auto const length = memSize();
 			file_.reset( new FileDisk( filename ) );
 			file_->Write( 0, (uint8_t*)buffer_.get(), length );
