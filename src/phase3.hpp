@@ -115,8 +115,8 @@ struct ParkWriter{
 								+ EntrySizes::CalculateStubsSize(k) + 2
 								+ EntrySizes::CalculateMaxDeltasSize(k, 1) )
 		, park_buffer(new uint8_t[park_buffer_size] )
-		, park_deltas( new std::vector<uint8_t>() )
-		, park_stubs( new std::vector<uint64_t>()  )
+		, park_deltas( new std::vector<uint8_t>(0) )
+		, park_stubs( new std::vector<uint64_t>(0)  )
 	{}
 
 	void StartTable( uint8_t table_index, uint64_t table_start ){
@@ -133,10 +133,11 @@ struct ParkWriter{
 
 		final_entries_written += (park_stubs->size() + 1);
 
+		join();
+
 		this->park_deltas.swap(park_deltas);
 		this->park_stubs.swap( park_stubs );
 
-		join();
 
 		work_thread.reset( new std::thread( [this](uint128_t first_line_pnt, uint64_t park_idx){
 			WriteParkToFile( *final_disk, table_start,
@@ -147,6 +148,7 @@ struct ParkWriter{
 			this->park_deltas->clear();
 			this->park_stubs->clear();
 		}, first_line_point, park_index));
+
 		park_index ++;
 	}
 
@@ -154,7 +156,7 @@ struct ParkWriter{
 		return table_start + park_index * park_size_bytes;
 	}
 
-	inline void join() { if( work_thread ) work_thread->join();  }
+	inline void join() { if( work_thread ){ work_thread->join(); work_thread.reset();} }
 	~ParkWriter() { join(); }
 private:
 	FileDisk *final_disk;
@@ -477,10 +479,15 @@ Phase3Results RunPhase3(
 				// groups(parks), with a checkpoint in each group.
 				uint8_t const sort_key_shift = 128 - right_sort_key_size;
 				uint8_t const index_shift = sort_key_shift - (k + (table_index == 6 ? 1 : 0));
-				for (uint64_t index = 0; index < total_r_entries; index++) {
-						const uint8_t *right_reader_entry_buf = R_sort_manager->ReadEntry(right_reader);
-						right_reader += right_entry_size_bytes;
-						right_reader_count++;
+
+				uint32_t sort_buf_size = kEntriesPerPark*right_entry_size_bytes;
+				auto sort_buf = std::make_unique<uint8_t[]>( sort_buf_size );
+
+				while( (sort_buf_size = R_sort_manager->Read( sort_buf, sort_buf_size ) ) > 0 ){
+					uint8_t *right_reader_entry_buf = sort_buf.get();
+					right_reader_count += sort_buf_size/right_entry_size_bytes;
+					for( uint64_t index = right_reader_count - sort_buf_size/right_entry_size_bytes ;
+							 index < right_reader_count; index++, right_reader_entry_buf += right_entry_size_bytes ){
 
 						// Right entry is read as (line_point, sort_key)
 						uint128_t line_point = Util::SliceInt128FromBytes(right_reader_entry_buf, 0, line_point_size);
@@ -495,11 +502,11 @@ Phase3Results RunPhase3(
 
 						// Every EPP entries, writes a park
 						if (index % kEntriesPerPark == 0) {
-								if (index != 0) {
+								if (index != 0)
 									parker.Write( checkpoint_line_point, park_deltas, park_stubs );
-								}
-								park_deltas->clear();
-								park_stubs->clear();
+
+								assert( park_deltas->size() == 0 );
+								assert( park_stubs->size() == 0 );
 
 								checkpoint_line_point = line_point;
 						}
@@ -517,11 +524,12 @@ Phase3Results RunPhase3(
 
 						assert(small_delta < 256);
 
-						if ((index % kEntriesPerPark != 0)) {
+						if( (index % kEntriesPerPark) != 0 ) {
 							park_deltas->push_back(small_delta);
 							park_stubs->push_back(stub);
 						}
 						last_line_point = line_point;
+					}
 				}
 				R_sort_manager.reset();
 				L_sort_manager->FlushCache();
@@ -532,6 +540,7 @@ Phase3Results RunPhase3(
 						// Since we don't have a perfect multiple of EPP entries, this writes the last ones
 						parker.Write( checkpoint_line_point, park_deltas, park_stubs );
 				}
+				parker.join();
 
 				Encoding::ANSFree(kRValues[table_index - 1]);
 				std::cout << "\tWrote " << parker.final_entries_written << " entries" << std::endl;

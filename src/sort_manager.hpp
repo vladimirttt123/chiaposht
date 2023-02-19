@@ -62,7 +62,7 @@ private:
 };
 
 
-class SortManager : public Disk {
+class SortManager : public Disk, IReadDiskStream {
 public:
     SortManager(
         uint64_t const memory_size,
@@ -237,6 +237,28 @@ public:
         // last reading pass over them)
     }
 
+		//#Start IReadStream implementation
+		uint32_t Read( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) override {
+			for( uint32_t buf_start = 0; buf_start < buf_size; ){
+				while( stream_read_position >= final_position_end && next_bucket_to_sort < buckets_.size() )
+					SortBucket();
+				auto to_copy = std::min( final_position_end-stream_read_position, (uint64_t)(buf_size-buf_start) );
+				if( to_copy == 0 ) return buf_start;
+				memcpy( buf.get() + buf_start, memory_start() + stream_read_position - final_position_start, to_copy );
+				buf_start += to_copy;
+				stream_read_position += to_copy;
+			}
+
+			return buf_size;
+		};
+		bool atEnd() const override{
+			return final_position_end >= stream_read_position && next_bucket_to_sort >= buckets_.size();
+		};
+		void Close() override { FreeMemory(); };
+
+		uint64_t GetReadPosition()const { return stream_read_position; }
+		//#End IReadStream implementation
+
 		const uint8_t *ReadEntry(uint64_t position)
     {
         if (position < this->final_position_start) {
@@ -345,6 +367,8 @@ private:
 		const uint32_t stats_mask;
 		uint64_t time_total_wait = 0;
 
+		uint64_t stream_read_position = 0;
+
 		const inline uint8_t* memory_start() const {return buckets_[next_bucket_to_sort-1].get();}
 
 		void SortBucket()
@@ -390,15 +414,17 @@ private:
 				else
 					b.SortToMemory( num_threads );
 
-
-				std::cout << ", times: ( wait:" << wait_time/1000.0 << ", read:" << b.read_time/1000.0 << "s, total: "
-									<< b.sort_time/1000.0 << "s )" << std::flush;
+				if( b.Size() > 0 )
+					std::cout << ", times: ( wait:" << wait_time/1000.0 << ", read:" << b.read_time/1000.0 << "s, total: "
+										<< b.sort_time/1000.0 << "s )" << std::flush;
 
         this->final_position_start = this->final_position_end;
 				this->final_position_end += b.Size();
 				this->next_bucket_to_sort += 1;
 
-				if( this->next_bucket_to_sort >= buckets_.size() || buckets_[this->next_bucket_to_sort].Size() == 0 ){
+				if( this->next_bucket_to_sort >= buckets_.size()
+						|| ( buckets_[this->next_bucket_to_sort].Size() == 0
+								 && b.Size() > 0 ) ){
 					// final bucket - show some stats
 					uint64_t read_time = 0, sort_time = 0;
 					for(uint32_t i = 0; i < next_bucket_to_sort; i++ ){
