@@ -190,7 +190,11 @@ public:
 						Util::ExtractNum64(entry, begin_bits_, log_num_buckets_ + subbucket_bits );
 				buckets_[bucket_index>>subbucket_bits].AddEntryTS( entry, bucket_index & stats_mask );
 		}
-
+		inline void AddToCacheTS( const uint128_t &entry ){
+			uint8_t bytes[16];
+			Util::IntTo16Bytes(bytes, entry );
+			AddToCacheTS( bytes );
+		}
 		inline void AddAllToCache( const uint8_t *entries, const uint32_t &num_entries, const uint32_t &ext_enrty_size ){
 			for (uint32_t i = 0; i < num_entries; i++) {
 				AddToCache( entries + i * ext_enrty_size );
