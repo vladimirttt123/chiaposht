@@ -105,7 +105,7 @@ int main(int argc, char *argv[]) try {
         "Megabytes to be used as buffer for sorting and plotting",
         cxxopts::value<uint32_t>(buffmegabytes))(
 				"B, file-buffer", "Per file read/write buffer size in KiB",
-				cxxopts::value<uint32_t>(filebufkb)->default_value("1024") )(
+				cxxopts::value<uint32_t>(filebufkb)->default_value("256") )(
 				"l, leave-files", "do not delete temporary files (for debug)",
 					cxxopts::value<bool>(LEAVE_FILES)->default_value("false") )(
         "p, progress", "Display progress percentage during plotting",

@@ -56,7 +56,7 @@ inline void ScanTable( IReadDiskStream *disk, int table_index, const int64_t &ta
 	int64_t read_cursor = 0;
 	auto max_threads = std::max((uint32_t)1, num_threads);
 	auto threads = std::make_unique<std::thread[]>( max_threads );
-	std::mutex read_mutex, union_mutex;
+	std::mutex read_mutex[2], union_mutex;
 	// ensure buffer size is even.
 	const int64_t read_bufsize = (BUF_SIZE/entry_size)*entry_size; // allign size to entry length
 	// Run the threads
@@ -65,19 +65,23 @@ inline void ScanTable( IReadDiskStream *disk, int table_index, const int64_t &ta
 															(IReadDiskStream *disk, int64_t *read_cursor, const bitfield * current_bitfield, bitfield *next_bitfield){
 			auto buffer = std::make_unique<uint8_t[]>(read_bufsize);
 			bitfieldReader cur_bitfield( *current_bitfield );
+			auto processed = std::make_unique<uint64_t[]>( read_bufsize/entry_size*2 );
+			int64_t buf_size = 0, buf_start = 0;
+
 			while( true ){
-				int64_t buf_size = 0, buf_start = 0;
 				{	// Read next buffer
-					const std::lock_guard<std::mutex> lk(read_mutex);
+					const std::lock_guard<std::mutex> lk(read_mutex[0]);
 					buf_start = *read_cursor;
 					buf_size = disk->Read( buffer, read_bufsize );
 					if( buf_size == 0 ) return;// nothing to read -> exit
 
 					*read_cursor += buf_size;
+				}
+				{ // Setting limits could read data from file than need a mutex
+					const std::lock_guard<std::mutex> lk(read_mutex[1]);
 					cur_bitfield.setLimits( buf_start/entry_size, buf_size/entry_size );
 				}
 
-				auto processed = std::make_unique<uint64_t[]>( buf_size/entry_size*2 );
 				uint32_t processed_count = 0;
 
 				// Convert buffer to numbers in final bitfield
@@ -255,9 +259,10 @@ Phase2Results RunPhase2(
 				auto next_bitfield = std::make_unique<bitfield>( std::max( current_bitfield->size(), table_size ) );
 
 				{ // Scope for reader
-					auto table_reader = std::unique_ptr<IReadDiskStream>( table_index == 7 ?
+					auto table_reader = std::unique_ptr<IReadDiskStream>( new AsyncStreamReader( table_index == 7 ?
 										CreateLastTableReader( &tmp_1_disks[table_index], k, entry_size, (flags&NO_COMPACTION)==0 ):
-										new ReadFileStream( &tmp_1_disks[table_index], table_size * entry_size ) );
+										new ReadFileStream( &tmp_1_disks[table_index], table_size * entry_size ),
+									(BUF_SIZE/entry_size)*entry_size ) );
 					ScanTable( table_reader.get(), table_index, table_size, entry_size,
 										 *current_bitfield.get(), *next_bitfield.get(), num_threads, pos_offset_size, k );
 				}
