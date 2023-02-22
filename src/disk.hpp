@@ -292,10 +292,6 @@ struct FileDisk {
 				RenameFileToDeleted();
 			else
 				fs::resize_file(filename_, new_size);
-
-			// some debug info
-			if( new_size != 0 && new_size != writeMax )
-				std::cout << "Trancating file " << filename_ << " to " << new_size << ", writeMax = " << writeMax << std::endl;
     }
 
 		void Flush() {
