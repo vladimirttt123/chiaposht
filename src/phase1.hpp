@@ -155,6 +155,10 @@ void* phase1_thread(THREADDATA* ptd)
     uint64_t totalstripes = (prevtableentries + globals.stripe_size - 1) / globals.stripe_size;
     uint64_t threadstripes = (totalstripes + globals.num_threads - 1) / globals.num_threads;
 
+		std::unique_ptr<SortManager::ThreadWriter> sort_thread_writer;
+		if( table_index < 6 )
+			sort_thread_writer.reset( new SortManager::ThreadWriter( *globals.R_sort_manager) );
+
     for (uint64_t stripe = 0; stripe < threadstripes; stripe++) {
         uint64_t pos = (stripe * globals.num_threads + ptd->index) * globals.stripe_size;
         uint64_t const endpos = pos + globals.stripe_size + 1;  // one y value overlap
@@ -480,17 +484,32 @@ void* phase1_thread(THREADDATA* ptd)
             ++pos;
         }
 
-        // If we needed new bucket, we already waited
-        // Do not wait if we are the first thread, since we are guaranteed that everything is written
-        if (!need_new_bucket && !first_thread) {
-            Sem::Wait(ptd->theirs);
-        }
 
         uint32_t const ysize = (table_index + 1 == 7) ? k : k + kExtraBits;
         uint32_t const startbyte = ysize / 8;
         uint32_t const endbyte = (ysize + pos_size + 7) / 8 - 1;
         uint64_t const shiftamt = (8 - ((ysize + pos_size) % 8)) % 8;
-        uint64_t const correction = (globals.left_writer_count - stripe_start_correction) << shiftamt;
+
+				// If we needed new bucket, we already waited
+				// Do not wait if we are the first thread, since we are guaranteed that everything is written
+				if (!need_new_bucket && !first_thread) {
+						Sem::Wait(ptd->theirs);
+				}
+
+				uint64_t const correction = (globals.left_writer_count - stripe_start_correction) << shiftamt;
+				globals.right_writer += right_writer_count * right_entry_size_bytes;
+				globals.right_writer_count += right_writer_count;
+
+				(*ptmp_1_disks)[table_index].Write(
+						globals.left_writer, left_writer_buf.get(), left_writer_count * compressed_entry_size_bytes);
+				globals.left_writer += left_writer_count * compressed_entry_size_bytes;
+				globals.left_writer_count += left_writer_count;
+
+				globals.matches += matches;
+
+				// tables 1-6 written to sort manager and can be done in parallele with others
+				if( table_index < 6 )
+					Sem::Post(ptd->mine);
 
         // Correct positions
         for (uint32_t i = 0; i < right_writer_count; i++) {
@@ -505,24 +524,19 @@ void* phase1_thread(THREADDATA* ptd)
                 entrybuf[j] = posaccum & 0xff;
                 posaccum = posaccum >> 8;
             }
+
+						if( table_index < 6 )
+							sort_thread_writer->Add( entrybuf );
         }
-        if (table_index < 6) {
-					assert( (right_writer_count>>32) == 0 );
-					globals.R_sort_manager->AddAllToCache( right_writer_buf.get(), right_writer_count, right_entry_size_bytes );
-        } else {
+//        if (table_index < 6) {
+//					assert( (right_writer_count>>32) == 0 );
+//					globals.R_sort_manager->AddAllToCache( right_writer_buf.get(), right_writer_count, right_entry_size_bytes );
+//        } else {
+				if( table_index >= 6 ) {
             // Writes out the right table for table 7
 						globals.table7->Write( right_writer_buf, right_writer_count * right_entry_size_bytes );
-        }
-        globals.right_writer += right_writer_count * right_entry_size_bytes;
-        globals.right_writer_count += right_writer_count;
-
-        (*ptmp_1_disks)[table_index].Write(
-            globals.left_writer, left_writer_buf.get(), left_writer_count * compressed_entry_size_bytes);
-        globals.left_writer += left_writer_count * compressed_entry_size_bytes;
-        globals.left_writer_count += left_writer_count;
-
-        globals.matches += matches;
-        Sem::Post(ptd->mine);
+						Sem::Post(ptd->mine);
+				}
     }
 
     return 0;
@@ -688,7 +702,7 @@ std::vector<uint64_t> RunPhase1(
         Timer computation_pass_timer;
 
         auto td = std::make_unique<THREADDATA[]>(num_threads);
-        auto mutex = std::make_unique<Sem::type[]>(num_threads);
+				auto mutex = std::make_unique<Sem::type[]>(num_threads);
 
         std::vector<std::thread> threads;
 
