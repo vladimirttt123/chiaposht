@@ -210,7 +210,7 @@ struct SortingBucket{
 				 FillBuckets( memory, disk_buffer->buffer.get(), buf_size, bucket_positions.get(), entry_size_ );
 
 			// Clean Memory
-			disk_buffer->buffer.reset();
+			disk_buffer.reset();
 
 			assert( bucket_positions[0] == statistics[0]*entry_size_ ); // check first bucket is full
 			assert( bucket_positions[buckets_count-1]/entry_size_ == Count() ); // check last bucket is full
@@ -253,17 +253,19 @@ struct SortingBucket{
 				}
 			};
 
-			// Do it in parallel with forward reading
-			if( !disk_buffer->IsEmpty() )
-				FillBuckets( memory, disk_buffer->buffer.get(), disk_buffer->size, back_bucket_positions.get(), -(int64_t)entry_size_ );
-			// Disk buffer can be cleaned we do not need it anymore.
-			disk_buffer->buffer.reset();
 
 			// Start threads
 			{
 				std::vector<std::thread> threads;
 				for( uint32_t t = 0; t < max_threads; t++ ){
 					threads.emplace_back( thread_func, mutForward.get(), bucket_positions.get(), entry_size_ );
+
+					// Do it in parallel with forward reading
+					if( disk_buffer && !disk_buffer->IsEmpty() )
+						FillBuckets( memory, disk_buffer->buffer.get(), disk_buffer->size, back_bucket_positions.get(), -(int64_t)entry_size_ );
+					// Disk buffer can be cleaned we do not need it anymore.
+					disk_buffer.reset();
+
 					threads.emplace_back( thread_func, mutBackward.get(), back_bucket_positions.get(), -(int64_t)entry_size_ );
 				}
 

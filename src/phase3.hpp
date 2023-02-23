@@ -418,8 +418,6 @@ Phase3Results RunPhase3(
 
 				Timer computation_pass_2_timer;
 
-//				right_reader_count = 0;
-
 				if (table_index > 1) {
 						// Make sure all files are removed
 						L_sort_manager.reset();
