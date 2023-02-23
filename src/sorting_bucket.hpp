@@ -278,7 +278,7 @@ struct SortingBucket{
 			for( uint32_t i = 0; i < buckets_count; i++ )
 				assert( (int64_t)bucket_positions[i] == (int64_t)back_bucket_positions[i] + entry_size_ );
 #endif
-			// Fix bucket_positions for sorting step
+			// Fix bucket_positions for sorting step in such way that bucket_positions[i] reprsents end position of subbucket.
 			bucket_positions[0] = statistics[0]*entry_size_;
 			for( uint32_t i = 1; i < buckets_count; i++ )
 				bucket_positions[i] = bucket_positions[i-1] + statistics[i]*entry_size_;
@@ -317,9 +317,9 @@ struct SortingBucket{
 #endif
 	}
 
-	std::unique_ptr<std::mutex> addMutex = std::make_unique<std::mutex>();
 
 private:
+	std::unique_ptr<std::mutex> addMutex = std::make_unique<std::mutex>();
 	std::unique_ptr<BucketStream> disk;
 	const uint16_t bucket_no_;
 	const uint8_t log_num_buckets_;
@@ -327,6 +327,7 @@ private:
 
 	const uint16_t entry_size_;
 	const uint16_t begin_bits_;
+	// this is the number of entries for each subbucket
 	std::unique_ptr<uint32_t[]> statistics;
 	std::unique_ptr<ABuffer> disk_buffer;
 	uint64_t entries_count = 0;
