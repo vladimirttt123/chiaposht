@@ -259,10 +259,10 @@ Phase2Results RunPhase2(
 				auto next_bitfield = std::make_unique<bitfield>( std::max( current_bitfield->size(), table_size ) );
 
 				{ // Scope for reader
-					auto table_reader = std::unique_ptr<IReadDiskStream>( new AsyncStreamReader( table_index == 7 ?
+					auto table_reader = std::unique_ptr<IReadDiskStream>(  table_index == 7 ?
 										CreateLastTableReader( &tmp_1_disks[table_index], k, entry_size, (flags&NO_COMPACTION)==0 ):
-										new ReadFileStream( &tmp_1_disks[table_index], table_size * entry_size ),
-									(BUF_SIZE/entry_size)*entry_size ) );
+										new AsyncStreamReader( new ReadFileStream( &tmp_1_disks[table_index], table_size * entry_size ),
+												(BUF_SIZE/entry_size)*entry_size ) );
 					ScanTable( table_reader.get(), table_index, table_size, entry_size,
 										 *current_bitfield.get(), *next_bitfield.get(), num_threads, pos_offset_size, k );
 				}
