@@ -41,6 +41,7 @@ struct ABuffer{
 
 	inline bool IsEmpty() const { return size == 0;}
 	inline bool IsFull() const { return size == allocated_length; }
+	// Current size of buffer
 	inline uint32_t Size() const { return size; }
 	inline void EnsureAllocated() {
 		if( !buffer )
@@ -195,6 +196,7 @@ struct SortingBucket{
 		auto start_time = std::chrono::high_resolution_clock::now();
 		uint64_t read_size = Size() - disk_buffer->Size();
 
+		assert( disk_buffer->allocated_length >= disk->MaxBufferSize() );
 
 		// Read from file to buckets, do not run threads if less than 1024 entries to read
 		if( num_threads <= 1 || read_size < 1024*entry_size_ ){
@@ -203,7 +205,6 @@ struct SortingBucket{
 				FillBuckets( memory, disk_buffer->buffer.get(), disk_buffer->Size(), bucket_positions.get(), entry_size_ );
 			else
 				disk_buffer->EnsureAllocated();
-
 
 			uint32_t buf_size;
 			while( ( buf_size = disk->Read( disk_buffer->buffer ) ) > 0 )
@@ -228,7 +229,7 @@ struct SortingBucket{
 			auto mutForward = std::make_unique<std::mutex[]>(num_sub_locks);
 			auto mutBackward = std::make_unique<std::mutex[]>(num_sub_locks);
 			// Define thread function
-			auto thread_func = [this, &memory , &num_sub_locks, &sub_locks_mask]( std::mutex *mutWrite,  uint64_t* bucket_positions, const uint64_t direction ){
+			auto thread_func = [this, &memory , &num_sub_locks, &sub_locks_mask]( std::mutex *mutWrite,  uint64_t* bucket_positions, const int64_t direction ){
 				uint32_t buf_size;
 				auto buf = std::make_unique<uint8_t[]>( disk->MaxBufferSize() );
 				while( (buf_size = disk->Read( buf ) ) > 0 ){

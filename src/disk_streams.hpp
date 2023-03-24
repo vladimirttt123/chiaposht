@@ -228,40 +228,42 @@ private:
 struct SequenceCompacterWriter : public IWriteDiskStream{
 	SequenceCompacterWriter( IWriteDiskStream *disk,
 													 const uint16_t &entry_size, const uint8_t &begin_bits )
-		: disk( disk )
-		, entry_size(entry_size), begin_bits_( begin_bits&7 ), begin_bytes( begin_bits>>3 )
-		, mask( 0xff00 >> begin_bits_ )
+		: disk( disk ) , entry_size(entry_size), begin_bits_( begin_bits&7 )
+		, begin_bytes( begin_bits>>3 ), mask( 0xff00 >> begin_bits_ )
 	{
 	}
 
 	void Write( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) override {
-		if( last_buffer_size != buf_size )
-			buffer.reset( new uint8_t[(last_buffer_size=buf_size)/entry_size*(entry_size+1)] );
-		disk->Write( buffer, CompactBuffer( buf.get(), buf_size ) );
+		if( !buffer )  buffer.reset( new uint8_t[BUF_SIZE] ); // init buffer on first write
+		CompactBuffer( buf.get(), buf_size );
 	}
 
 	void Close() override {
-		if(disk){ disk->Close(); disk.reset(); }
+		if(disk){
+			if( buffer_idx > 0 )
+				disk->Write( buffer, buffer_idx );
+			disk->Close();
+			disk.reset();
+		}
 		buffer.reset();
 	}
 
-	~SequenceCompacterWriter(){if(disk) disk->Close();}
+	~SequenceCompacterWriter(){Close();}
 private:
 	std::unique_ptr<IWriteDiskStream> disk;
 	uint64_t last_write_value = 0;
-	uint32_t last_buffer_size = 0;
+	uint32_t buffer_idx = 0;
 	std::unique_ptr<uint8_t[]> buffer;
 	const uint16_t entry_size;
 	const uint8_t begin_bits_;
 	const uint8_t begin_bytes;
 	const uint8_t mask;
 
-	uint32_t CompactBuffer( uint8_t *buf, uint32_t buf_size ){
+	void CompactBuffer( uint8_t *buf, uint32_t buf_size ){
 		assert( (buf_size%entry_size) == 0 );
 
-		uint32_t buf_idx = 0;
 		auto cur_buf = buffer.get();
-#define setNext( v ) cur_buf[buf_idx++] = v
+#define setNext( v ) cur_buf[buffer_idx++] = v
 
 		for( uint32_t i = 0; i < buf_size; ){
 			uint64_t next_val = Util::ExtractNum64( buf + i + begin_bytes, begin_bits_, 32 );
@@ -284,28 +286,37 @@ private:
 			} else if( diff < 270549120 /* 2^28 + 2^21 + 2^14 + 128 */){
 				// to save 4 bytes
 				diff = (diff-2113664) + (((uint32_t)0xe)<<28);
-				((uint32_t*)(cur_buf + buf_idx))[0] = bswap_32( diff );
-				buf_idx += 4;
+				((uint32_t*)(cur_buf + buffer_idx))[0] = bswap_32( diff );
+				buffer_idx += 4;
 			}	else {
 				// save 255 & full value
 				setNext( 255 );
-				((uint32_t*)(cur_buf + buf_idx))[0] = bswap_32( next_val );
-				buf_idx += 4;
+				((uint32_t*)(cur_buf + buffer_idx))[0] = bswap_32( next_val );
+				buffer_idx += 4;
 			}
 
 			// Process cuted entry
 			for( uint32_t j = 0; j < begin_bytes; j++ )
 				setNext( buf[i++] );
-			setNext( (buf[i]&mask) | (buf[i+4]&~mask) );
-			i += 5;
+
+			// save one more bytes just in case need to do it i.e. there is a next byte
+			if( begin_bits_ || (begin_bytes + 4) < entry_size ){
+				setNext( (buf[i]&mask) | (buf[i+4]&~mask) );
+				i++;
+			}
+			i += 4; // move saved bytes forward
 			for( uint32_t j = begin_bytes + 5; j < entry_size; j++ )
 				setNext( buf[i++] );
 
 			// set result
 			last_write_value = next_val;
-		}
 
-		return buf_idx;
+			if( (buffer_idx + 1 + entry_size ) > BUF_SIZE ){ // next value could not fit buffer
+				disk->Write( buffer, BUF_SIZE );
+				buffer_idx = 0;
+				last_write_value = 0;
+			}
+		}
 	}
 };
 
@@ -317,12 +328,43 @@ struct SequenceCompacterReader : public IReadDiskStream{
 	{
 	}
 
+	// this function for support custom buffer growing, defines buffer size to be provided to restore all entries
+	static inline uint32_t getMaxRestoredBufferSize( uint32_t entry_size )
+	{
+		return BUF_SIZE/(entry_size-3)*entry_size + entry_size;
+	}
+
 	uint32_t Read( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) override{
 		return GrowBuffer( buf.get(), buf_size );
 	}
 
-	inline bool atEnd() const override { return buf_fillness <= processed_of_buffer && disk->atEnd(); }
+	inline bool atEnd() const override { return bytes_in_buffer <= processed_of_buffer && disk->atEnd(); }
 	void Close() override { if(disk){ disk->Close(); disk.reset(); }buffer.reset(); }
+
+	// Returns growed buffer size
+	uint32_t GrowCustomBuffer( const uint8_t * compacted_buf, uint32_t compacted_buf_size, uint8_t * restore_buf, uint32_t restore_buf_size ) const {
+
+		uint32_t i = 0, processed_of_buffer = 0;
+		uint64_t last_value = 0;
+
+		assert( compacted_buf_size <= BUF_SIZE );
+		assert( restore_buf_size >= getMaxRestoredBufferSize( entry_size ) );
+
+		if( compacted_buf_size >= BUF_SIZE  ) // in reality it could be equal or less
+			compacted_buf_size = compacted_buf_size - entry_size; // it can be new entry started after this point
+		restore_buf_size = restore_buf_size/entry_size*entry_size; // align restore buffer to entry size?
+
+
+		while( i < restore_buf_size && processed_of_buffer < compacted_buf_size ){
+
+			processed_of_buffer += RecreateEntry( last_value, compacted_buf + processed_of_buffer, restore_buf + i );
+			i += entry_size;
+		}
+
+		assert( processed_of_buffer >= compacted_buf_size ); // check whole buffer is recreated
+
+		return i;
+	}
 
 	~SequenceCompacterReader(){if(disk) disk->Close();}
 private:
@@ -330,61 +372,79 @@ private:
 	uint64_t last_value = 0;
 	std::unique_ptr<uint8_t[]> buffer;
 	uint32_t processed_of_buffer = 0;
-	uint32_t buf_fillness = 0;
+	uint32_t bytes_in_buffer = 0;
 	const uint16_t entry_size;
 	const uint8_t begin_bits_;
 	const uint8_t begin_bytes;
 	const uint8_t mask;
 
+	// Returns growed buffer size
 	uint32_t GrowBuffer( uint8_t * buf, const uint32_t &buf_size ){
-		assert( buf_size%entry_size  == 0 );
+		assert( buf_size%entry_size  == 0 ); // buffer size should be aligned to entry size
 
-		uint32_t i = 0, value_to_insert;
+		uint32_t i = 0;
 		while( i < buf_size && !atEnd() ){
 
-			uint8_t compress_code = NextByte();
+			if( ( processed_of_buffer + entry_size + 1 ) > bytes_in_buffer && !disk->atEnd() ){
+				// current buffer finished or first hasn't started yet => need to read next
+				if( !buffer ) buffer.reset( new uint8_t[BUF_SIZE] ); // create buffer if not exists
+				bytes_in_buffer = disk->Read( buffer, BUF_SIZE ); // read the stream
 
-			if( compress_code < 128 )
-				value_to_insert = last_value + compress_code;
-			else if( compress_code < 192 ){
-				value_to_insert = last_value + 128 + ((((uint32_t)(compress_code - 128))<<8) | NextByte());
-			} else if( compress_code < 224 ){
-				value_to_insert = last_value + 16512 + ((((uint32_t)(compress_code-192))<<16) | (NextByte()<<8) | NextByte());
-			} else if( compress_code < 240 ){
-				value_to_insert = last_value + 2113664 + ((((uint32_t)(compress_code-224))<<24) | (NextByte()<<16) | (NextByte()<<8) | NextByte());
+				assert( bytes_in_buffer == BUF_SIZE || disk->atEnd() );
+
+				processed_of_buffer = 0;
+				last_value = 0;
 			} else {
-				assert( compress_code == 255 );
-				value_to_insert = (NextByte()<<24) | (NextByte()<<16) | (NextByte()<<8) | NextByte();
+				processed_of_buffer += RecreateEntry( last_value, buffer.get() + processed_of_buffer, buf + i );
+				i += entry_size;
 			}
-
-			// recreate the entry
-			for( uint32_t j = 0; j < begin_bytes; j++ )
-				buf[i++] = NextByte();
-			auto splitted = NextByte();
-			buf[i++] = (splitted&mask)|(value_to_insert>>(24+begin_bits_));
-			buf[i++] = value_to_insert >> (16+begin_bits_);
-			buf[i++] = value_to_insert >> (8+begin_bits_);
-			buf[i++] = value_to_insert >> begin_bits_;
-			buf[i++] = (value_to_insert<<(8-begin_bits_)) | (splitted&~mask);
-			for( uint32_t j = begin_bytes + 5; j < entry_size; j++ )
-				buf[i++] = NextByte();
-
-			last_value = value_to_insert;
 		}
 
 		return i;
 	}
+	
 
-	inline uint32_t NextByte(){
-		if( buf_fillness <= processed_of_buffer ){
-			if( !buffer ) buffer.reset( new uint8_t[BUF_SIZE] );
-			buf_fillness = disk->Read( buffer, BUF_SIZE );
-			processed_of_buffer = 0;
+
+	// Recornstruct the entry, update l
+	inline uint32_t RecreateEntry( uint64_t &last_value, const uint8_t * src_buf, uint8_t * buf  ) const {
+		uint32_t ret = 1, value_to_insert;
+		uint8_t compress_code = src_buf[0];
+
+		if( compress_code < 128 )
+			value_to_insert = last_value + compress_code;
+		else if( compress_code < 192 ){
+			value_to_insert = last_value + 128 + ((((uint32_t)(compress_code - 128))<<8) | src_buf[1]);
+			ret = 2;
+		} else if( compress_code < 224 ){
+			value_to_insert = last_value + 16512 + ((((uint32_t)(compress_code-192))<<16) | ( ((uint32_t)src_buf[1]) <<8 ) | src_buf[2] );
+			ret = 3;
+		} else if( compress_code < 240 ){
+			value_to_insert = last_value + 2113664 + ((((uint32_t)(compress_code-224))<<24) | 
+																								( ((uint32_t)src_buf[1]) <<16) | ( ((uint32_t)src_buf[2]) <<8 ) | src_buf[3] );
+			ret = 4;
+		} else {
+			assert( compress_code == 255 );
+			value_to_insert = bswap_32( ((uint32_t*)(src_buf+1))[0] );
+			ret = 5;
 		}
 
-		assert( buf_fillness > 0 );
+		bool hasEnd = ( begin_bytes + 4 ) < entry_size || begin_bits_;
+		// recreate the entry
+		for( uint32_t j = 0; j < begin_bytes; j++ )
+			buf[j] = src_buf[ret++];
+		auto splitted = hasEnd ? src_buf[ret++] : 0;
+		buf[begin_bytes] = (splitted&mask)|(value_to_insert>>(24+begin_bits_));
+		buf[begin_bytes+1] = value_to_insert >> (16+begin_bits_);
+		buf[begin_bytes+2] = value_to_insert >> (8+begin_bits_);
+		buf[begin_bytes+3] = value_to_insert >> begin_bits_;
+		if( hasEnd )
+			buf[begin_bytes+4] = (value_to_insert<<(8-begin_bits_)) | (splitted&~mask);
 
-		return buffer.get()[processed_of_buffer++];
+		for( uint32_t j = begin_bytes + 5; j < entry_size; j++ )
+			buf[j] = src_buf[ret++];
+
+		last_value = value_to_insert;
+		return ret;
 	}
 };
 
@@ -446,14 +506,6 @@ struct ByteInserterStream : public IReadDiskStream{
 
 	void Close() override { if(disk){ disk->Close(); disk.reset(); } }
 
-	~ByteInserterStream(){ if(disk) disk->Close();}
-private:
-	std::unique_ptr<IReadDiskStream> disk;
-	const uint16_t entry_size;
-	const uint16_t begin_bits;
-	const uint8_t bytes_begin;
-	const uint8_t removed_byte;
-	const uint8_t mask;
 
 	uint32_t GrowBuffer( uint8_t * buf, uint32_t buf_size ){
 		if(buf_size == 0 ) return 0;
@@ -484,6 +536,17 @@ private:
 
 		return full_buf_size;
 	}
+
+	~ByteInserterStream(){ if(disk) disk->Close();}
+private:
+	std::unique_ptr<IReadDiskStream> disk;
+	const uint16_t entry_size;
+	const uint16_t begin_bits;
+	const uint8_t bytes_begin;
+	const uint8_t removed_byte;
+	const uint8_t mask;
+
+
 };
 
 
@@ -577,16 +640,24 @@ struct BucketStream{
 		, entry_size_(entry_size)
 		, begin_bits_(begin_bits)
 		, sequence_start_bit(sequence_start_bit)
-		, buffer_size( BUF_SIZE/entry_size*entry_size )
 		, compact( compact&(log_num_buckets_>7) )
-	{}
+		, size_to_read( this->compact?(sequence_start_bit>=0?
+																		 BUF_SIZE // sequenct compacter read by this value
+																	 :(BUF_SIZE/(entry_size-1)*(entry_size-1))) // if just bucket_no removed than read amount should be alligned to entry_size-1
+																:(BUF_SIZE/entry_size*entry_size) ) // without compaction read amount should be allinged to entry size
+		, buffer_size(
+				this->compact ? ( (sequence_start_bit>=0 ? SequenceCompacterReader::getMaxRestoredBufferSize(entry_size-1) : size_to_read )/(entry_size-1)*entry_size + entry_size )
+											: size_to_read
+				)
+	{
+	}
 
 	uint32_t MaxBufferSize() const { return buffer_size; }
 	const std::string getFileName() const {return fileName;}
 
 	void Write( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ){
 		assert( (buf_size % entry_size_) == 0 );
-		if( buf_size == 0 ) return;
+		if( buf_size == 0 ) return; // nothing to write
 
 		std::lock_guard<std::mutex> lk( sync_mutex );
 		if( !disk_output ){
@@ -600,6 +671,7 @@ struct BucketStream{
 				disk_output.reset( new ByteCutterStream( disk_output.release(),
 																	entry_size_, begin_bits_ - log_num_buckets_ ) );
 			}
+
 			disk_output.reset( new AsyncStreamWriter( disk_output.release() ) );
 		}
 
@@ -617,23 +689,44 @@ struct BucketStream{
 
 	uint32_t Read( std::unique_ptr<uint8_t[]> &buf ){
 		{
-			std::lock_guard<std::mutex> lk( sync_mutex );
 			if( !bucket_file ) return 0;// nothing has been written
-			if (!disk_input ){
-				disk_input.reset( new ReadFileStream( bucket_file.get(), bucket_file->GetWriteMax() ) );
-				if( compact ){
-					if( sequence_start_bit >= 0 )
-						disk_input.reset( new SequenceCompacterReader( disk_input.release(),
-																				entry_size_-1, sequence_start_bit - (sequence_start_bit > begin_bits_ ? 8 : 0 ) ) );
+			uint32_t read_size = 0;
 
-					disk_input.reset( new ByteInserterStream( disk_input.release(),
+			{ // reading file part is locked by mutex
+				std::lock_guard<std::mutex> lk( sync_mutex );
+				if( !disk_input ){
+					disk_input.reset( new ReadFileStream( bucket_file.get(), bucket_file->GetWriteMax() ) );
+					//disk_input.reset( new AsyncStreamReader( disk_input.release(), BUF_SIZE ) );
+					if( sequence_start_bit >= 0 ){
+						// create compacter without input stream to grow custom buffer.
+						compacter.reset( new SequenceCompacterReader( nullptr, entry_size_-1,
+																		sequence_start_bit - (sequence_start_bit > begin_bits_ ? 8 : 0 ) ) );
+					}
+
+					inserter.reset( new ByteInserterStream( nullptr,
 																		entry_size_, begin_bits_ - log_num_buckets_,
 																		bucket_no_ >> (log_num_buckets_-8) ) );
 				}
-				disk_input.reset( new AsyncStreamReader( disk_input.release(), buffer_size ) );
+				read_size = disk_input->Read( buf, size_to_read );
 			}
 
-			return disk_input->Read( buf, buffer_size );
+			// this part is not locked and can be done in many threads in parallel
+			if( compact ){
+				if( sequence_start_bit >= 0 ){
+					std::unique_ptr<uint8_t[]> restore_buffer = std::make_unique<uint8_t[]>( buffer_size );
+					read_size = compacter->GrowCustomBuffer( buf.get(), read_size, restore_buffer.get(), buffer_size );
+					buf.swap( restore_buffer );
+				}
+
+				assert( read_size%(entry_size_-1) == 0 ); // is read size aligned
+				assert( (read_size/(entry_size_-1)*entry_size_ ) <= buffer_size ); // is buffer has enough space
+
+				read_size = inserter->GrowBuffer( buf.get(), read_size );
+			}
+
+			assert( read_size <= buffer_size );
+
+			return read_size;
 		}
 	}
 
@@ -663,8 +756,12 @@ private:
 	const int8_t sequence_start_bit;
 	std::mutex sync_mutex;
 
-	const uint32_t buffer_size;
 	const bool compact;
+	const uint32_t size_to_read;
+	const uint32_t buffer_size;
+
+	std::unique_ptr<SequenceCompacterReader> compacter;
+	std::unique_ptr<ByteInserterStream> inserter;
 
 };
 
@@ -748,8 +845,9 @@ IReadDiskStream * CreateLastTableReader( FileDisk * file, uint8_t k, uint16_t en
 																				bool withCompaction, uint32_t max_buffer_size = 0 ){
 	IReadDiskStream *res = new ReadFileStream( file, file->GetWriteMax() );
 
-	if( withCompaction && k >= 20 )
+	if( withCompaction && k >= 30 )
 		res = new SequenceCompacterReader( res, entry_size, k );
+
 
 	if( max_buffer_size > 0 )
 		res = new AsyncStreamReader( res, max_buffer_size );
@@ -762,7 +860,7 @@ IReadDiskStream * CreateLastTableReader( FileDisk * file, uint8_t k, uint16_t en
 																				 bool withCompaction, uint32_t max_buffer_size = 0 ){
 	IReadDiskStream *res = new ReadFileStream( file, file->GetWriteMax() );
 
-	if( withCompaction && k >= 20 )
+	if( withCompaction && k >= 30 )
 		res = new SequenceCompacterReader( res, entry_size, k );
 
 	res = new LastTableRewrited( res, k, entry_size, num_entries, bitfield_filename );
@@ -777,7 +875,7 @@ IReadDiskStream * CreateLastTableReader( FileDisk * file, uint8_t k, uint16_t en
 IWriteDiskStream * CreateLastTableWriter( FileDisk * file, uint8_t k, uint16_t entry_size,
 																					bool withCompaction, uint32_t max_buffer_size = 0 ){
 	IWriteDiskStream * res = new WriteFileStream( file );
-	if( withCompaction && k >= 20 )
+	if( withCompaction && k >= 30 )
 		res = new SequenceCompacterWriter( res, entry_size, k );
 
 	res = max_buffer_size > 0 ?

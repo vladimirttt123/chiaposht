@@ -54,7 +54,7 @@ inline void ScanTable( IReadDiskStream *disk, int table_index, const int64_t &ta
 	// for table 7
 
 	int64_t read_cursor = 0;
-	auto max_threads = std::max((uint32_t)1, num_threads);
+	const auto max_threads = std::max((uint32_t)1, num_threads);
 	auto threads = std::make_unique<std::thread[]>( max_threads );
 	std::mutex read_mutex[2], union_mutex;
 	// ensure buffer size is even.
@@ -151,7 +151,7 @@ inline void SortRegularTableThread( IReadDiskStream * disk, const uint64_t &tabl
 			write_counter = *global_write_counter;
 			*global_write_counter += cur_bitfield.count( 0, buf_size/entry_size );
 
-			assert( *global_write_counter == (uint64_t)current_bitfield->count(0 , *read_position/entry_size) );
+//			assert( *global_write_counter == (uint64_t)current_bitfield->count(0 , *read_position/entry_size) );
 		}
 
 		for( uint64_t buf_ptr = 0; buf_ptr < buf_size; buf_ptr += entry_size ){

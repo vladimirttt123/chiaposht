@@ -55,6 +55,8 @@ TEST_CASE( "DISK_STREAMS" ){
 		const uint64_t iteration = 3000;
 		const uint32_t begins[] = { 24, 25, 27, 30 };
 		const uint64_t entries_per_buffer = 127;
+		const auto cur_buf_size = BUF_SIZE;
+		BUF_SIZE = 4096;
 
 		for( uint32_t bits_begin : begins ){
 			for( uint16_t entry_size = 8; entry_size < 16; entry_size += 3 ){
@@ -87,75 +89,130 @@ TEST_CASE( "DISK_STREAMS" ){
 																			entries_per_buffer : iteration%entries_per_buffer) *entry_size );
 						subBuf.release();
 					}
+				} // this destruct and closing write stream
+
+
+				{ // check by read stream
+					SequenceCompacterReader rstream = SequenceCompacterReader(
+								new ReadFileStream(&disk, disk.GetWriteMax() ), entry_size, bits_begin );
+					auto rbuf = make_unique<uint8_t[]>(entries_per_buffer*entry_size);
+					uint64_t buf_ptr = 0;
+					for( uint32_t buf_size = rstream.Read( rbuf, entries_per_buffer*entry_size);
+							 buf_size > 0; buf_size = rstream.Read( rbuf, entries_per_buffer*entry_size) ){
+						for( uint32_t i = 0; i < buf_size; i++ )
+							REQUIRE( rbuf.get()[i] == buf.get()[buf_ptr++] );
+					}
+					REQUIRE( buf_ptr == iteration*entry_size );
 				}
 
-				SequenceCompacterReader rstream = SequenceCompacterReader(
-							new ReadFileStream(&disk, disk.GetWriteMax() ), entry_size, bits_begin );
-				auto rbuf = make_unique<uint8_t[]>(entries_per_buffer*entry_size);
-				uint64_t buf_ptr = 0;
-				for( uint32_t buf_size = rstream.Read( rbuf, entries_per_buffer*entry_size);
-						 buf_size > 0; buf_size = rstream.Read( rbuf, entries_per_buffer*entry_size) ){
-					for( uint32_t i = 0; i < buf_size; i++ )
-						REQUIRE( rbuf.get()[i] == buf.get()[buf_ptr++] );
+				{	// check by custom buffer;
+					ReadFileStream rstream = ReadFileStream(&disk, disk.GetWriteMax() );
+					SequenceCompacterReader compacter = SequenceCompacterReader( nullptr, entry_size, bits_begin );
+					auto rbuf = make_unique<uint8_t[]>(BUF_SIZE);
+					const uint32_t grow_buf_size = BUF_SIZE*4;
+					auto growbuf = make_unique<uint8_t[]>( grow_buf_size );
+					uint64_t buf_ptr = 0;
+					for( uint32_t buf_size = rstream.Read( rbuf, BUF_SIZE);
+							 buf_size > 0; buf_size = rstream.Read( rbuf, BUF_SIZE) ){
+						auto read_size = compacter.GrowCustomBuffer( rbuf.get(), buf_size, growbuf.get(), grow_buf_size );
+						for( uint32_t i = 0; i < read_size; i++ )
+							REQUIRE( growbuf.get()[i] == buf.get()[buf_ptr++] );
+					}
+					REQUIRE( buf_ptr == iteration*entry_size );
+
+
 				}
-				REQUIRE( buf_ptr == iteration*entry_size );
 			}
 		}
+		BUF_SIZE = cur_buf_size;
 	}
 
 	SECTION( "BucketStream" ){
 		const uint64_t iteration = 3000;
 		const uint16_t bucket_no = 0xaaaa;
-		const uint32_t begins[] = { 3, 7, 16, 19, 0 };
+		const uint16_t tests[][5] = { //[num_buckets,entry_size, bits_begins, is_compact, sequence_start]
+																	{ 256, 8, 0, 1, 32 }, { 256, 8, 32, 1, 0} };
 		const auto cur_buf_size = BUF_SIZE;
 		BUF_SIZE = 1024;
 
-		auto randEntry = []( uint8_t *buf, uint64_t entry_size ){
-			buf[entry_size-1] = 0;
-			for( uint8_t i = 0; i < entry_size - 1; i ++){
-				buf[entry_size-1] ^= (buf[i] = rand()&0xff);
-			}
-		};
-		auto fillBuf = [&randEntry]( uint8_t *buf, uint64_t entry_size, uint16_t bits_begin, uint16_t num_buckets, uint64_t count ){
-			for( uint64_t i = 0; i < count; i++ ){
+		for( auto test_data : tests ){
+			auto num_buckets = test_data[0];
+			auto entry_size = test_data[1];
+			auto bits_begin = test_data[2];
+			bool is_compact = test_data[3];
+			auto sequence_start_bit = test_data[4];
+
+			std::cout << "BucketStream test - num_buckets: " << num_buckets << ", entry_size: " << entry_size
+								<< ", bits_begin: " << bits_begin << ", sequence_start_bit: " << sequence_start_bit << std::endl;
+
+			uint16_t cur_bucket_no = bucket_no % num_buckets;
+			BucketStream stream = BucketStream( "bucket.stream.tmp", cur_bucket_no
+																					, log2(num_buckets), entry_size, bits_begin + log2(num_buckets)
+																					, is_compact, sequence_start_bit );
+			FileDisk bucket_data = FileDisk( "bucket.stream.data.tmp" );
+			uint64_t written_bytes = 0;
+			const uint32_t aligned_buf_size = BUF_SIZE/entry_size*entry_size;
+
+			{ // Part I: writing
+
+				auto buf = std::make_unique<uint8_t[]>( aligned_buf_size );
+				uint32_t bytes_in_buf = 0;
+
+				// Prepare entry
+				uint8_t base_entry[entry_size];
 				do{
-					randEntry( buf + i*entry_size, entry_size );
-				} while( Util::ExtractNum64(buf+i*entry_size, bits_begin, log2(num_buckets) ) != (bucket_no%num_buckets) );
-			}
-		};
-		for( uint16_t num_buckets = 64; num_buckets < 2048; num_buckets *= 2 ){
-			for( uint16_t entry_size = 7; entry_size < 16; entry_size += 3 ){
-				for( uint32_t bits_begin : begins ){
-					std::cout << "BucketStream test - num_buckets: " << num_buckets << ", entry_size: " << entry_size << ", bits_begin: " << bits_begin << std::endl;
+					for( uint32_t i = 0; i < entry_size; i++ )
+						base_entry[i] = rand()&0xff; // set random
+				} while( Util::ExtractNum64(base_entry, bits_begin, log2(num_buckets) ) != cur_bucket_no );
 
-					BucketStream stream = BucketStream( "bucket.stream.tmp", bucket_no % num_buckets
-																							, log2(num_buckets), entry_size, bits_begin + log2(num_buckets) );
+				if( sequence_start_bit >= 0 )
+					((uint32_t*)(base_entry + sequence_start_bit/8))[0] = 0;
+				// END Prepare entry
 
-					auto buf = std::make_unique<uint8_t[]>(stream.MaxBufferSize());
-					for( uint64_t i = 0; i < iteration; i += stream.MaxBufferSize()/entry_size ){
-						auto count = std::min( (uint32_t)(iteration - i), stream.MaxBufferSize()/entry_size );
-						fillBuf( buf.get(), entry_size, bits_begin, num_buckets, count );
-						stream.Write( buf, count*entry_size );
+				// go and write files
+				for( uint64_t i = 0; i < iteration; i++ ){
+					if( sequence_start_bit >= 0 )
+						((uint32_t*)(base_entry + sequence_start_bit/8))[0] += bswap_32(
+								bswap_32(((uint32_t*)(base_entry + sequence_start_bit/8))[0]) + rand()&0xfff );
+					base_entry[entry_size-1] = rand()&0xff;
+
+					memcpy( buf.get() + bytes_in_buf, base_entry, entry_size );
+					bytes_in_buf += entry_size;
+					if( bytes_in_buf >= aligned_buf_size ){
+						bucket_data.Write( written_bytes, buf.get(), bytes_in_buf );
+						written_bytes += bytes_in_buf;
+						stream.Write( buf, bytes_in_buf );
+						bytes_in_buf = 0;
 					}
+				}
 
-					stream.EndToWrite();
-					uint32_t buf_size = 0;
-					uint64_t total_read = 0;
-					while( (buf_size = stream.Read( buf ) ) > 0 ){
-						total_read += buf_size/entry_size;
-						for( uint64_t i = 0; i < buf_size; i += entry_size ){
-							if( Util::ExtractNum64( buf.get()+i, bits_begin, log2(num_buckets) ) != (bucket_no%num_buckets) )
-								cout << "h";
-							REQUIRE( Util::ExtractNum64( buf.get()+i, bits_begin, log2(num_buckets) ) == (bucket_no%num_buckets) );
-							uint8_t hash = 0;
-							for( uint32_t j = 0; (j+1) < entry_size; j++ )
-								hash ^= buf.get()[i+j];
-							REQUIRE( hash == buf.get()[i+entry_size-1] );
-						}
-					}
-					REQUIRE( total_read == iteration );
+				if( bytes_in_buf ){
+					bucket_data.Write( written_bytes, buf.get(), bytes_in_buf );
+					written_bytes += bytes_in_buf;
+					stream.Write( buf, bytes_in_buf );
 				}
 			}
+
+			stream.EndToWrite();
+
+			{	// Part II: read the data
+				uint64_t read_bytes = 0;
+				auto buf = std::make_unique<uint8_t[]>( stream.MaxBufferSize() );
+				auto data_buf = std::make_unique<uint8_t[]>( stream.MaxBufferSize() );
+
+				uint64_t bytes_in_buf = 0;
+				while( (bytes_in_buf = stream.Read(buf) ) > 0 ){
+					bucket_data.Read( read_bytes, data_buf.get(), bytes_in_buf );
+					read_bytes += bytes_in_buf;
+//					for( uint64_t i = 0; i < bytes_in_buf; i += entry_size ){
+//						if( memcmp( buf.get()+i, data_buf.get() + i, entry_size ) )
+//							cout << "here: " << i << std::endl;
+//					}
+					REQUIRE( memcmp( buf.get(), data_buf.get(), bytes_in_buf ) == 0 );
+				}
+				REQUIRE( read_bytes == written_bytes );
+			}
+
 		}
 
 		BUF_SIZE = cur_buf_size;
@@ -864,7 +921,12 @@ void PlotAndTestProofOfSpace(
 
 TEST_CASE("Plotting")
 {
-    SECTION("Disk plot k18")
+//		SECTION("Disk plot k22 small buffer single-thread")
+//		{
+//				PlotAndTestProofOfSpace("cpp-test-plot.dat", 5000, 23, plot_id_3, 125 , 4853, 16384, 12, 256);
+//		}
+
+		SECTION("Disk plot k18")
     {
 				PlotAndTestProofOfSpace("cpp-test-plot.dat", 100, 18, plot_id_1, 11, 95, 4000, 1);
     }
@@ -1217,7 +1279,7 @@ TEST_CASE( "SortThreads" ){
 		std::cout << "Sort in " << threads_num << " threads " << std::endl;
 
 
-		SortManager manager1( memory_len, num_buckets, std::log2(num_buckets), entry_size, ".", "test-files1", 0, 1, std::log2(iters), threads_num, 1, threads_num );
+		SortManager manager1( memory_len, num_buckets, std::log2(num_buckets), entry_size, "." /*temp_dir*/, "test-files1"/*file name*/, 0, 1, std::log2(iters), threads_num, 1, threads_num );
 		SortManager manager2( memory_len, num_buckets, std::log2(num_buckets), entry_size, ".", "test-files2", 0, 1, std::log2(iters), threads_num, 2, threads_num );
 		auto threads = std::make_unique<std::thread[]>(threads_num);
 

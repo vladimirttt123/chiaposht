@@ -86,7 +86,7 @@ public:
         , prev_bucket_buf_size(
             2 * (stripe_size + 10 * (kBC / pow(2, kExtraBits))) * entry_size)
 				, num_threads( num_threads )
-				, num_background_treads( num_threads >> 1 )
+				, num_background_treads( num_threads > 1 ? 2 : 1 )
 				, subbucket_bits( std::min( (uint8_t)32, std::max( (uint8_t)2, (uint8_t)(k - log_num_buckets - kSubBucketBits) ) ) )
 				, k_(k), phase_(phase), table_index_(table_index)
 				, stats_mask( ( (uint64_t)1<<subbucket_bits)-1 )
@@ -103,7 +103,7 @@ public:
                 fs::path(tmp_dirname) /
                 fs::path(filename + ".sort_bucket_" + bucket_number_padded.str() + ".tmp");
 						uint16_t sequence_start = -1;
-						if( k >= 32 ){
+						if( k >= 30 ){ // should be 32
 							switch (phase) {
 								case 1: sequence_start = table_index == 1 ? k : (k+kExtraBits); break;
 								case 2: sequence_start = 0; break;
@@ -183,11 +183,6 @@ public:
 				uint64_t const bucket_index =
 						Util::ExtractNum64(entry, begin_bits_, log_num_buckets_ + subbucket_bits );
 				buckets_[bucket_index>>subbucket_bits].AddEntryTS( entry, bucket_index & stats_mask );
-		}
-		inline void AddToCacheTS( const uint128_t &entry ){
-			uint8_t bytes[16];
-			Util::IntTo16Bytes(bytes, entry );
-			AddToCacheTS( bytes );
 		}
 
 		uint8_t const* Read(uint64_t begin, uint64_t length) override
@@ -403,6 +398,8 @@ private:
 					// if we are waiting for sorts than we can add threads to it
 					if( wait_time > 10 && num_background_treads < num_threads )
 						num_background_treads++;
+//					if( wait_time == 0 && num_background_treads > 1 )
+//						num_background_treads--;
 				}
 				else
 					b.SortToMemory( num_threads );
