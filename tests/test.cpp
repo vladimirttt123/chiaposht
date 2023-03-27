@@ -51,6 +51,33 @@ static uint128_t to_uint128(uint64_t hi, uint64_t lo) { return (uint128_t)hi << 
 
 TEST_CASE( "DISK_STREAMS" ){
 
+	SECTION( "SortingBucket" ){
+		const int entry_size = 10;
+		const uint64_t iteration = 1024*1024*1024/entry_size;
+		const uint8_t sub_bucket_bits = 21;
+		const uint8_t begin_bits = 0;
+		const uint16_t bucket_no = 10;
+		SortingBucket buck = SortingBucket( "sorting.bucket.tmp", bucket_no, 8, entry_size, begin_bits, sub_bucket_bits, false );
+		uint8_t entry[entry_size];
+
+		Timer time_write;
+
+		entry[0] = bucket_no; // set bucket no. built for begint_bits = 0!!!!!
+		for( uint64_t i = 0; i < iteration; i++ ){
+			// random entry
+			for( uint32_t j = 1; j < entry_size; j++ )
+				entry[j] = rand()%0xff;
+			buck.AddEntry( entry, Util::ExtractNum( entry, entry_size, begin_bits, sub_bucket_bits ) );
+		}
+		buck.CloseFile();
+		time_write.PrintElapsed("Write time: ");
+
+		Timer time_read;
+		buck.SortToMemory(12);
+		cout << "Prepare time: " << buck.prepare_time << "Read time: " << buck.read_time << ", Sort time: " << buck.sort_time << std::endl;
+		time_read.PrintElapsed( "Sort time:" );
+	}
+
 	SECTION( "SequenceCompacterStream" ) {
 		const uint64_t iteration = 3000;
 		const uint32_t begins[] = { 24, 25, 27, 30 };
@@ -1095,12 +1122,10 @@ TEST_CASE("Sort on disk")
 				for( int threads_num = 0; threads_num < 8; threads_num++ ){
 					vector<Bits> input;
 					SortManager manager(memory_len, 16, 4, size, ".", "test-files", 0, 1, std::log2(iters), 1, 1, threads_num);
-//					int total_written_1 = 0;
 					for (uint32_t i = 0; i < iters; i++) {
 							vector<unsigned char> hash_input = intToBytes(i, 4);
 							vector<unsigned char> hash(picosha2::k_digest_size);
 							picosha2::hash256(hash_input.begin(), hash_input.end(), hash.begin(), hash.end());
-//							total_written_1 += size;
 							Bits to_write = Bits(hash.data(), size, size * 8);
 							input.emplace_back(to_write);
 							manager.AddToCache(to_write);
@@ -1124,12 +1149,10 @@ TEST_CASE("Sort on disk")
 				for( int threads_num = 0; threads_num < 8; threads_num++ ){
 					vector<Bits> input;
 					SortManager manager(memory_len, 16, 4, size, ".", "test-files", 0, 1, std::log2(iters), 1, threads_num);
-//					int total_written_1 = 0;
 					for (uint32_t i = 0; i < iters; i++) {
 							vector<unsigned char> hash_input = intToBytes(i, 4);
 							vector<unsigned char> hash(picosha2::k_digest_size);
 							picosha2::hash256(hash_input.begin(), hash_input.end(), hash.begin(), hash.end());
-//							total_written_1 += size;
 							Bits to_write = Bits(hash.data(), size, size * 8);
 							input.emplace_back(to_write);
 							manager.AddToCache(to_write);
@@ -1260,7 +1283,7 @@ TEST_CASE( "SortThreads" ){
 	for( uint64_t i = 0; i < iters; i++ )
 		data[i] = rand()&255;
 
-	auto fill_thread = [&data](SortManager * manager, bool method, uint8_t thread_no, uint64_t iters ){
+	auto fill_thread = [&data](SortManager * manager, uint8_t thread_no, uint64_t iters ){
 		SortManager::ThreadWriter writer( *manager );
 		for( uint64_t i = 0; i < iters; i++ ){
 			uint8_t buf[entry_size];
@@ -1268,8 +1291,7 @@ TEST_CASE( "SortThreads" ){
 			((uint64_t*)(buf+1))[0] = i;
 			buf[9] = thread_no;
 
-			if( method ) writer.Add( buf );
-			else manager->AddToCacheTS( buf );
+			writer.Add( buf );
 		}
 	};
 
@@ -1279,42 +1301,34 @@ TEST_CASE( "SortThreads" ){
 		std::cout << "Sort in " << threads_num << " threads " << std::endl;
 
 
-		SortManager manager1( memory_len, num_buckets, std::log2(num_buckets), entry_size, "." /*temp_dir*/, "test-files1"/*file name*/, 0, 1, std::log2(iters), threads_num, 1, threads_num );
-		SortManager manager2( memory_len, num_buckets, std::log2(num_buckets), entry_size, ".", "test-files2", 0, 1, std::log2(iters), threads_num, 2, threads_num );
+		SortManager manager1( memory_len, num_buckets, std::log2(num_buckets), entry_size, "." /*temp_dir*/, "test-files1" /*file name*/, 0, 1, std::log2(iters), threads_num, 1, threads_num );
 		auto threads = std::make_unique<std::thread[]>(threads_num);
 
 		Timer fill_timer1;
 		for( uint32_t i = 0; i < threads_num; i++ )
-			threads[i] = std::thread( fill_thread, &manager1, true, (uint8_t)i, iters/threads_num );
+			threads[i] = std::thread( fill_thread, &manager1, (uint8_t)i, iters/threads_num );
 
 		for( uint32_t i = 0; i < threads_num; i++ )
 			threads[i].join();
 		manager1.FlushCache();
-		fill_timer1.PrintElapsed( "fill time1:" );
-
-		Timer fill_timer2;
-		for( uint32_t i = 0; i < threads_num; i++ )
-			threads[i] = std::thread( fill_thread, &manager2, false, (uint8_t)i, iters/threads_num );
-
-		for( uint32_t i = 0; i < threads_num; i++ )
-			threads[i].join();
-		fill_timer2.PrintElapsed( "fill time2:" );
+		fill_timer1.PrintElapsed( "fill time:" );
 
 		Timer sort_timer;
-		REQUIRE( manager1.Count() == manager2.Count() );
-		for( uint64_t i = 0; i < manager1.Count(); i ++ ){
+		REQUIRE( manager1.Count() == threads_num * iters );
+		uint8_t prev_entry[entry_size];
+		memcpy( prev_entry, manager1.ReadEntry(0), entry_size );
+		for( uint64_t i = 1; i < manager1.Count(); i ++ ){
 			auto mem1 = manager1.ReadEntry(i*entry_size);
-			auto mem2 = manager2.ReadEntry(i*entry_size);
-			if( memcmp( mem1, mem2, entry_size ) != 0 ){
-				std::cout << i << std::endl;
-			}
+//			if( memcmp( prev_entry, mem1, entry_size ) < 0 )
+//				std::cout << i << std::endl;
 
-			REQUIRE( memcmp( mem1, mem2, entry_size ) == 0 );
+
+			REQUIRE( memcmp( prev_entry, mem1, entry_size ) < 0 );
+			memcpy( prev_entry, mem1, entry_size );
 		}
 		sort_timer.PrintElapsed( "sort time: ");
 		std::cout << std::endl;
 	}
-
 }
 
 TEST_CASE("bitfield-simple")

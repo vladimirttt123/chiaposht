@@ -84,8 +84,7 @@ struct SortingBucket{
 	inline uint8_t	SubBucketBits() const { return bucket_bits_count_; }
 	inline uint16_t EntrySize() const { return entry_size_; }
 
-	uint64_t read_time = 0;
-	uint64_t sort_time = 0;
+	uint64_t prepare_time = 0, read_time = 0, sort_time = 0;
 
 	// Adds Entry to bucket
 	inline void AddEntry( const uint8_t * entry, const uint32_t &statistics_bits ){
@@ -97,11 +96,6 @@ struct SortingBucket{
 		entries_count++;
 		if( disk_buffer->Add( entry, entry_size_ ) )
 			Flush();
-	}
-
-	inline void AddEntryTS( const uint8_t *entry, const uint32_t &statistics_bits ){
-		std::lock_guard<std::mutex> lk( *addMutex.get() );
-		AddEntry( entry, statistics_bits );
 	}
 
 	inline void AddBulkTS( const uint8_t * entries, const uint32_t * stats, const uint32_t &count ){
@@ -138,8 +132,8 @@ struct SortingBucket{
 	}
 
 	void CloseFile(){
-		if( !disk ) return; // already removed
-		disk->EndToWrite();
+		// already removed ?
+		if( disk ) disk->EndToWrite();
 	}
 
 	void FreeMemory(){
@@ -166,6 +160,7 @@ struct SortingBucket{
 
 		if( memory_ ) return; // already sorted;
 
+		auto start_time = std::chrono::high_resolution_clock::now();
 		if(!statistics){
 			// Read statistics from file
 			statistics.reset( new uint32_t[1<<bucket_bits_count_] );
@@ -193,10 +188,12 @@ struct SortingBucket{
 		// Last position should end at count.
 		assert( bucket_positions[buckets_count-1]/entry_size_ + statistics[buckets_count-1] == Count() );
 
-		auto start_time = std::chrono::high_resolution_clock::now();
 		uint64_t read_size = Size() - disk_buffer->Size();
 
 		assert( disk_buffer->allocated_length >= disk->MaxBufferSize() );
+
+		auto end_prepare_time = std::chrono::high_resolution_clock::now();
+		prepare_time = (end_prepare_time - start_time)/std::chrono::milliseconds(1);
 
 		// Read from file to buckets, do not run threads if less than 1024 entries to read
 		if( num_threads <= 1 || read_size < 1024*entry_size_ ){
@@ -223,24 +220,41 @@ struct SortingBucket{
 			back_bucket_positions[buckets_count-1] = back_bucket_positions[buckets_count-2] + statistics[buckets_count-1] * entry_size_;
 
 			uint32_t max_threads = std::max( (uint32_t)1, num_threads/2 );
-			const uint32_t num_sub_locks = ((uint32_t)1 ) << std::min( (uint32_t)bucket_bits_count_, (uint32_t)std::log2(max_threads)+2 );
+			const uint32_t num_sub_locks_bits = std::min( 8U, std::min( (uint32_t)bucket_bits_count_, (uint32_t)std::log2(max_threads)+1 ) );
+			const uint32_t num_sub_locks = 1U << num_sub_locks_bits;
 			const uint32_t sub_locks_mask = num_sub_locks - 1;
 
 			auto mutForward = std::make_unique<std::mutex[]>(num_sub_locks);
 			auto mutBackward = std::make_unique<std::mutex[]>(num_sub_locks);
 			// Define thread function
 			auto thread_func = [this, &memory , &num_sub_locks, &sub_locks_mask]( std::mutex *mutWrite,  uint64_t* bucket_positions, const int64_t direction ){
-				uint32_t buf_size;
-				auto buf = std::make_unique<uint8_t[]>( disk->MaxBufferSize() );
-				while( (buf_size = disk->Read( buf ) ) > 0 ){
+				uint32_t buf_size = disk->MaxBufferSize();
+				auto buf = std::make_unique<uint8_t[]>( buf_size );
 
+#ifdef SMALL_LOCKS
+				while( (buf_size = disk->Read( buf ) ) > 0 ){
+					for( uint64_t buf_ptr = 0; buf_ptr < buf_size; buf_ptr += entry_size_ ){
+						auto b_bits =  (uint32_t)Util::ExtractNum64( buf.get() + buf_ptr, begin_bits_, bucket_bits_count_ );
+						uint32_t b_position;
+						{	// reserve space for next entry
+							std::lock_guard lk( mutWrite[b_bits&sub_locks_mask] );
+							b_position = bucket_positions[b_bits];
+							bucket_positions[b_bits] += direction;
+						}
+						// copy next entry
+						memcpy( memory + b_position, buf.get() + buf_ptr, entry_size_ );
+					}
+				}
+#else // SMALL_LOCKS
+				auto buckets_bits_cache = std::make_unique<uint32_t[]>( buf_size/entry_size_ + 1 );
+				while( (buf_size = disk->Read( buf ) ) > 0 ){
 					// Extract all bucket_bits
-					uint32_t bucket_bits[buf_size/entry_size_];
+					uint32_t* bucket_bits = buckets_bits_cache.get();
 					for( uint64_t buf_ptr = 0; buf_ptr < buf_size; buf_ptr += entry_size_ )
 						bucket_bits[buf_ptr/entry_size_] = (uint32_t)Util::ExtractNum64( buf.get() + buf_ptr, begin_bits_, bucket_bits_count_ );
 
 					for( uint32_t l = 0; l < num_sub_locks; l++ ){
-						std::lock_guard lk(mutWrite[l]);
+						std::lock_guard lk( mutWrite[l] );
 						for( uint64_t buf_ptr = 0; buf_ptr < buf_size; buf_ptr += entry_size_ ){
 							auto b_bits = bucket_bits[buf_ptr/entry_size_];
 							if( (b_bits&sub_locks_mask) == l ){
@@ -252,6 +266,7 @@ struct SortingBucket{
 						}
 					}
 				}
+#endif // SMALL_LOCKS
 			};
 
 
@@ -285,8 +300,7 @@ struct SortingBucket{
 				bucket_positions[i] = bucket_positions[i-1] + statistics[i]*entry_size_;
 		}
 
-		auto end_time = std::chrono::high_resolution_clock::now();
-		read_time = (end_time - start_time)/std::chrono::milliseconds(1);
+		read_time = (std::chrono::high_resolution_clock::now() - end_prepare_time)/std::chrono::milliseconds(1);
 
 		if( num_threads <= 1 ){
 			// Sort first bucket

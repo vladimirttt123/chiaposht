@@ -508,7 +508,6 @@ Phase3Results RunPhase3(
 								uint128_t to_write = (uint128_t)sort_key << sort_key_shift;
 								to_write |= (uint128_t)index << index_shift;
 
-								//L_sort_manager->AddToCacheTS(to_write);
 								sort_writer.Add( to_write );
 
 								// Every EPP entries, writes a park

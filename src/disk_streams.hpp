@@ -649,8 +649,7 @@ struct BucketStream{
 				this->compact ? ( (sequence_start_bit>=0 ? SequenceCompacterReader::getMaxRestoredBufferSize(entry_size-1) : size_to_read )/(entry_size-1)*entry_size + entry_size )
 											: size_to_read
 				)
-	{
-	}
+	{	}
 
 	uint32_t MaxBufferSize() const { return buffer_size; }
 	const std::string getFileName() const {return fileName;}

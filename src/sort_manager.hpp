@@ -153,7 +153,7 @@ public:
 		private:
 			SortManager &parent_;
 			std::unique_ptr<std::unique_ptr<CacheBucket>[]> buckets_cache;
-		};
+		}; // end of ThreadWriter
 
 		inline uint16_t EntrySize() const { return entry_size_; }
 		inline uint64_t Count() const {
@@ -176,13 +176,6 @@ public:
         uint64_t const bucket_index =
 						Util::ExtractNum64(entry, begin_bits_, log_num_buckets_ + subbucket_bits );
 				buckets_[bucket_index>>subbucket_bits].AddEntry( entry, bucket_index & stats_mask );
-		}
-
-		inline void AddToCacheTS(const uint8_t *entry)
-		{
-				uint64_t const bucket_index =
-						Util::ExtractNum64(entry, begin_bits_, log_num_buckets_ + subbucket_bits );
-				buckets_[bucket_index>>subbucket_bits].AddEntryTS( entry, bucket_index & stats_mask );
 		}
 
 		uint8_t const* Read(uint64_t begin, uint64_t length) override
