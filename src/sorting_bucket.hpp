@@ -231,21 +231,6 @@ struct SortingBucket{
 				uint32_t buf_size = disk->MaxBufferSize();
 				auto buf = std::make_unique<uint8_t[]>( buf_size );
 
-#ifdef SMALL_LOCKS
-				while( (buf_size = disk->Read( buf ) ) > 0 ){
-					for( uint64_t buf_ptr = 0; buf_ptr < buf_size; buf_ptr += entry_size_ ){
-						auto b_bits =  (uint32_t)Util::ExtractNum64( buf.get() + buf_ptr, begin_bits_, bucket_bits_count_ );
-						uint32_t b_position;
-						{	// reserve space for next entry
-							std::lock_guard lk( mutWrite[b_bits&sub_locks_mask] );
-							b_position = bucket_positions[b_bits];
-							bucket_positions[b_bits] += direction;
-						}
-						// copy next entry
-						memcpy( memory + b_position, buf.get() + buf_ptr, entry_size_ );
-					}
-				}
-#else // SMALL_LOCKS
 				auto buckets_bits_cache = std::make_unique<uint32_t[]>( buf_size/entry_size_ + 1 );
 				while( (buf_size = disk->Read( buf ) ) > 0 ){
 					// Extract all bucket_bits
@@ -266,7 +251,7 @@ struct SortingBucket{
 						}
 					}
 				}
-#endif // SMALL_LOCKS
+
 			};
 
 

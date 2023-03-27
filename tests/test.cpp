@@ -51,32 +51,32 @@ static uint128_t to_uint128(uint64_t hi, uint64_t lo) { return (uint128_t)hi << 
 
 TEST_CASE( "DISK_STREAMS" ){
 
-	SECTION( "SortingBucket" ){
-		const int entry_size = 10;
-		const uint64_t iteration = 1024*1024*1024/entry_size;
-		const uint8_t sub_bucket_bits = 21;
-		const uint8_t begin_bits = 0;
-		const uint16_t bucket_no = 10;
-		SortingBucket buck = SortingBucket( "sorting.bucket.tmp", bucket_no, 8, entry_size, begin_bits, sub_bucket_bits, false );
-		uint8_t entry[entry_size];
+//	SECTION( "SortingBucket" ){
+//		const int entry_size = 10;
+//		const uint64_t iteration = 1024*1024*1024/entry_size;
+//		const uint8_t sub_bucket_bits = 21;
+//		const uint8_t begin_bits = 8;
+//		const uint16_t bucket_no = 10;
+//		SortingBucket buck = SortingBucket( "sorting.bucket.tmp", bucket_no, 8, entry_size, begin_bits, sub_bucket_bits, false );
+//		uint8_t entry[entry_size];
 
-		Timer time_write;
+//		Timer time_write;
 
-		entry[0] = bucket_no; // set bucket no. built for begint_bits = 0!!!!!
-		for( uint64_t i = 0; i < iteration; i++ ){
-			// random entry
-			for( uint32_t j = 1; j < entry_size; j++ )
-				entry[j] = rand()%0xff;
-			buck.AddEntry( entry, Util::ExtractNum( entry, entry_size, begin_bits, sub_bucket_bits ) );
-		}
-		buck.CloseFile();
-		time_write.PrintElapsed("Write time: ");
+//		entry[0] = bucket_no; // set bucket no. built for begint_bits = 0!!!!!
+//		for( uint64_t i = 0; i < iteration; i++ ){
+//			// random entry
+//			for( uint32_t j = 1; j < entry_size; j++ )
+//				entry[j] = rand()%0xff;
+//			buck.AddEntry( entry, Util::ExtractNum( entry, entry_size, begin_bits, sub_bucket_bits ) );
+//		}
+//		buck.CloseFile();
+//		time_write.PrintElapsed("Write time: ");
 
-		Timer time_read;
-		buck.SortToMemory(12);
-		cout << "Prepare time: " << buck.prepare_time << "Read time: " << buck.read_time << ", Sort time: " << buck.sort_time << std::endl;
-		time_read.PrintElapsed( "Sort time:" );
-	}
+//		Timer time_read;
+//		buck.SortToMemory(12);
+//		cout << "Prepare time: " << buck.prepare_time << "Read time: " << buck.read_time << ", Sort time: " << buck.sort_time << std::endl;
+//		time_read.PrintElapsed( "Sort time:" );
+//	}
 
 	SECTION( "SequenceCompacterStream" ) {
 		const uint64_t iteration = 3000;
@@ -1175,12 +1175,10 @@ TEST_CASE("Sort on disk")
         vector<Bits> input;
         const uint32_t memory_len = 1000000;
 				SortManager manager(memory_len, 16, 4, size, ".", "test-files", 0, 1, std::log2(iters), 1, 1 );
-        int total_written_1 = 0;
         for (uint32_t i = 0; i < iters; i++) {
             vector<unsigned char> hash_input = intToBytes(i, 4);
             vector<unsigned char> hash(picosha2::k_digest_size);
             picosha2::hash256(hash_input.begin(), hash_input.end(), hash.begin(), hash.end());
-            total_written_1 += size;
             Bits to_write = Bits(hash.data(), size, size * 8);
             input.emplace_back(to_write);
             manager.AddToCache(to_write);
@@ -1314,7 +1312,7 @@ TEST_CASE( "SortThreads" ){
 		fill_timer1.PrintElapsed( "fill time:" );
 
 		Timer sort_timer;
-		REQUIRE( manager1.Count() == threads_num * iters );
+		REQUIRE( manager1.Count() == iters/threads_num * threads_num );
 		uint8_t prev_entry[entry_size];
 		memcpy( prev_entry, manager1.ReadEntry(0), entry_size );
 		for( uint64_t i = 1; i < manager1.Count(); i ++ ){

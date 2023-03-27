@@ -30,7 +30,7 @@
 #include "exceptions.hpp"
 #include "sorting_bucket.hpp"
 
-const uint32_t CacheBucketSize = 256;
+const uint32_t CacheBucketSize = 1024; // mesured in number of entries
 // Small bucket used in thread writings
 struct CacheBucket{
 	explicit CacheBucket( SortingBucket &cacheFor )
@@ -39,7 +39,6 @@ struct CacheBucket{
 		, parent( cacheFor )
 	{	}
 
-	inline uint64_t Count() const { return (uint64_t)count; }
 	inline void Add( const uint8_t *entry, const uint32_t stats ){
 		if( count == CacheBucketSize ) Flush();
 		statistics[count] = stats;
@@ -103,7 +102,7 @@ public:
                 fs::path(tmp_dirname) /
                 fs::path(filename + ".sort_bucket_" + bucket_number_padded.str() + ".tmp");
 						uint16_t sequence_start = -1;
-						if( k >= 30 ){ // should be 32
+						if( k >= 32 ){ // should be 32
 							switch (phase) {
 								case 1: sequence_start = table_index == 1 ? k : (k+kExtraBits); break;
 								case 2: sequence_start = 0; break;
@@ -123,13 +122,6 @@ public:
 			{
 				for( uint32_t i = 0; i < parent.buckets_.size(); i++ )
 					buckets_cache[i].reset( new CacheBucket( parent.buckets_[i] ) );
-			}
-
-			inline uint64_t Count() const {
-				uint64_t res = 0;
-				for( uint32_t i = 0; i < parent_.buckets_.size(); i++ )
-					res += buckets_cache[i]->Count();
-				return res;
 			}
 
 			inline void Add( const uint8_t *entry ){
@@ -155,7 +147,6 @@ public:
 			std::unique_ptr<std::unique_ptr<CacheBucket>[]> buckets_cache;
 		}; // end of ThreadWriter
 
-		inline uint16_t EntrySize() const { return entry_size_; }
 		inline uint64_t Count() const {
 			uint64_t res = 0;
 			for( auto &b : buckets_ )
