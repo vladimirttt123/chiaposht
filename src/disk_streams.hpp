@@ -552,12 +552,13 @@ private:
 
 struct BufferedWriter : IWriteDiskStream{
 	BufferedWriter( IWriteDiskStream* disk, const uint32_t &entry_size )
-		: disk(disk), allocated_size( BUF_SIZE/entry_size*entry_size ), buffer( new uint8_t[allocated_size] )
+		: disk(disk), allocated_size( BUF_SIZE/entry_size*entry_size )
 	{}
 
 	void Write( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ){
-		uint32_t processed = 0;
-		while( processed < buf_size ){
+		if( !buffer ) buffer.reset( new uint8_t[allocated_size] ); // late buffer allocation.
+
+		for( uint32_t processed = 0; processed < buf_size; ){
 			uint32_t to_process = std::min( allocated_size - buffer_used, buf_size - processed );
 			memcpy( buffer.get() + buffer_used, buf.get() + processed, to_process );
 			processed += to_process;
@@ -568,13 +569,23 @@ struct BufferedWriter : IWriteDiskStream{
 			}
 		}
 	};
+
 	void Close(){
-		if(buffer_used) disk->Write( buffer, buffer_used );
+		if( buffer_used ) disk->Write( buffer, buffer_used );
 		buffer_used = 0;
 		disk->Close();
 		buffer.reset();
 		disk.reset();
 	};
+
+	uint32_t ReleaseBuffer( std::unique_ptr<uint8_t[]> &buf ){
+		buffer.swap( buf );
+		auto res = buffer_used;
+		buffer_used = 0;
+		return res;
+	}
+
+	~BufferedWriter(){ Close(); }
 
 private:
 	std::unique_ptr<IWriteDiskStream> disk;
@@ -654,11 +665,13 @@ struct BucketStream{
 	uint32_t MaxBufferSize() const { return buffer_size; }
 	const std::string getFileName() const {return fileName;}
 
+
+	// The write is NOT thread save and should be synced from outside!!!!
 	void Write( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ){
 		assert( (buf_size % entry_size_) == 0 );
 		if( buf_size == 0 ) return; // nothing to write
 
-		std::lock_guard<std::mutex> lk( sync_mutex );
+		// std::lock_guard<std::mutex> lk( sync_mutex );
 		if( !disk_output ){
 			bucket_file.reset( new FileDisk( fileName ) );
 			disk_output.reset( new WriteFileStream( bucket_file.get() ) );
@@ -678,14 +691,16 @@ struct BucketStream{
 	}
 
 
+	// this should be NEVER called when object used in threads!!!
 	void EndToWrite(){
-		std::lock_guard<std::mutex> lk( sync_mutex );
+		// std::lock_guard<std::mutex> lk( sync_mutex );
 		if( disk_output ) {
 			disk_output->Close();
 			disk_output.reset();
 		}
 	}
 
+	// This can be called from thread safly without additional syncs.
 	uint32_t Read( std::unique_ptr<uint8_t[]> &buf ){
 		{
 			if( !bucket_file ) return 0;// nothing has been written
