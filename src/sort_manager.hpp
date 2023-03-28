@@ -36,20 +36,21 @@ struct CacheBucket{
 	explicit CacheBucket( SortingBucket &cacheFor )
 		: statistics(new uint32_t[CacheBucketSize])
 		, entries(new uint8_t[((uint32_t)cacheFor.EntrySize())*CacheBucketSize])
+		, entry_size( cacheFor.EntrySize() )
 		, parent( cacheFor )
 	{	}
 
-	inline void Add( const uint8_t *entry, const uint32_t stats ){
-		if( count == CacheBucketSize ) Flush();
-		statistics[count] = stats;
-		memcpy( entries.get() + ((uint32_t)count)*(uint32_t)parent.EntrySize(), entry, parent.EntrySize() );
-		++count;
+	inline void Add( const uint8_t *entry, const uint32_t &stats ){
+		if( count >= CacheBucketSize ) Flush();
+		memcpy( entries.get() + ((uint64_t)count)*entry_size , entry, entry_size );
+		statistics[count++] = stats;
 	}
 
 	inline void Flush(){
-		if( count > 0 )
+		if( count > 0 ){
 			parent.AddBulkTS( entries.get(), statistics.get(), count );
-		count = 0;
+			count = 0;
+		}
 	}
 
 	~CacheBucket(){Flush();}
@@ -57,6 +58,7 @@ private:
 	std::unique_ptr<uint32_t[]> statistics;
 	std::unique_ptr<uint8_t[]> entries;
 	uint16_t count = 0;
+	const uint16_t entry_size;
 	SortingBucket &parent;
 };
 

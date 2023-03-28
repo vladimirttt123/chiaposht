@@ -238,6 +238,14 @@ struct SequenceCompacterWriter : public IWriteDiskStream{
 		CompactBuffer( buf.get(), buf_size );
 	}
 
+	uint32_t ReleaseBuffer( uint8_t* buf ){
+		if( !disk || !buffer_idx ) return 0;
+		memcpy( buf, buffer.get(), buffer_idx );
+		auto res = buffer_idx;
+		buffer_idx = 0;
+		return res;
+	}
+
 	void Close() override {
 		if(disk){
 			if( buffer_idx > 0 )
@@ -681,14 +689,14 @@ struct BucketStream{
 			disk_output.reset( new WriteFileStream( bucket_file.get() ) );
 			if( compact ){
 				if( sequence_start_bit >= 0 )
-					disk_output.reset( new SequenceCompacterWriter( disk_output.release(), entry_size_-1,
+					disk_output.reset( compacter = new SequenceCompacterWriter( disk_output.release(), entry_size_-1,
 																sequence_start_bit - (sequence_start_bit > begin_bits_ ? 8 : 0 ) ) );
 
 				disk_output.reset( new ByteCutterStream( disk_output.release(),
 																	entry_size_, begin_bits_ - log_num_buckets_ ) );
 			}
 
-			disk_output.reset( new AsyncStreamWriter( disk_output.release(), BUF_SIZE/entry_size_*entry_size_ ) );
+			// disk_output.reset( new AsyncStreamWriter( disk_output.release(), BUF_SIZE/entry_size_*entry_size_ ) );
 			disk_output.reset( new BufferedWriter( disk_output.release(), entry_size_ ) );
 		}
 
@@ -719,12 +727,13 @@ struct BucketStream{
 			{ // reading file part is locked by mutex
 				std::lock_guard<std::mutex> lk( sync_mutex );
 
-				if( disk_output ){ // output not flushed to disk
+				if( disk_output ){ // output not flushed to disk or released
 					std::unique_ptr<uint8_t[]> obuf;
 					auto buf_size = ((BufferedWriter*)disk_output.get())->ReleaseBuffer( obuf );
-					memcpy( buf.get(), obuf.get(), buf_size );
-					disk_output.reset(); // close and release the stream
-					return buf_size;
+					if( buf_size ) {
+						memcpy( buf.get(), obuf.get(), buf_size );
+						return buf_size;
+					}
 				}
 
 				if( !disk_input ){
@@ -732,7 +741,7 @@ struct BucketStream{
 					//disk_input.reset( new AsyncStreamReader( disk_input.release(), BUF_SIZE ) );
 					if( sequence_start_bit >= 0 ){
 						// create compacter without input stream to grow custom buffer.
-						compacter.reset( new SequenceCompacterReader( nullptr, entry_size_-1,
+						restorer.reset( new SequenceCompacterReader( nullptr, entry_size_-1,
 																		sequence_start_bit - (sequence_start_bit > begin_bits_ ? 8 : 0 ) ) );
 					}
 
@@ -740,14 +749,22 @@ struct BucketStream{
 																		entry_size_, begin_bits_ - log_num_buckets_,
 																		bucket_no_ >> (log_num_buckets_-8) ) );
 				}
-				read_size = disk_input->Read( buf, size_to_read );
+
+				if( compacter && disk_output ){ // output not flushed to disk
+					// we can get last compacted buffer without writting it to disk
+					read_size = compacter->ReleaseBuffer( buf.get() );
+					compacter = nullptr;
+					disk_output.reset(); // close output stream
+				}
+				else
+					read_size = disk_input->Read( buf, size_to_read );
 			}
 
 			// this part is not locked and can be done in many threads in parallel
 			if( compact ){
 				if( sequence_start_bit >= 0 ){
 					std::unique_ptr<uint8_t[]> restore_buffer = std::make_unique<uint8_t[]>( buffer_size );
-					read_size = compacter->GrowCustomBuffer( buf.get(), read_size, restore_buffer.get(), buffer_size );
+					read_size = restorer->GrowCustomBuffer( buf.get(), read_size, restore_buffer.get(), buffer_size );
 					buf.swap( restore_buffer );
 				}
 
@@ -793,7 +810,8 @@ private:
 	const uint32_t size_to_read;
 	const uint32_t buffer_size;
 
-	std::unique_ptr<SequenceCompacterReader> compacter;
+	SequenceCompacterWriter * compacter = nullptr;
+	std::unique_ptr<SequenceCompacterReader> restorer;
 	std::unique_ptr<ByteInserterStream> inserter;
 
 };
