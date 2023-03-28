@@ -295,7 +295,7 @@ public:
     {
         for (auto& b : buckets_) {
 						if( isFull ) b.Flush( true );
-						b.CloseFile();
+						// b.CloseFile();
 						b.FreeMemory();
 				}
         final_position_end = 0;

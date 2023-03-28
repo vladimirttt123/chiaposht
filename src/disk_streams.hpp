@@ -556,11 +556,15 @@ struct BufferedWriter : IWriteDiskStream{
 	{}
 
 	void Write( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ){
+		Write( buf.get(), buf_size );
+	};
+
+	inline void Write( const uint8_t * buf, const uint32_t &buf_size ){
 		if( !buffer ) buffer.reset( new uint8_t[allocated_size] ); // late buffer allocation.
 
 		for( uint32_t processed = 0; processed < buf_size; ){
 			uint32_t to_process = std::min( allocated_size - buffer_used, buf_size - processed );
-			memcpy( buffer.get() + buffer_used, buf.get() + processed, to_process );
+			memcpy( buffer.get() + buffer_used, buf + processed, to_process );
 			processed += to_process;
 			buffer_used += to_process;
 			if( buffer_used == allocated_size ){
@@ -568,14 +572,15 @@ struct BufferedWriter : IWriteDiskStream{
 				buffer_used = 0;
 			}
 		}
-	};
+	}
 
 	void Close(){
-		if( buffer_used ) disk->Write( buffer, buffer_used );
-		buffer_used = 0;
-		disk->Close();
-		buffer.reset();
-		disk.reset();
+		if( disk ) {
+			if( buffer_used ) disk->Write( buffer, buffer_used );
+			buffer_used = 0;
+			disk.reset(); // this should desctruct i.e. also close it
+		}
+		if( buffer ) buffer.reset();
 	};
 
 	uint32_t ReleaseBuffer( std::unique_ptr<uint8_t[]> &buf ){
@@ -666,8 +671,7 @@ struct BucketStream{
 	const std::string getFileName() const {return fileName;}
 
 
-	// The write is NOT thread save and should be synced from outside!!!!
-	void Write( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ){
+	void Write( const uint8_t * buf, const uint32_t &buf_size ){
 		assert( (buf_size % entry_size_) == 0 );
 		if( buf_size == 0 ) return; // nothing to write
 
@@ -684,15 +688,21 @@ struct BucketStream{
 																	entry_size_, begin_bits_ - log_num_buckets_ ) );
 			}
 
-			disk_output.reset( new AsyncStreamWriter( disk_output.release() ) );
+			disk_output.reset( new AsyncStreamWriter( disk_output.release(), BUF_SIZE/entry_size_*entry_size_ ) );
+			disk_output.reset( new BufferedWriter( disk_output.release(), entry_size_ ) );
 		}
 
-		disk_output->Write( buf, buf_size );
+		((BufferedWriter*)(disk_output.get()))->Write( buf, buf_size );
+	}
+
+	// The write is NOT thread save and should be synced from outside!!!!
+	void Write( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ){
+		Write( buf.get(), buf_size );
 	}
 
 
 	// this should be NEVER called when object used in threads!!!
-	void EndToWrite(){
+	void FlusToDisk(){
 		// std::lock_guard<std::mutex> lk( sync_mutex );
 		if( disk_output ) {
 			disk_output->Close();
@@ -708,6 +718,15 @@ struct BucketStream{
 
 			{ // reading file part is locked by mutex
 				std::lock_guard<std::mutex> lk( sync_mutex );
+
+				if( disk_output ){ // output not flushed to disk
+					std::unique_ptr<uint8_t[]> obuf;
+					auto buf_size = ((BufferedWriter*)disk_output.get())->ReleaseBuffer( obuf );
+					memcpy( buf.get(), obuf.get(), buf_size );
+					disk_output.reset(); // close and release the stream
+					return buf_size;
+				}
+
 				if( !disk_input ){
 					disk_input.reset( new ReadFileStream( bucket_file.get(), bucket_file->GetWriteMax() ) );
 					//disk_input.reset( new AsyncStreamReader( disk_input.release(), BUF_SIZE ) );

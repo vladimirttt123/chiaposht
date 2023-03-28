@@ -401,7 +401,7 @@ Phase3Results RunPhase3(
 												old_sort_keys[write_pointer_pos % kReadMinusWrite][counter],
 												right_sort_key_size);
 
-										R_sort_manager->AddToCache(to_write); // Single thread writing -> no locks
+										R_sort_manager->AddToCache( to_write ); // Single thread writing -> no locks
 								}
 						}
 						current_pos += 1;
