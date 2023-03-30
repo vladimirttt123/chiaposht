@@ -261,8 +261,10 @@ Phase2Results RunPhase2(
 				{ // Scope for reader
 					auto table_reader = std::unique_ptr<IReadDiskStream>(  table_index == 7 ?
 										CreateLastTableReader( &tmp_1_disks[table_index], k, entry_size, (flags&NO_COMPACTION)==0 ):
-										new AsyncStreamReader( new ReadFileStream( &tmp_1_disks[table_index], table_size * entry_size ),
-												(BUF_SIZE/entry_size)*entry_size ) );
+										//new AsyncStreamReader(
+											new ReadFileStream( &tmp_1_disks[table_index], table_size * entry_size )
+										//		, (BUF_SIZE/entry_size)*entry_size )
+										);
 					ScanTable( table_reader.get(), table_index, table_size, entry_size,
 										 *current_bitfield.get(), *next_bitfield.get(), num_threads, pos_offset_size, k );
 				}

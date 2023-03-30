@@ -286,128 +286,131 @@ Phase3Results RunPhase3(
 				uint64_t cached_entry_pos = 0;
 				uint64_t cached_entry_offset = 0;
 
-				// Similar algorithm as Backprop, to read both L and R tables simultaneously
-				while (!end_of_right_table || (current_pos - end_of_table_pos <= kReadMinusWrite)) {
+				{ // Scope for sort_adder
+					SortManager::AsyncAdder sort_adder = SortManager::AsyncAdder( *R_sort_manager.get() );
 
-					old_counters[current_pos % kReadMinusWrite] = 0;
+					// Similar algorithm as Backprop, to read both L and R tables simultaneously
+					while (!end_of_right_table || (current_pos - end_of_table_pos <= kReadMinusWrite)) {
 
-						if (end_of_right_table || current_pos <= greatest_pos) {
-								while (!end_of_right_table) {
-										if (should_read_entry) {
-												if (right_reader_count == res2.table_sizes[table_index + 1]) {
-														end_of_right_table = true;
-														end_of_table_pos = current_pos;
-														right_disk.FreeMemory();
-														break;
-												}
-												// The right entries are in the format from backprop, (sort_key, pos,
-												// offset)
-												uint8_t const* right_entry_buf = right_disk.Read(right_reader, p2_entry_size_bytes);
-												right_reader += p2_entry_size_bytes;
-												right_reader_count++;
+						old_counters[current_pos % kReadMinusWrite] = 0;
 
-												entry_sort_key =
-														Util::SliceInt64FromBytes(right_entry_buf, 0, right_sort_key_size);
-												entry_pos = Util::SliceInt64FromBytes(
-														right_entry_buf, right_sort_key_size, pos_size);
-												entry_offset = Util::SliceInt64FromBytes(
-														right_entry_buf, right_sort_key_size + pos_size, kOffsetSize);
-										} else if (cached_entry_pos == current_pos) {
-												entry_sort_key = cached_entry_sort_key;
-												entry_pos = cached_entry_pos;
-												entry_offset = cached_entry_offset;
-										} else {
-												break;
-										}
+							if (end_of_right_table || current_pos <= greatest_pos) {
+									while (!end_of_right_table) {
+											if (should_read_entry) {
+													if (right_reader_count == res2.table_sizes[table_index + 1]) {
+															end_of_right_table = true;
+															end_of_table_pos = current_pos;
+															right_disk.FreeMemory();
+															break;
+													}
+													// The right entries are in the format from backprop, (sort_key, pos,
+													// offset)
+													uint8_t const* right_entry_buf = right_disk.Read(right_reader, p2_entry_size_bytes);
+													right_reader += p2_entry_size_bytes;
+													right_reader_count++;
 
-										should_read_entry = true;
+													entry_sort_key =
+															Util::SliceInt64FromBytes(right_entry_buf, 0, right_sort_key_size);
+													entry_pos = Util::SliceInt64FromBytes(
+															right_entry_buf, right_sort_key_size, pos_size);
+													entry_offset = Util::SliceInt64FromBytes(
+															right_entry_buf, right_sort_key_size + pos_size, kOffsetSize);
+											} else if (cached_entry_pos == current_pos) {
+													entry_sort_key = cached_entry_sort_key;
+													entry_pos = cached_entry_pos;
+													entry_offset = cached_entry_offset;
+											} else {
+													break;
+											}
 
-										if (entry_pos + entry_offset > greatest_pos) {
-												greatest_pos = entry_pos + entry_offset;
-										}
-										if (entry_pos == current_pos) {
-												uint64_t const old_write_pos = entry_pos % kReadMinusWrite;
-												old_sort_keys[old_write_pos][old_counters[old_write_pos]] = entry_sort_key;
-												old_offsets[old_write_pos][old_counters[old_write_pos]] =
-														(entry_pos + entry_offset);
-												++old_counters[old_write_pos];
-										} else {
-												should_read_entry = false;
-												cached_entry_sort_key = entry_sort_key;
-												cached_entry_pos = entry_pos;
-												cached_entry_offset = entry_offset;
-												break;
-										}
-								}
+											should_read_entry = true;
 
-								if (left_reader_count < res2.table_sizes[table_index]) {
-										// The left entries are in the new format: (sort_key, new_pos), except for table
-										// 1: (y, x).
+											if (entry_pos + entry_offset > greatest_pos) {
+													greatest_pos = entry_pos + entry_offset;
+											}
+											if (entry_pos == current_pos) {
+													uint64_t const old_write_pos = entry_pos % kReadMinusWrite;
+													old_sort_keys[old_write_pos][old_counters[old_write_pos]] = entry_sort_key;
+													old_offsets[old_write_pos][old_counters[old_write_pos]] =
+															(entry_pos + entry_offset);
+													++old_counters[old_write_pos];
+											} else {
+													should_read_entry = false;
+													cached_entry_sort_key = entry_sort_key;
+													cached_entry_pos = entry_pos;
+													cached_entry_offset = entry_offset;
+													break;
+											}
+									}
 
-										// TODO: unify these cases once SortManager implements
-										// the ReadDisk interface
-										if (table_index == 1) {
-												left_entry_disk_buf = left_disk.Read(left_reader, left_entry_size_bytes);
-												left_reader += left_entry_size_bytes;
-										} else {
-												left_entry_disk_buf = L_sort_manager->ReadEntry(left_reader);
-												left_reader += new_pos_entry_size_bytes;
-										}
-										left_reader_count++;
-								}
+									if (left_reader_count < res2.table_sizes[table_index]) {
+											// The left entries are in the new format: (sort_key, new_pos), except for table
+											// 1: (y, x).
 
-								// We read the "new_pos" from the L table, which for table 1 is just x. For
-								// other tables, the new_pos
-								if (table_index == 1) {
-										// Only k bits, since this is x
-										left_new_pos[current_pos % kCachedPositionsSize] =
-												Util::SliceInt64FromBytes(left_entry_disk_buf, 0, k);
-								} else {
-										// k+1 bits in case it overflows
-										left_new_pos[current_pos % kCachedPositionsSize] =
-												Util::SliceInt64FromBytes(left_entry_disk_buf, right_sort_key_size, k);
-								}
-						}
+											// TODO: unify these cases once SortManager implements
+											// the ReadDisk interface
+											if (table_index == 1) {
+													left_entry_disk_buf = left_disk.Read(left_reader, left_entry_size_bytes);
+													left_reader += left_entry_size_bytes;
+											} else {
+													left_entry_disk_buf = L_sort_manager->ReadEntry(left_reader);
+													left_reader += new_pos_entry_size_bytes;
+											}
+											left_reader_count++;
+									}
 
-						uint64_t const write_pointer_pos = current_pos - kReadMinusWrite + 1;
+									// We read the "new_pos" from the L table, which for table 1 is just x. For
+									// other tables, the new_pos
+									if (table_index == 1) {
+											// Only k bits, since this is x
+											left_new_pos[current_pos % kCachedPositionsSize] =
+													Util::SliceInt64FromBytes(left_entry_disk_buf, 0, k);
+									} else {
+											// k+1 bits in case it overflows
+											left_new_pos[current_pos % kCachedPositionsSize] =
+													Util::SliceInt64FromBytes(left_entry_disk_buf, right_sort_key_size, k);
+									}
+							}
 
-						// Rewrites each right entry as (line_point, sort_key)
-						if (current_pos + 1 >= kReadMinusWrite) {
-								uint64_t left_new_pos_1 = left_new_pos[write_pointer_pos % kCachedPositionsSize];
-								for (uint32_t counter = 0;
-										 counter < old_counters[write_pointer_pos % kReadMinusWrite];
-										 counter++) {
-										uint64_t left_new_pos_2 = left_new_pos
-												[old_offsets[write_pointer_pos % kReadMinusWrite][counter] %
-												 kCachedPositionsSize];
+							uint64_t const write_pointer_pos = current_pos - kReadMinusWrite + 1;
 
-										// A line point is an encoding of two k bit values into one 2k bit value.
-										uint128_t line_point =
-												Encoding::SquareToLinePoint(left_new_pos_1, left_new_pos_2);
+							// Rewrites each right entry as (line_point, sort_key)
+							if (current_pos + 1 >= kReadMinusWrite) {
+									uint64_t left_new_pos_1 = left_new_pos[write_pointer_pos % kCachedPositionsSize];
+									for (uint32_t counter = 0;
+											 counter < old_counters[write_pointer_pos % kReadMinusWrite];
+											 counter++) {
+											uint64_t left_new_pos_2 = left_new_pos
+													[old_offsets[write_pointer_pos % kReadMinusWrite][counter] %
+													 kCachedPositionsSize];
 
-										if (left_new_pos_1 > ((uint64_t)1 << k) ||
-												left_new_pos_2 > ((uint64_t)1 << k)) {
-												std::cout << "left or right positions too large" << std::endl;
-												std::cout << (line_point > ((uint128_t)1 << (2 * k)));
-												if ((line_point > ((uint128_t)1 << (2 * k)))) {
-														std::cout << "L, R: " << left_new_pos_1 << " " << left_new_pos_2
-																			<< std::endl;
-														std::cout << "Line point: " << line_point << std::endl;
-														abort();
-												}
-										}
-										Bits to_write = Bits(line_point, line_point_size);
-										to_write.AppendValue(
-												old_sort_keys[write_pointer_pos % kReadMinusWrite][counter],
-												right_sort_key_size);
+											// A line point is an encoding of two k bit values into one 2k bit value.
+											uint128_t line_point =
+													Encoding::SquareToLinePoint(left_new_pos_1, left_new_pos_2);
 
-										R_sort_manager->AddToCache( to_write ); // Single thread writing -> no locks
-								}
-						}
-						current_pos += 1;
-				}
+											if (left_new_pos_1 > ((uint64_t)1 << k) ||
+													left_new_pos_2 > ((uint64_t)1 << k)) {
+													std::cout << "left or right positions too large" << std::endl;
+													std::cout << (line_point > ((uint128_t)1 << (2 * k)));
+													if ((line_point > ((uint128_t)1 << (2 * k)))) {
+															std::cout << "L, R: " << left_new_pos_1 << " " << left_new_pos_2
+																				<< std::endl;
+															std::cout << "Line point: " << line_point << std::endl;
+															abort();
+													}
+											}
+											Bits to_write = Bits(line_point, line_point_size);
+											to_write.AppendValue(
+													old_sort_keys[write_pointer_pos % kReadMinusWrite][counter],
+													right_sort_key_size);
 
-				computation_pass_1_timer.PrintElapsed("\tFirst computation pass time:");
+											//R_sort_manager->AddToCache( to_write ); // Single thread writing -> no locks
+											sort_adder.AddToCache( to_write );
+									}
+							}
+							current_pos += 1;
+					}
+				} // end of scope for sort_adder
 
 				// Remove no longer needed file
 				left_disk.Truncate(0);
@@ -415,6 +418,8 @@ Phase3Results RunPhase3(
 				// Flush cache so all entries are written to buckets
 				R_sort_manager->FlushCache();
 				R_sort_manager->FreeMemory();
+
+				computation_pass_1_timer.PrintElapsed("\tFirst computation pass time:");
 
 				Timer computation_pass_2_timer;
 

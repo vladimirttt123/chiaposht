@@ -149,6 +149,48 @@ public:
 			std::unique_ptr<std::unique_ptr<CacheBucket>[]> buckets_cache;
 		}; // end of ThreadWriter
 
+
+		// used for single thread async writing ( in phase 3 - 1st part )
+		struct AsyncAdder {
+			explicit AsyncAdder( SortManager &parent )
+				: parent_(parent), buf_size(BUF_SIZE/parent.entry_size_*parent.entry_size_)
+				, buf( new uint8_t[buf_size + 7] ) // 7 bytes head-room for SliceInt64FromBytes()
+				, write_buf( new uint8_t[buf_size + 7] ) // 7 bytes head-room for SliceInt64FromBytes()
+			{
+
+			}
+			inline void AddToCache( const Bits &entry )
+			{
+				entry.ToBytes( buf.get() + bytes_in_buffer );
+				bytes_in_buffer += parent_.entry_size_;
+				if( bytes_in_buffer >= buf_size ) Flush();
+			}
+
+			inline void Flush(){
+				if( write_thread ) write_thread->join();
+				buf.swap(write_buf);
+				write_thread.reset( new std::thread( [this](uint32_t size){
+															for( uint32_t i = 0; i < size; i += this->parent_.entry_size_ )
+																this->parent_.AddToCache( write_buf.get() + i );
+														}, bytes_in_buffer ) );
+				bytes_in_buffer = 0;
+			}
+
+			~AsyncAdder(){
+				if( bytes_in_buffer ){
+					Flush();
+					write_thread->join();
+				}
+			}
+		private:
+			SortManager &parent_;
+			const uint32_t buf_size;
+			std::unique_ptr<uint8_t[]>buf;
+			std::unique_ptr<uint8_t[]>write_buf;
+			uint32_t bytes_in_buffer = 0;
+			std::unique_ptr<std::thread> write_thread;
+		};
+
 		inline uint64_t Count() const {
 			uint64_t res = 0;
 			for( auto &b : buckets_ )
