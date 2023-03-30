@@ -608,50 +608,36 @@ private:
 };
 
 
-struct RamStream : IWriteDiskStream, IReadDiskStream{
+struct CacheStream : IWriteDiskStream {
 
-	void Write( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) override{
-		assert( read_position == 0 ); // can't write after read
-		for( uint64_t done = 0; done < buf_size; ){
-			if( (write_position%BUF_SIZE) == 0 )
-				ram.push( new uint8_t[BUF_SIZE] );
-			auto to_add = std::min( ram.size()*BUF_SIZE - write_position, buf_size - done );
-			memcpy( ram.back(), buf.get(), to_add );
-			write_position += to_add;
-			done += to_add;
+	CacheStream( IWriteDiskStream* disk, uint32_t cache_count )
+		: disk(disk), cache_count(cache_count)
+		,	buf_sizes( std::make_unique<uint32_t[]>(cache_count) )
+		, bufs( std::make_unique<uint8_t*[]>(cache_count) )
+	{	}
+
+	void Write( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ){
+		if( bufs_count < cache_count ){
+			buf_sizes[bufs_count] = buf_size;
+			bufs[bufs_count] = buf.release();
+			bufs_count++;
+			buf.reset( new uint8_t[ buf_size ] );
 		}
+		else
+			disk->Write( buf, buf_size );
 	}
 
-	uint32_t Read( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) override{
-		for( uint64_t done = 0; done < buf_size; ){
-			auto to_add = std::min( std::min( write_position - read_position, BUF_SIZE - (read_position%BUF_SIZE) ), buf_size - done );
-			if( to_add == 0 ){
-				delete ram.front();
-				ram.pop();
-				return done;
-			}
-			memcpy( buf.get(), ram.front(), to_add );
-			done += to_add;
-			read_position += to_add;
-			if( (read_position%BUF_SIZE) == 0 ){
-				// Clear ram after read;
-				delete ram.front();
-				ram.pop();
-			}
-		}
-		return 0;
-	};
-	bool atEnd() const override { return write_position <= read_position; };
-	void Close() override {};
 
-	~RamStream(){
-		for( ; !ram.empty(); ram.pop() )
-			delete ram.front();
+	void Close(){
 	}
+
+	~CacheStream(){ Close(); }
 private:
-	std::queue<uint8_t*> ram;
-	uint64_t write_position = 0;
-	uint64_t read_position = 0;
+	IWriteDiskStream * disk;
+	const uint32_t cache_count;
+	uint32_t bufs_count = 0;
+	std::unique_ptr<uint32_t[]> buf_sizes;
+	std::unique_ptr<uint8_t*[]> bufs;
 };
 
 // This stream not garantee same read order as write order
@@ -737,8 +723,6 @@ struct BucketStream{
 				}
 
 				if( !disk_input ){
-					disk_input.reset( new ReadFileStream( bucket_file.get(), bucket_file->GetWriteMax() ) );
-					//disk_input.reset( new AsyncStreamReader( disk_input.release(), BUF_SIZE ) );
 					if( sequence_start_bit >= 0 ){
 						// create compacter without input stream to grow custom buffer.
 						restorer.reset( new SequenceCompacterReader( nullptr, entry_size_-1,
@@ -748,15 +732,23 @@ struct BucketStream{
 					inserter.reset( new ByteInserterStream( nullptr,
 																		entry_size_, begin_bits_ - log_num_buckets_,
 																		bucket_no_ >> (log_num_buckets_-8) ) );
+
+
+					if( compacter && disk_output ){ // output not flushed to disk
+						// we can get last compacted buffer without writting it to disk
+						read_size = compacter->ReleaseBuffer( buf.get() );
+						compacter = nullptr;
+					}
+
+					if( disk_output )
+						disk_output.reset(); // close output stream
+
+					disk_input.reset( new ReadFileStream( bucket_file.get(), bucket_file->GetWriteMax() ) );
+					//disk_input.reset( new AsyncStreamReader( disk_input.release(), BUF_SIZE ) );
 				}
 
-				if( compacter && disk_output ){ // output not flushed to disk
-					// we can get last compacted buffer without writting it to disk
-					read_size = compacter->ReleaseBuffer( buf.get() );
-					compacter = nullptr;
-					disk_output.reset(); // close output stream
-				}
-				else
+
+				if( read_size == 0 )
 					read_size = disk_input->Read( buf, size_to_read );
 			}
 

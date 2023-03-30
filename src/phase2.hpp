@@ -297,8 +297,8 @@ Phase2Results RunPhase2(
 							new_entry_size,
 							tmp_dirname,
 							filename + ".p2.t" + std::to_string(table_index),
-							uint32_t(k),
-							0,
+							uint32_t(k), // bits_begin
+							0, // strip_size
 							k,
 							2, // Phase
 							table_index,

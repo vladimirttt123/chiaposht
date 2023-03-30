@@ -257,9 +257,9 @@ Phase3Results RunPhase3(
 						right_entry_size_bytes,
 						tmp_dirname,
 						filename + ".p3.t" + std::to_string(table_index + 1),
-						0,
-						0,
-						k,
+						0, // begin_bits
+						0, // stripe_size
+						k, // plot size
 						3, // Phase
 						table_index,
 						num_threads,
@@ -441,9 +441,9 @@ Phase3Results RunPhase3(
 						new_pos_entry_size_bytes,
 						tmp_dirname,
 						filename + ".p3s.t" + std::to_string(table_index + 1),
-						0,
-						0,
-						k,
+						0, // bits_begin
+						0, // strip_size
+						k, // plot size
 						4, // Phase
 						table_index + 1,
 						num_threads,

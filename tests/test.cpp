@@ -155,12 +155,17 @@ TEST_CASE( "DISK_STREAMS" ){
 	}
 
 	SECTION( "BucketStream" ){
-		const uint64_t iteration = 3000;
+		const uint64_t iteration = 6000;
 		const uint16_t bucket_no = 0xaaaa;
-		const uint16_t tests[][5] = { //[num_buckets,entry_size, bits_begins, is_compact, sequence_start]
-																	{ 256, 8, 0, 1, 32 }, { 256, 8, 32, 1, 0} };
+		const int16_t tests[][6] = { //[num_buckets, entry_size, bits_begins, is_compact, sequence_start_bit, flush_after_write]
+																	{ 256, 8, 32, 1, -1, 0}, { 256, 8, 32, 1, -1, 1}
+																	, { 256, 13, 32, 1, -1, 0}, { 256, 13, 32, 1, -1, 1}
+																	, { 128, 8, 32, 0, 0, 0}, { 128, 8, 0, 0, 32, 0 }
+																	, { 256, 8, 32, 0, 0, 0}, { 256, 8, 0, 0, 32, 0 }
+																	, { 256, 8, 32, 1, 0, 0}, { 256, 8, 0, 1, 32, 0 }
+																};
 		const auto cur_buf_size = BUF_SIZE;
-		BUF_SIZE = 1024;
+		BUF_SIZE = 4096; // set small buffer size for fast testing
 
 		for( auto test_data : tests ){
 			auto num_buckets = test_data[0];
@@ -168,6 +173,7 @@ TEST_CASE( "DISK_STREAMS" ){
 			auto bits_begin = test_data[2];
 			bool is_compact = test_data[3];
 			auto sequence_start_bit = test_data[4];
+			bool is_fush = test_data[5];
 
 			std::cout << "BucketStream test - num_buckets: " << num_buckets << ", entry_size: " << entry_size
 								<< ", bits_begin: " << bits_begin << ", sequence_start_bit: " << sequence_start_bit << std::endl;
@@ -176,13 +182,11 @@ TEST_CASE( "DISK_STREAMS" ){
 			BucketStream stream = BucketStream( "bucket.stream.tmp", cur_bucket_no
 																					, log2(num_buckets), entry_size, bits_begin + log2(num_buckets)
 																					, is_compact, sequence_start_bit );
-			FileDisk bucket_data = FileDisk( "bucket.stream.data.tmp" );
-			uint64_t written_bytes = 0;
-			const uint32_t aligned_buf_size = BUF_SIZE/entry_size*entry_size;
+
+			auto bucket_data = std::make_unique<uint8_t[]>( iteration * entry_size );
 
 			{ // Part I: writing
 
-				auto buf = std::make_unique<uint8_t[]>( aligned_buf_size );
 				uint32_t bytes_in_buf = 0;
 
 				// Prepare entry
@@ -198,50 +202,49 @@ TEST_CASE( "DISK_STREAMS" ){
 
 				// go and write files
 				for( uint64_t i = 0; i < iteration; i++ ){
+					// change the entry
 					if( sequence_start_bit >= 0 )
 						((uint32_t*)(base_entry + sequence_start_bit/8))[0] += bswap_32(
 								bswap_32(((uint32_t*)(base_entry + sequence_start_bit/8))[0]) + rand()&0xfff );
-					base_entry[entry_size-1] = rand()&0xff;
-
-					memcpy( buf.get() + bytes_in_buf, base_entry, entry_size );
-					bytes_in_buf += entry_size;
-					if( bytes_in_buf >= aligned_buf_size ){
-						bucket_data.Write( written_bytes, buf.get(), bytes_in_buf );
-						written_bytes += bytes_in_buf;
-						stream.Write( buf, bytes_in_buf );
-						bytes_in_buf = 0;
+					else {
+						base_entry[entry_size-2] = rand()&0xff;
+						base_entry[entry_size-3] = rand()&0xff;
+						base_entry[entry_size-1] = rand()&0xff;
 					}
+
+
+					memcpy( bucket_data.get() + bytes_in_buf, base_entry, entry_size );
+					bytes_in_buf += entry_size;
+					stream.Write( base_entry, entry_size ); // write by one entry at a time
 				}
 
-				if( bytes_in_buf ){
-					bucket_data.Write( written_bytes, buf.get(), bytes_in_buf );
-					written_bytes += bytes_in_buf;
-					stream.Write( buf, bytes_in_buf );
-				}
+				if( is_fush ) stream.FlusToDisk();
 			}
+
+			auto read_data = std::make_unique<uint8_t[]>( iteration * entry_size );
 
 			{	// Part II: read the data
 				uint64_t read_bytes = 0;
 				auto buf = std::make_unique<uint8_t[]>( stream.MaxBufferSize() );
-				auto data_buf = std::make_unique<uint8_t[]>( stream.MaxBufferSize() );
 
 				uint64_t bytes_in_buf = 0;
 				while( (bytes_in_buf = stream.Read(buf) ) > 0 ){
-					bucket_data.Read( read_bytes, data_buf.get(), bytes_in_buf );
+					memcpy( read_data.get() + read_bytes, buf.get(), bytes_in_buf );
 					read_bytes += bytes_in_buf;
-//					for( uint64_t i = 0; i < bytes_in_buf; i += entry_size ){
-//						if( memcmp( buf.get()+i, data_buf.get() + i, entry_size ) )
-//							cout << "here: " << i << std::endl;
-//					}
-					// The bucket returns data not the same order as written than test should be rethinked.
-//					REQUIRE( memcmp( buf.get(), data_buf.get(), bytes_in_buf ) == 0 );
 				}
-				REQUIRE( read_bytes == written_bytes );
+				REQUIRE( read_bytes == iteration * entry_size );
+			}
+
+			{  // Part III: compare data
+				// bits_begin for sorting is alway 0 because it could be non unique entries that sorted different in other case
+				QuickSort::Sort( bucket_data.get(), entry_size, iteration, 0 );
+				QuickSort::Sort( read_data.get(), entry_size, iteration, 0 );
+				REQUIRE( memcmp( read_data.get(), bucket_data.get(), iteration * entry_size ) == 0 );
 			}
 
 		}
 
-		BUF_SIZE = cur_buf_size;
+		BUF_SIZE = cur_buf_size; // restore original buffer size
 	}
 }
 
