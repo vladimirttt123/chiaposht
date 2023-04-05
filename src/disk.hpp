@@ -111,11 +111,13 @@ struct FileDisk {
 					Open( writeFlag );
 					SetCouldBeClosed();
 				}
+				std::lock_guard<std::mutex> lk(mutFileManager);
+				all_files.push_back( this );
     }
 
     void Open(uint8_t flags = 0)
     {
-			UnsetCouldBeClosed( );
+			UnsetCouldBeClosed();
         // if the file is already open, don't do anything
 				if (f_)  return;
 
@@ -130,9 +132,10 @@ struct FileDisk {
                 std::string error_message =
 										"Could not open " + filename_.string() + ": err" + std::to_string(errno) + " " + ::strerror(errno) + ".";
 
-								if( errno == 24 && could_be_closed.size() > 0 ){
-									std::cout << "Warning: Too many open file, forced to close some. Closing " << could_be_closed.size() << " files." << std::endl;
+								if( errno == 24 ){
+									std::cout << "Warning: Too many open files." << std::endl;
 									CloseCouldBeClosed();
+									// std::this_thread::sleep_for(5s);
 								}
 								else if (errno == 24 || (flags & retryOpenFlag) ) {
                     std::cout << error_message << " Retrying in five minutes." << std::endl;
@@ -157,19 +160,20 @@ struct FileDisk {
     FileDisk(const FileDisk &) = delete;
     FileDisk &operator=(const FileDisk &) = delete;
 
-    void Close()
+		void Close( bool isForced = false )
     {
         if (f_ == nullptr) return;
-				UnsetCouldBeClosed();
+				if( !isForced )
+					UnsetCouldBeClosed();
         ::fclose(f_);
         f_ = nullptr;
         readPos = 0;
         writePos = 0;
-				{
+				if( !isForced ) {
 					std::lock_guard<std::mutex> lk(mutFileManager);
 					total_bytes_written += bytes_written;
+					bytes_written = 0;
 				}
-				bytes_written = 0;
     }
 
 		void Remove( bool noWarn = false ){
@@ -183,7 +187,7 @@ struct FileDisk {
 		}
 
 		~FileDisk() {
-			UnsetCouldBeClosed();
+			RemoveFromAllFiles();
 			Close();
 		}
 
@@ -277,9 +281,9 @@ struct FileDisk {
                 Open(writeFlag | retryOpenFlag);
             }
         } while (amtwritten != length);
-			bytes_written += amtwritten;
 			SetCouldBeClosed();
-    }
+			bytes_written += amtwritten;
+		}
 
 		std::string GetFileName() const { return filename_.string(); }
 
@@ -323,34 +327,50 @@ private:
 			fs::rename( GetFileName(), delname );
 		}
 
-		static std::vector<FileDisk*> could_be_closed;
+		bool could_be_closed = false;
+		static std::vector<FileDisk*> all_files;
 		static std::mutex mutFileManager;
 		static uint64_t total_bytes_written;
 
 		inline void SetCouldBeClosed(){
-			std::lock_guard<std::mutex> lk(mutFileManager);
-			could_be_closed.push_back( this );
-		}
-
-		inline void UnsetCouldBeClosed(){
-			std::lock_guard<std::mutex> lk(mutFileManager);
-			for( uint32_t i = 0; i < could_be_closed.size(); i++ ){
-				if( could_be_closed[i] == this ){
-					could_be_closed[i] = could_be_closed[could_be_closed.size() - 1];
-					could_be_closed.resize( could_be_closed.size() - 1 );
-				}
+			if( !could_be_closed ) {
+				std::lock_guard<std::mutex> lk(mutFileManager);
+				could_be_closed = true;
 			}
 		}
 
+		inline void UnsetCouldBeClosed(){
+			if( could_be_closed ){
+				std::lock_guard<std::mutex> lk(mutFileManager);
+				could_be_closed = false;
+			}
+		}
+
+		inline void RemoveFromAllFiles(){
+			std::lock_guard<std::mutex> lk(mutFileManager);
+			for( uint32_t i = 0; i < all_files.size(); i++ ){
+				if( all_files[i] == this ){
+					all_files[i] = all_files[all_files.size() - 1];
+					all_files.resize( all_files.size() - 1 );
+					return;
+				}
+			}
+		}
 		static void CloseCouldBeClosed() {
 			std::lock_guard<std::mutex> lk(mutFileManager);
-			for( auto f : could_be_closed )
-				f->Close();
-			could_be_closed.clear();
+			std::cout << " Forced to close files: " << std::flush;
+			int counter = 0;
+			for( auto f : all_files )
+				if( f->could_be_closed ){
+					counter++;
+					f->could_be_closed = false; // to prevent locking
+					f->Close( true );
+				}
+			std::cout << counter << " files closed." << std::endl;
 		}
 };
 
-std::vector<FileDisk*> FileDisk::could_be_closed = std::vector<FileDisk*>();
+std::vector<FileDisk*> FileDisk::all_files = std::vector<FileDisk*>();
 std::mutex FileDisk::mutFileManager = std::mutex();
 uint64_t FileDisk::total_bytes_written = 0;
 
