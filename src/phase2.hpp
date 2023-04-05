@@ -78,8 +78,9 @@ inline void ScanTable( IReadDiskStream *disk, int table_index, const int64_t &ta
 					*read_cursor += buf_size;
 				}
 				{ // Setting limits could read data from file than need a mutex
-					const std::lock_guard<std::mutex> lk(read_mutex[1]);
+					if( current_bitfield->is_readonly() ) read_mutex[1].lock();
 					cur_bitfield.setLimits( buf_start/entry_size, buf_size/entry_size );
+					if( current_bitfield->is_readonly() ) read_mutex[1].unlock();
 				}
 
 				uint32_t processed_count = 0;
@@ -87,8 +88,7 @@ inline void ScanTable( IReadDiskStream *disk, int table_index, const int64_t &ta
 				// Convert buffer to numbers in final bitfield
 				for( int64_t buf_ptr = 0, entry_pos_offset = 0; buf_ptr < buf_size; buf_ptr += entry_size ){
 					if (table_index == 7) {
-							// table 7 is special, we never drop anything, so just build
-							// next_bitfield
+							// table 7 is special, we never drop anything, so just build next_bitfield
 							entry_pos_offset = Util::SliceInt64FromBytes( buffer.get() + buf_ptr, k, pos_offset_size);
 					} else {
 							if( !cur_bitfield.get( buf_ptr/entry_size ) )
@@ -120,6 +120,7 @@ inline void ScanTable( IReadDiskStream *disk, int table_index, const int64_t &ta
 		threads[i].join();
 
 	scan_timer.PrintElapsed( "time =" );
+
 }
 
 inline void SortRegularTableThread( IReadDiskStream * disk, const uint64_t &table_size,
@@ -150,8 +151,6 @@ inline void SortRegularTableThread( IReadDiskStream * disk, const uint64_t &tabl
 			*read_position += buf_size;
 			write_counter = *global_write_counter;
 			*global_write_counter += cur_bitfield.count( 0, buf_size/entry_size );
-
-//			assert( *global_write_counter == (uint64_t)current_bitfield->count(0 , *read_position/entry_size) );
 		}
 
 		for( uint64_t buf_ptr = 0; buf_ptr < buf_size; buf_ptr += entry_size ){
@@ -287,6 +286,8 @@ Phase2Results RunPhase2(
 
 				if( table_index == 7 ){
 					// Instead of rewritting table 7 we store the bitfield and read it rewtited in phase 3
+					auto t7 = next_bitfield->MoveToTable7();
+					std::cout << "Bitfield of table 7 is " << ( t7 ? "compacted" : " CANNOT BE COMPACTED!!! ") << std::endl;
 					next_bitfield->FlushToDisk( tmp_1_disks[table_index].GetFileName() + ".bitfield.tmp" );
 				}
 				else{
