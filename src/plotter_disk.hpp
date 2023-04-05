@@ -74,13 +74,6 @@ public:
         uint8_t num_threads_input = 0,
 				uint8_t phases_flags = ENABLE_BITFIELD )
     {
-        // Increases the open file limit, we will open a lot of files.
-#ifndef _WIN32
-        struct rlimit the_limit = {600, 600};
-        if (-1 == setrlimit(RLIMIT_NOFILE, &the_limit)) {
-            std::cout << "setrlimit failed" << std::endl;
-        }
-#endif
         if (k < kMinPlotSize || k > kMaxPlotSize) {
             throw InvalidValueException("Plot size k= " + std::to_string(k) + " is invalid");
         }
@@ -153,6 +146,16 @@ public:
         uint32_t log_num_buckets = log2(num_buckets);
         assert(log2(num_buckets) == ceil(log2(num_buckets)));
 
+#ifndef _WIN32
+				// Increases the open file limit, we will open a lot of files.
+				// I think these code should be remove... it should use system limits
+				struct rlimit the_limit = {100+num_buckets_input*3, 100+ num_buckets_input*3};
+				if (-1 == setrlimit(RLIMIT_NOFILE, &the_limit)) {
+						std::cout << "setrlimit failed" << std::endl;
+				}
+#endif
+
+
         if (max_table_size / num_buckets < stripe_size * 30) {
             throw InvalidValueException("Stripe size too large");
         }
@@ -168,11 +171,16 @@ public:
 											<< "Minimum buffer size to elemenate this is " << ((bitfield::memSize( 1ULL << k )>>19) + sub_mbytes) << "MiB." << std::endl;
 					}
 				}
+
+
 #if defined(_WIN32) || defined(__x86_64__)
         if (phases_flags & ENABLE_BITFIELD && !Util::HavePopcnt()) {
             throw InvalidValueException("Bitfield plotting not supported by CPU");
         }
 #endif /* defined(_WIN32) || defined(__x86_64__) */
+
+				if( phases_flags & ENABLE_BITFIELD )
+					phases_flags |= FORCE_TABLE_7_SCAN; // temporal solution
 
         std::cout << std::endl
                   << "Starting plotting progress into temporary dirs: " << tmp_dirname << " and "
