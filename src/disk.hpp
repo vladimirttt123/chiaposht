@@ -134,10 +134,8 @@ struct FileDisk {
                 std::string error_message =
 										"Could not open " + filename_.string() + ": err" + std::to_string(errno) + " " + ::strerror(errno) + ".";
 
-								if( errno == 24 ){
+								if( errno == 24 && CloseCouldBeClosed() > 0 ){
 									std::cout << "Warning: Too many open files." << std::endl;
-									CloseCouldBeClosed();
-									// std::this_thread::sleep_for(5s);
 								}
 								else if (errno == 24 || (flags & retryOpenFlag) ) {
                     std::cout << error_message << " Retrying in five minutes." << std::endl;
@@ -335,14 +333,13 @@ private:
 		static uint64_t total_bytes_written;
 
 		inline void SetCouldBeClosed(){
-			if( !could_be_closed ) {
-				std::lock_guard<std::mutex> lk(mutFileManager);
-				could_be_closed = true;
-			}
+			// allow to close can be done without lock because it couldn't be in process of closing with other thread
+			could_be_closed = true;
 		}
 
 		inline void UnsetCouldBeClosed(){
 			if( could_be_closed ){
+				// need lock because it can be in process of closing in other thread that called CloseCouldBeClosed
 				std::lock_guard<std::mutex> lk(mutFileManager);
 				could_be_closed = false;
 			}
@@ -358,7 +355,7 @@ private:
 				}
 			}
 		}
-		static void CloseCouldBeClosed() {
+		static int CloseCouldBeClosed() {
 			std::lock_guard<std::mutex> lk(mutFileManager);
 			std::cout << " Forced to close files: " << std::flush;
 			int counter = 0;
@@ -369,6 +366,7 @@ private:
 					f->Close( true );
 				}
 			std::cout << counter << " files closed." << std::endl;
+			return counter;
 		}
 };
 
