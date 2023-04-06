@@ -198,7 +198,7 @@ struct bitfield
 			if( table_7_max_entry < 0 )
 				file_->Write( 8, (uint8_t*)buffer_.get(), length );
 			file_->Flush();
-			b_file_.reset( new BufferedDisk( file_.get(), length ) );
+			b_file_.reset( new BufferedDisk( file_.get(), length + 8 ) );
 			// free memory
 			buffer_.reset();
 		}
