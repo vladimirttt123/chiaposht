@@ -224,7 +224,8 @@ Phase2Results RunPhase2(
     // At the end of the iteration, we transfer the next_bitfield to the current bitfield
     // to use it to prune the next table to scan.
 
-		auto current_bitfield = std::make_unique<bitfield>(0);
+		auto current_bitfield = std::make_unique<bitfield>(
+					table_sizes[7], tmp_1_disks[7].GetFileName() + ".bitfield.tmp", false );
 
     std::vector<std::unique_ptr<SortManager>> output_files;
 
@@ -236,10 +237,10 @@ Phase2Results RunPhase2(
     // since it contains different data. We'll do an extra scan of table 1 at
     // the end, just to compact it.
     double progress_percent[] = {0.43, 0.48, 0.51, 0.55, 0.58, 0.61};
-    for (int table_index = 7; table_index > 1; --table_index) {
+		for (int table_index = 6; table_index > 1; --table_index) {
 
 				int64_t const table_size = table_sizes[table_index];
-				int16_t const entry_size = cdiv(k + kOffsetSize + (table_index == 7 ? k : 0), 8);
+				int16_t const entry_size = cdiv(k + kOffsetSize, 8);
 
 				std::cout << "Backpropagating on table " << table_index << "  size: " << table_size <<  std::endl;
         std::cout << "Progress update: " << progress_percent[7 - table_index] << std::endl;
@@ -250,20 +251,16 @@ Phase2Results RunPhase2(
 				// that twice is 1GiB or larger than 900KiB
 				// in such case we can operate with one bitfield only and the current one write
 				// to disk and use FilteredDisk class
-				if( table_index < 7 && std::max(bitfield::memSize(table_size), current_bitfield->memSize())*2 > memory_size ){
+				if( ( bitfield::memSize(table_size) + current_bitfield->memSize() ) > memory_size ){
 					std::cout << "Warning: Cannot fit 2 bitfields in buffer, flushing one to disk. Need Ram:"
-										<< (std::max(bitfield::memSize(table_size), current_bitfield->memSize())*2.0/1024/1024/1024) << "GiB" << std::endl;
+										<< ( ( bitfield::memSize(table_size) + current_bitfield->memSize() )/1024.0/1024/1024 ) << "GiB" << std::endl;
 					current_bitfield->FlushToDisk( tmp_1_disks[table_index].GetFileName() + ".bitfield.tmp" );
 				}
 				auto next_bitfield = std::make_unique<bitfield>( std::max( current_bitfield->size(), table_size ) );
 
 				{ // Scope for reader
-					auto table_reader = std::unique_ptr<IReadDiskStream>(  table_index == 7 ?
-										CreateLastTableReader( &tmp_1_disks[table_index], k, entry_size, (flags&NO_COMPACTION)==0 ):
-										//new AsyncStreamReader(
-											new ReadFileStream( &tmp_1_disks[table_index], table_size * entry_size )
-										//		, (BUF_SIZE/entry_size)*entry_size )
-										);
+					auto table_reader = std::unique_ptr<IReadDiskStream>(
+											new ReadFileStream( &tmp_1_disks[table_index], table_size * entry_size ) );
 					ScanTable( table_reader.get(), table_index, table_size, entry_size,
 										 *current_bitfield.get(), *next_bitfield.get(), num_threads, pos_offset_size, k );
 				}
@@ -284,66 +281,59 @@ Phase2Results RunPhase2(
 				// as we scan the table for the second time, we'll also need to remap
 				// the positions and offsets based on the next_bitfield.
 
-				if( table_index == 7 ){
-					// Instead of rewritting table 7 we store the bitfield and read it rewtited in phase 3
-					auto t7 = next_bitfield->MoveToTable7();
-					std::cout << "Bitfield of table 7 is " << ( t7 ? "compacted" : " CANNOT BE COMPACTED!!! ") << std::endl;
-					next_bitfield->FlushToDisk( tmp_1_disks[table_index].GetFileName() + ".bitfield.tmp" );
-				}
-				else{
-					bitfield_index const index(*next_bitfield.get());
+			bitfield_index const index(  *next_bitfield.get() );
 
-					auto sort_manager = std::make_unique<SortManager>(
-							table_index == 2 ? ( memory_size /*it should be minus size of bitfield of table 1*/): memory_size / 2,
-							num_buckets,
-							log_num_buckets,
-							new_entry_size,
-							tmp_dirname,
-							filename + ".p2.t" + std::to_string(table_index),
-							uint32_t(k), // bits_begin
-							0, // strip_size
-							k,
-							2, // Phase
-							table_index,
-							num_threads,
-							(flags&NO_COMPACTION)==0 );
+			auto sort_manager = std::make_unique<SortManager>(
+					table_index == 2 ? ( memory_size /*it should be minus size of bitfield of table 1*/): memory_size / 2,
+					num_buckets,
+					log_num_buckets,
+					new_entry_size,
+					tmp_dirname,
+					filename + ".p2.t" + std::to_string(table_index),
+					uint32_t(k), // bits_begin
+					0, // strip_size
+					k,
+					2, // Phase
+					table_index,
+					num_threads,
+					(flags&NO_COMPACTION)==0 );
 
-					uint64_t read_position = 0, write_counter = 0;
-					std::mutex sort_mutext;
-					auto threads = std::make_unique<std::thread[]>( num_threads - 1 );
+			uint64_t read_position = 0, write_counter = 0;
+			std::mutex sort_mutext;
+			auto threads = std::make_unique<std::thread[]>( num_threads - 1 );
 
-					{	// scope for reader stream
-						auto table_stream = AsyncStreamReader(
-									new ReadFileStream( &tmp_1_disks[table_index], table_size*entry_size ),
-									(BUF_SIZE/entry_size)*entry_size );
-						for( uint64_t t = 0; t < num_threads - 1; t++ )
-							threads[t] = std::thread(	SortRegularTableThread, &table_stream,
-																				table_size, entry_size, new_entry_size,
-																				&read_position, &write_counter, current_bitfield.get(),
-																				index, sort_manager.get(), &sort_mutext, pos_offset_size, k );
+			{	// scope for reader stream
+				auto table_stream = AsyncStreamReader(
+							new ReadFileStream( &tmp_1_disks[table_index], table_size*entry_size ),
+							(BUF_SIZE/entry_size)*entry_size );
+				for( uint64_t t = 0; t < num_threads - 1; t++ )
+					threads[t] = std::thread(	SortRegularTableThread, &table_stream,
+																		table_size, entry_size, new_entry_size,
+																		&read_position, &write_counter, current_bitfield.get(),
+																		index, sort_manager.get(), &sort_mutext, pos_offset_size, k );
 
-						SortRegularTableThread( &table_stream, table_size, entry_size, new_entry_size,
-																			 &read_position, &write_counter, current_bitfield.get(),
-																			 index, sort_manager.get(), &sort_mutext, pos_offset_size, k );
+				SortRegularTableThread( &table_stream, table_size, entry_size, new_entry_size,
+																	 &read_position, &write_counter, current_bitfield.get(),
+																	 index, sort_manager.get(), &sort_mutext, pos_offset_size, k );
 
-						for( uint64_t t = 0; t < num_threads - 1; t++ )
-							threads[t].join();
-					}
-
-					assert( (uint64_t)current_bitfield->count(0, table_size) == sort_manager->Count() );
-					assert( write_counter == sort_manager->Count() );
-
-					std::cout << write_counter << " entries ";
-
-					// clear disk caches and memory
-					// TODO real flush by flag.
-					// Table 2 is used immediatly after in phase 3 than do not clean it caches fully.
-					sort_manager->FlushCache( table_index != 2 );  // close all files
-					//sort_manager->FreeMemory(); // should do nothing at this point
-
-					output_files[table_index - 2] = std::move(sort_manager);
-					new_table_sizes[table_index] = write_counter;
+				for( uint64_t t = 0; t < num_threads - 1; t++ )
+					threads[t].join();
 			}
+
+			assert( (uint64_t)current_bitfield->count(0, table_size) == sort_manager->Count() );
+			assert( write_counter == sort_manager->Count() );
+
+			std::cout << write_counter << " entries ";
+
+			// clear disk caches and memory
+			// TODO real flush by flag.
+			// Table 2 is used immediatly after in phase 3 than do not clean it caches fully.
+			sort_manager->FlushCache( table_index != 2 );  // close all files
+			//sort_manager->FreeMemory(); // should do nothing at this point
+
+			output_files[table_index - 2] = std::move(sort_manager);
+			new_table_sizes[table_index] = write_counter;
+
 
 			sort_timer.PrintElapsed( ", time =" );
 			current_bitfield.swap(next_bitfield);

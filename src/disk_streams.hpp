@@ -84,7 +84,7 @@ struct AsyncCopyStreamWriter : public IWriteDiskStream {
 		buffer.reset();
 	};
 
-	~AsyncCopyStreamWriter(){ if( io_thread ) io_thread->join(); }
+	~AsyncCopyStreamWriter(){ if( io_thread )	io_thread->join(); }
 private:
 	std::unique_ptr<IWriteDiskStream> disk;
 	std::unique_ptr<uint8_t[]> buffer;
@@ -915,43 +915,69 @@ IReadDiskStream * CreateLastTableReader( FileDisk * file, uint8_t k, uint16_t en
 
 struct LastTableScanner : IWriteDiskStream
 {
-	LastTableScanner(IWriteDiskStream * disk, uint8_t k, uint16_t entry_size, uint64_t * max_entry_index )
-		: disk( disk ), k(k), entry_size( entry_size ), pos_offset_size( k + kOffsetSize )
-		, max_entry_index( max_entry_index )
+	LastTableScanner( IWriteDiskStream * disk, uint8_t k, uint16_t entry_size, bool full_scan,
+										const char * bitfield_filename )
+		: disk( disk ), bitmap( full_scan ? new bitfield( ((uint64_t)2)<<k /* POSSIBLE SIZE PROBLEM */ ) : nullptr )
+		, filename( bitfield_filename ), k(k), entry_size( entry_size )
+		, pos_offset_size( k + kOffsetSize )
 	{}
 
 	void Write( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ){
 		disk->Write( buf, buf_size );
 
+		table_size += buf_size / entry_size;
+
 		for( int64_t buf_ptr = 0; buf_ptr < buf_size; buf_ptr += entry_size ){
 			int64_t entry_pos_offset = Util::SliceInt64FromBytes( buf.get() + buf_ptr, k, pos_offset_size);
 			uint64_t entry_pos = entry_pos_offset >> kOffsetSize;
 			uint64_t entry_offset = entry_pos_offset & ((1U << kOffsetSize) - 1);
-			if( entry_pos > *max_entry_index ) *max_entry_index = entry_pos;
-			if( entry_offset > *max_entry_index ) *max_entry_index = entry_offset;
+			if( bitmap ){
+				bitmap->set( entry_pos );
+				bitmap->set( entry_pos + entry_offset );
+			}
+			else{
+				// if( entry_pos > max_entry_index ) max_entry_index = entry_pos;
+				if( ( entry_pos + entry_offset ) > max_entry_index ) max_entry_index = entry_pos + entry_offset;
+			}
 		}
 	}
 
-	void Close() { disk->Close(); disk.reset(); }
+	void Close() {
+		disk->Close();
+		disk.reset();
 
-	~LastTableScanner() { if(disk) disk->Close(); }
+		if( bitmap ){
+			auto cres = bitmap->MoveToTable7();
+			std::cout << "Compacting table 7: " << ( cres ? " COMPACTED " : " FAILED!!! " ) << std::endl;
+			// if( !cres ) bitmap.resize( table_size );
+		}
+		else
+			bitmap.reset( new bitfield( table_size, max_entry_index ) );
+
+		bitmap->FlushToDisk( filename.c_str() );
+	}
+
+	~LastTableScanner() { if(disk) Close(); }
 private:
 	std::unique_ptr<IWriteDiskStream> disk;
+	std::unique_ptr<bitfield> bitmap;
+	std::string filename;
 	const uint8_t k;
 	const uint16_t entry_size;
 	uint8_t const pos_offset_size;
-	uint64_t * max_entry_index;
+	uint64_t max_entry_index = 0;
+	uint64_t table_size = 0;
 };
 
 IWriteDiskStream * CreateLastTableWriter( FileDisk * file, uint8_t k, uint16_t entry_size,
-																					bool withCompaction, uint64_t * max_entry_index = nullptr ){
+																					bool withCompaction, bool full_scan ){
 	IWriteDiskStream * res = new WriteFileStream( file );
 
 	if( withCompaction && k >= 30 )
 		res = new SequenceCompacterWriter( res, entry_size, k );
 
-	if( max_entry_index != nullptr )
-		res = new LastTableScanner( res, k, entry_size, max_entry_index );
+	res = new LastTableScanner( res, k, entry_size, full_scan,
+							( file->GetFileName() + ".bitfield.tmp").c_str() );
 
 	res = new AsyncCopyStreamWriter( res );
 

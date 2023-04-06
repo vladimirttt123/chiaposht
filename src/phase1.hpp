@@ -621,11 +621,9 @@ std::vector<uint64_t> RunPhase1(
 				num_threads,
 				(flags&NO_COMPACTION)==0);
 
-		uint64_t max_table_7_index = 0;
-
 		globals.table7 = CreateLastTableWriter( &tmp_1_disks[7], k,
 				EntrySizes::GetKeyPosOffsetSize(k), (flags&NO_COMPACTION)==0,
-				(flags&FORCE_TABLE_7_SCAN) ? nullptr: &max_table_7_index );
+				flags&FORCE_TABLE_7_SCAN);
 
     // These are used for sorting on disk. The sort on disk code needs to know how
     // many elements are in each bucket.
@@ -773,7 +771,7 @@ std::vector<uint64_t> RunPhase1(
             progress(1, table_index, 6);
         }
     }
-		table_sizes[0] = max_table_7_index;
+		table_sizes[0] = 0;
     globals.R_sort_manager.reset();
 
     return table_sizes;

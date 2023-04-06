@@ -27,6 +27,10 @@ struct bitfield
         clear();
     }
 
+		explicit bitfield( int64_t size, int64_t table_7_max_entry )
+				: size_((size + 63) / 64), table_7_max_entry( table_7_max_entry )
+		{}
+
 		// Restore from file
 		bitfield( int64_t size, const fs::path &filename, bool with_file_remove = true )
 			: size_((size + 63) / 64)
@@ -100,7 +104,7 @@ struct bitfield
 
 		// size is the max number of elements could be stored
 		inline int64_t size() const { return size_ * 64; }
-		inline uint64_t memSize() const { return file_ == nullptr? ((uint64_t)size_ << 3) : 0; }
+		inline uint64_t memSize() const { return ( file_ == nullptr && table_7_max_entry < 0 )? ((uint64_t)size_ << 3) : 0; }
 		static inline uint64_t memSize( uint64_t bits ) { return bits >> 3; }
 
 		inline int64_t count(int64_t const start_bit, int64_t const end_bit) const
