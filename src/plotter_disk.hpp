@@ -147,8 +147,7 @@ public:
         assert(log2(num_buckets) == ceil(log2(num_buckets)));
 
 #ifndef _WIN32
-				// Increases the open file limit, we will open a lot of files.
-				// I think these code should be remove... it should use system limits
+				// Increases the open files limit, in case it is too low.
 				struct rlimit the_limit;// = { need_limit , need_limit };
 				if( getrlimit(RLIMIT_NOFILE, &the_limit ) < 0 )
 					std::cout << "Warning: cannot read files limit... skipping" << std::endl;

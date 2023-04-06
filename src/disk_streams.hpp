@@ -948,7 +948,7 @@ struct LastTableScanner : IWriteDiskStream
 
 		if( bitmap ){
 			auto cres = bitmap->MoveToTable7();
-			std::cout << "Compacting table 7: " << ( cres ? " COMPACTED " : " FAILED!!! " ) << std::endl;
+			std::cout << "Compacting bitfield of last table: " << ( cres ? " COMPACTED " : " FAILED!!! " ) << std::endl;
 			// if( !cres ) bitmap.resize( table_size );
 		}
 		else
