@@ -814,9 +814,7 @@ struct LastTableRewrited : IReadDiskStream {
 		: k(k), f7_shift( 128 - k ), pos_offset_size( k + kOffsetSize )
 		, t7_pos_offset_shift( f7_shift - pos_offset_size ), entry_size(entry_size)
 		, num_entries(num_entries), filename_(filename), disk(disk)
-	{
-	}
-
+	{}
 
 	uint32_t Read( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) override {
 		if( !bitfield_ ){
@@ -915,15 +913,47 @@ IReadDiskStream * CreateLastTableReader( FileDisk * file, uint8_t k, uint16_t en
 }
 
 
+struct LastTableScanner : IWriteDiskStream
+{
+	LastTableScanner(IWriteDiskStream * disk, uint8_t k, uint16_t entry_size, uint64_t * max_entry_index )
+		: disk( disk ), k(k), entry_size( entry_size ), pos_offset_size( k + kOffsetSize )
+		, max_entry_index( max_entry_index )
+	{}
+
+	void Write( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ){
+		disk->Write( buf, buf_size );
+
+		for( int64_t buf_ptr = 0; buf_ptr < buf_size; buf_ptr += entry_size ){
+			int64_t entry_pos_offset = Util::SliceInt64FromBytes( buf.get() + buf_ptr, k, pos_offset_size);
+			uint64_t entry_pos = entry_pos_offset >> kOffsetSize;
+			uint64_t entry_offset = entry_pos_offset & ((1U << kOffsetSize) - 1);
+			if( entry_pos > *max_entry_index ) *max_entry_index = entry_pos;
+			if( entry_offset > *max_entry_index ) *max_entry_index = entry_offset;
+		}
+	}
+
+	void Close() { disk->Close(); disk.reset(); }
+
+	~LastTableScanner() { if(disk) disk->Close(); }
+private:
+	std::unique_ptr<IWriteDiskStream> disk;
+	const uint8_t k;
+	const uint16_t entry_size;
+	uint8_t const pos_offset_size;
+	uint64_t * max_entry_index;
+};
+
 IWriteDiskStream * CreateLastTableWriter( FileDisk * file, uint8_t k, uint16_t entry_size,
-																					bool withCompaction, uint32_t max_buffer_size = 0 ){
+																					bool withCompaction, uint64_t * max_entry_index = nullptr ){
 	IWriteDiskStream * res = new WriteFileStream( file );
+
 	if( withCompaction && k >= 30 )
 		res = new SequenceCompacterWriter( res, entry_size, k );
 
-	res = max_buffer_size > 0 ?
-				new AsyncStreamWriter( res, max_buffer_size )
-			: (IWriteDiskStream*)new AsyncCopyStreamWriter( res );
+	if( max_entry_index != nullptr )
+		res = new LastTableScanner( res, k, entry_size, max_entry_index );
+
+	res = new AsyncCopyStreamWriter( res );
 
 	return res;
 }

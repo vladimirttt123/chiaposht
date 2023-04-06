@@ -123,11 +123,13 @@ struct FileDisk {
 
         // Opens the file for reading and writing
         do {
+
 #ifdef _WIN32
-            f_ = ::_wfopen(filename_.c_str(), (flags & writeFlag) ? L"w+b" : L"r+b");
+						f_ = ::_wfopen(filename_.c_str(), (flags & writeFlag) ? L"w+b" : L"r+b");
 #else
-            f_ = ::fopen(filename_.c_str(), (flags & writeFlag) ? "w+b" : "r+b");
+						f_ = ::fopen(filename_.c_str(), (flags & writeFlag) ? "w+b" : "r+b");
 #endif
+
             if (f_ == nullptr) {
                 std::string error_message =
 										"Could not open " + filename_.string() + ": err" + std::to_string(errno) + " " + ::strerror(errno) + ".";
@@ -145,7 +147,7 @@ struct FileDisk {
                 } else {
                     throw InvalidValueException(error_message);
                 }
-            }
+							}
         } while (f_ == nullptr);
     }
 

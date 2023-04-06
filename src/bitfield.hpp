@@ -139,6 +139,8 @@ struct bitfield
         return ret;
     }
 
+		// Table 7 bitmap is very specific it is full up to some entry and empty after it
+		// than such bitmap can be described by one number only.
 		bool MoveToTable7(){
 			if( table_7_max_entry >= 0 ) return true;
 			if( is_readonly() ) return false;
