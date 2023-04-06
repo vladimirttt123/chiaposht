@@ -149,9 +149,21 @@ public:
 #ifndef _WIN32
 				// Increases the open file limit, we will open a lot of files.
 				// I think these code should be remove... it should use system limits
-				struct rlimit the_limit = {100+num_buckets_input*3, 100+ num_buckets_input*3};
-				if (-1 == setrlimit(RLIMIT_NOFILE, &the_limit)) {
-						std::cout << "setrlimit failed" << std::endl;
+				struct rlimit the_limit;// = { need_limit , need_limit };
+				if( getrlimit(RLIMIT_NOFILE, &the_limit ) < 0 )
+					std::cout << "Warning: cannot read files limit... skipping" << std::endl;
+				else{
+					rlim_t need_limit = 100 + num_buckets*3;
+					if( the_limit.rlim_cur < need_limit ){
+						if( the_limit.rlim_max < need_limit ){
+							std::cout << "Warning: max open files limit " << the_limit.rlim_max << " is less than sugested " << need_limit << std::endl;
+							need_limit = the_limit.rlim_max;
+						}
+						the_limit.rlim_cur = need_limit;
+						if( -1 == setrlimit(RLIMIT_NOFILE, &the_limit) ) {
+								std::cout << "Warning: set opened files limit failed" << std::endl;
+						}
+					}
 				}
 #endif
 
