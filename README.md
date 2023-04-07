@@ -9,8 +9,11 @@
 [![Language grade: C/C++](https://img.shields.io/lgtm/grade/cpp/g/Chia-Network/chiapos.svg?logo=lgtm&logoWidth=18)](https://lgtm.com/projects/g/Chia-Network/chiapos/context:cpp)
 
 With this fork of chiapos I try to add some threads to improve plot creation time.
+```
 Important: the main changes are done for enabled bitmap plotting.
-For now sortings done with threads here it is example how it improved with thread when no IO limits
+```
+For now sorting is done with threads. Here it is an example 
+of how it improved with thread when no IO limits:
 
 ```
 size: 0.11GiB, threads: 2, times:  read:1.112s, total: 1.998s 
@@ -23,12 +26,12 @@ size: 0.141GiB, threads: 8, times:  read:0.269s, total: 0.512s
 size: 0.141GiB, threads: 9, times:  read:0.240s, total: 0.504s 
 size: 0.141GiB, threads: 10, times: read:0.203s, total: 0.463s
 ```
-In case of enough ram next bucket presorted in parallel.
+In case of enough RAM next bucket presorted in parallel.
 
 Threads added to phase2 and computational stage 2 of phase 3.
 
-Bitmap of table 7 calculate on write of the table and rewriting of table 7 is done on read of it in phase 3
-than no need of table 7 stage in phase 2.
+Bitmap of table 7 is calculated on write of the table and rewriting of 
+table 7 is done on read of it in phase 3, than no need of table 7 stage in phase 2.
 
 In addition added IO compaction that can lead to faster 
 creation with HDD plotting or prolonge SSD life with less writtings.
@@ -42,6 +45,9 @@ when using compaction with 256 (or more) buckets.
 I tested ram plotting on amazon R6i.8xlarge instance with ramdisk of 180Gb,
 the creation of k32 plot was taken 52 minutes.
 
+
+```
+```
 
 Chia's proof of space is written in C++. Includes a plotter, prover, and
 verifier. It exclusively runs on 64 bit architectures. Read the
