@@ -43,7 +43,7 @@ struct Phase2Results
 
 inline void ScanTable( IReadDiskStream *disk, int table_index, const int64_t &table_size, int16_t const &entry_size,
 											 bitfield &current_bitfield, bitfield &next_bitfield, const uint32_t &num_threads,
-											 uint8_t const pos_offset_size, uint8_t const k ){
+											 uint8_t const pos_offset_size ){
 	Timer scan_timer;
 	std::cout << "\ttable " << table_index << ": scan " << std::flush;
 
@@ -61,7 +61,7 @@ inline void ScanTable( IReadDiskStream *disk, int table_index, const int64_t &ta
 	const int64_t read_bufsize = (BUF_SIZE/entry_size)*entry_size; // allign size to entry length
 	// Run the threads
 	for( uint32_t i = 0; i < max_threads; i++ ){
-		threads[i] = std::thread( [table_index, entry_size, pos_offset_size, k, read_bufsize, &read_mutex, &union_mutex]
+		threads[i] = std::thread( [ entry_size, pos_offset_size, read_bufsize, &read_mutex, &union_mutex]
 															(IReadDiskStream *disk, int64_t *read_cursor, const bitfield * current_bitfield, bitfield *next_bitfield){
 			auto buffer = std::make_unique<uint8_t[]>(read_bufsize);
 			bitfieldReader cur_bitfield( *current_bitfield );
@@ -87,17 +87,12 @@ inline void ScanTable( IReadDiskStream *disk, int table_index, const int64_t &ta
 
 				// Convert buffer to numbers in final bitfield
 				for( int64_t buf_ptr = 0, entry_pos_offset = 0; buf_ptr < buf_size; buf_ptr += entry_size ){
-					if (table_index == 7) {
-							// table 7 is special, we never drop anything, so just build next_bitfield
-							entry_pos_offset = Util::SliceInt64FromBytes( buffer.get() + buf_ptr, k, pos_offset_size);
-					} else {
-							if( !cur_bitfield.get( buf_ptr/entry_size ) )
-							{
-									// This entry should be dropped.
-									continue;
-							}
-							entry_pos_offset = Util::SliceInt64FromBytes( buffer.get() + buf_ptr, 0, pos_offset_size);
+					if( !cur_bitfield.get( buf_ptr/entry_size ) )
+					{
+							// This entry should be dropped.
+							continue;
 					}
+					entry_pos_offset = Util::SliceInt64FromBytes( buffer.get() + buf_ptr, 0, pos_offset_size);
 
 					uint64_t entry_pos = entry_pos_offset >> kOffsetSize;
 					uint64_t entry_offset = entry_pos_offset & ((1U << kOffsetSize) - 1);
@@ -262,7 +257,7 @@ Phase2Results RunPhase2(
 					auto table_reader = std::unique_ptr<IReadDiskStream>(
 											new ReadFileStream( &tmp_1_disks[table_index], table_size * entry_size ) );
 					ScanTable( table_reader.get(), table_index, table_size, entry_size,
-										 *current_bitfield.get(), *next_bitfield.get(), num_threads, pos_offset_size, k );
+										 *current_bitfield.get(), *next_bitfield.get(), num_threads, pos_offset_size );
 				}
 				std::cout << "\ttable " << table_index << ": sort " << std::flush;
         Timer sort_timer;
