@@ -73,12 +73,24 @@ struct bitfield
 				buffer_[bit / 64] |= uint64_t(1) << (bit & 63);
     }
 
-		inline void set( const uint64_t *bits, const uint32_t &count ){
+		// Set Multiple values in thread safe manner.
+		inline void setTS( const uint64_t *bits, const uint32_t &count ){
 			if( b_file_ != nullptr || table_7_max_entry >= 0 )
 				throw InvalidStateException( "Cannot set in RO bitfield" );
+
+			std::unique_ptr<uint64_t[]> position = std::make_unique<uint64_t[]>(count);
+			std::unique_ptr<uint64_t[]> bit_mask = std::make_unique<uint64_t[]>(count);
+
 			for( uint32_t i = 0; i < count; i++ ){
 				assert( bits[i] / 64 < (uint64_t)size_);
-				buffer_[bits[i] / 64] |= uint64_t(1) << (bits[i] & 63);
+				position[i] = bits[i] >> 6;
+				bit_mask[i] = uint64_t(1) << (bits[i] & 63);
+			}
+
+			const std::lock_guard<std::mutex> lk(sync_mutex);
+			for( uint32_t i = 0; i < count; i++ ){
+				//buffer_[bits[i] / 64] |= uint64_t(1) << (bits[i] & 63);
+				buffer_[position[i]] |= bit_mask[i];
 			}
 
 		}
@@ -214,6 +226,8 @@ private:
 		std::unique_ptr<BufferedDisk> b_file_;
 
 		int64_t table_7_max_entry = -1;
+
+		std::mutex sync_mutex;
 };
 
 

@@ -49,19 +49,15 @@ inline void ScanTable( IReadDiskStream *disk, int table_index, const int64_t &ta
 
 	next_bitfield.clear();
 
-	// read_index is the number of entries we've processed so far (in the
-	// current table) i.e. the index to the current entry. This is not used
-	// for table 7
-
 	int64_t read_cursor = 0;
 	const auto max_threads = std::max((uint32_t)1, num_threads);
 	auto threads = std::make_unique<std::thread[]>( max_threads );
-	std::mutex read_mutex[2], union_mutex;
+	std::mutex read_mutex[2];//, union_mutex;
 	// ensure buffer size is even.
 	const int64_t read_bufsize = (BUF_SIZE/entry_size)*entry_size; // allign size to entry length
 	// Run the threads
 	for( uint32_t i = 0; i < max_threads; i++ ){
-		threads[i] = std::thread( [ entry_size, pos_offset_size, read_bufsize, &read_mutex, &union_mutex]
+		threads[i] = std::thread( [ entry_size, pos_offset_size, read_bufsize, &read_mutex/*, &union_mutex*/]
 															(IReadDiskStream *disk, int64_t *read_cursor, const bitfield * current_bitfield, bitfield *next_bitfield){
 			auto buffer = std::make_unique<uint8_t[]>(read_bufsize);
 			bitfieldReader cur_bitfield( *current_bitfield );
@@ -103,8 +99,8 @@ inline void ScanTable( IReadDiskStream *disk, int table_index, const int64_t &ta
 				}
 
 				if( processed_count > 0 ){
-					const std::lock_guard<std::mutex> lk(union_mutex);
-					next_bitfield->set( processed.get(), processed_count );
+					//const std::lock_guard<std::mutex> lk(union_mutex);
+					next_bitfield->setTS( processed.get(), processed_count );
 				}
 			}
 		}, disk, &read_cursor, &current_bitfield, &next_bitfield );
