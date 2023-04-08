@@ -178,7 +178,7 @@ public:
     {
         // Close and delete files in case we exit without doing the sort
 				for (auto &fd : this->bucket_files)
-						fd.Remove();
+						fd.Remove( true /* no warning because processed buckets already removed */ );
 
         delete[] this->prev_bucket_buf;
         delete[] this->entry_buf;
