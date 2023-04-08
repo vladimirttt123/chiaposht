@@ -969,15 +969,17 @@ private:
 	uint64_t table_size = 0;
 };
 
+/* scan_mode: 0 - no scan, 1 - full scan, 2 - quick scan */
 IWriteDiskStream * CreateLastTableWriter( FileDisk * file, uint8_t k, uint16_t entry_size,
-																					bool withCompaction, bool full_scan ){
+																					bool withCompaction, int scan_mode ){
 	IWriteDiskStream * res = new WriteFileStream( file );
 
 	if( withCompaction && k >= 30 )
 		res = new SequenceCompacterWriter( res, entry_size, k );
 
-	res = new LastTableScanner( res, k, entry_size, full_scan,
-							( file->GetFileName() + ".bitfield.tmp").c_str() );
+	if( scan_mode )
+		res = new LastTableScanner( res, k, entry_size, scan_mode == 1,
+								( file->GetFileName() + ".bitfield.tmp").c_str() );
 
 	res = new AsyncCopyStreamWriter( res );
 

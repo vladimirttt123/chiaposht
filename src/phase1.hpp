@@ -622,8 +622,9 @@ std::vector<uint64_t> RunPhase1(
 				(flags&NO_COMPACTION)==0);
 
 		globals.table7 = CreateLastTableWriter( &tmp_1_disks[7], k,
-				EntrySizes::GetKeyPosOffsetSize(k), (flags&NO_COMPACTION)==0,
-				flags&FORCE_TABLE_7_SCAN);
+				EntrySizes::GetKeyPosOffsetSize(k),
+				(flags&NO_COMPACTION) == 0 && (flags&ENABLE_BITFIELD) != 0,
+				(flags&ENABLE_BITFIELD) == 0 ? 0 : ( (flags&FORCE_TABLE_7_SCAN) == 0 ? 2 : 1 ) );
 
     // These are used for sorting on disk. The sort on disk code needs to know how
     // many elements are in each bucket.
