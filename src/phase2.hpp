@@ -41,12 +41,9 @@ struct Phase2Results
 };
 
 
-inline void ScanTable( IReadDiskStream *disk, int table_index, const int64_t &table_size, int16_t const &entry_size,
-											 bitfield &current_bitfield, bitfield &next_bitfield, const uint32_t &num_threads,
-											 uint8_t const pos_offset_size ){
-	Timer scan_timer;
-	std::cout << "\ttable " << table_index << ": scan " << std::flush;
-
+inline void ScanTable( IReadDiskStream *disk, int16_t const &entry_size,
+											 bitfield &current_bitfield, bitfield &next_bitfield,
+											 const uint32_t &num_threads, uint8_t const pos_offset_size ){
 	next_bitfield.clear();
 
 	int64_t read_cursor = 0;
@@ -55,6 +52,7 @@ inline void ScanTable( IReadDiskStream *disk, int table_index, const int64_t &ta
 	std::mutex read_mutex[2];//, union_mutex;
 	// ensure buffer size is even.
 	const int64_t read_bufsize = (BUF_SIZE/entry_size)*entry_size; // allign size to entry length
+
 	// Run the threads
 	for( uint32_t i = 0; i < max_threads; i++ ){
 		threads[i] = std::thread( [ entry_size, pos_offset_size, read_bufsize, &read_mutex/*, &union_mutex*/]
@@ -109,8 +107,6 @@ inline void ScanTable( IReadDiskStream *disk, int table_index, const int64_t &ta
 	// Wait for job done
 	for( uint32_t i = 0; i < max_threads; i++ )
 		threads[i].join();
-
-	scan_timer.PrintElapsed( "time =" );
 
 }
 
@@ -250,10 +246,14 @@ Phase2Results RunPhase2(
 				auto next_bitfield = std::make_unique<bitfield>( std::max( current_bitfield->size(), table_size ) );
 
 				{ // Scope for reader
-					auto table_reader = std::unique_ptr<IReadDiskStream>(
-											new ReadFileStream( &tmp_1_disks[table_index], table_size * entry_size ) );
-					ScanTable( table_reader.get(), table_index, table_size, entry_size,
-										 *current_bitfield.get(), *next_bitfield.get(), num_threads, pos_offset_size );
+					Timer scan_timer;
+					std::cout << "\ttable " << table_index << ": scan " << std::flush;
+
+					auto table_reader = ReadFileStream( &tmp_1_disks[table_index], table_size * entry_size );
+					ScanTable( &table_reader, entry_size, *current_bitfield.get(), *next_bitfield.get(),
+										 num_threads, pos_offset_size );
+
+					scan_timer.PrintElapsed( "time =" );
 				}
 				std::cout << "\ttable " << table_index << ": sort " << std::flush;
         Timer sort_timer;
@@ -294,9 +294,7 @@ Phase2Results RunPhase2(
 			auto threads = std::make_unique<std::thread[]>( num_threads - 1 );
 
 			{	// scope for reader stream
-				auto table_stream = AsyncStreamReader(
-							new ReadFileStream( &tmp_1_disks[table_index], table_size*entry_size ),
-							(BUF_SIZE/entry_size)*entry_size );
+				auto table_stream = ReadFileStream( &tmp_1_disks[table_index], table_size*entry_size );
 				for( uint64_t t = 0; t < num_threads - 1; t++ )
 					threads[t] = std::thread(	SortRegularTableThread, &table_stream,
 																		table_size, entry_size, new_entry_size,
