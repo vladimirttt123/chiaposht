@@ -20,6 +20,57 @@
 
 struct bitfield
 {
+		struct ThreadWriter{
+			static const uint32_t BUF_PER_MASK = 1024;
+
+			inline void set(int64_t const &bit){
+				uint64_t idx = bit >> 6;
+				uint32_t i = idx%syncs_num;
+				uint64_t ptr = i*BUF_PER_MASK + counts[i];
+				idxs[ptr] = idx;
+				masks[ptr] = uint64_t(1) << (bit & 63);
+				counts[i]++;
+				if( counts[i] >= BUF_PER_MASK ){
+					process( i );
+					counts[i] = 0;
+				}
+			}
+
+
+			ThreadWriter( bitfield & src )
+				: src(src), syncs_num(src.syncs_num)
+				, counts( new uint16_t[syncs_num] )
+				, idxs( new uint64_t[syncs_num*BUF_PER_MASK] )
+				, masks( new uint64_t[syncs_num*BUF_PER_MASK] )
+			{
+				memset( counts.get(), 0, 2*syncs_num );
+			}
+
+			~ThreadWriter(){
+				// reset rests
+				for( uint32_t i = 0; i < syncs_num; i++ )
+					if( counts[i] > 0 )
+						process( i );
+			}
+		private:
+			bitfield & src;
+			const uint16_t syncs_num;
+
+			std::unique_ptr<uint16_t[]> counts;
+			std::unique_ptr<uint64_t[]> idxs;
+			std::unique_ptr<uint64_t[]> masks;
+
+
+			void inline process( uint32_t idx ){
+				std::lock_guard<std::mutex> lk(src.thread_syncs[idx]);
+				for( uint64_t i = 0, ptr = idx*BUF_PER_MASK; i < counts[idx]; i++, ptr++ ){
+					src.buffer_[idxs[ptr]] |= masks[ptr];
+				}
+			}
+		};
+
+
+
 		explicit bitfield( int64_t size )
         : buffer_(new uint64_t[(size + 63) / 64])
 				, size_((size + 63) / 64)
@@ -64,6 +115,15 @@ struct bitfield
 		}
 
 
+		//---------------------------------------------------
+		void PrepareToThreads( uint32_t num_threads ){
+			assert( !thread_syncs );// assume single call
+
+			syncs_num = 1 << (uint16_t)(1 + std::log2( num_threads ));
+
+			thread_syncs.reset( new std::mutex[syncs_num] );
+		}
+		// -----------------------------------
 
 		inline void set(int64_t const bit)
     {
@@ -87,7 +147,7 @@ struct bitfield
 				bit_mask[i] = uint64_t(1) << (bits[i] & 63);
 			}
 
-			const std::lock_guard<std::mutex> lk(sync_mutex);
+//			const std::lock_guard<std::mutex> lk(sync_mutex);
 			for( uint32_t i = 0; i < count; i++ ){
 				//buffer_[bits[i] / 64] |= uint64_t(1) << (bits[i] & 63);
 				buffer_[position[i]] |= bit_mask[i];
@@ -228,6 +288,9 @@ private:
 		int64_t table_7_max_entry = -1;
 
 		std::mutex sync_mutex;
+
+		uint16_t syncs_num;
+		std::unique_ptr<std::mutex[]> thread_syncs;
 };
 
 

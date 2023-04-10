@@ -49,18 +49,23 @@ inline void ScanTable( IReadDiskStream *disk, int16_t const &entry_size,
 	int64_t read_cursor = 0;
 	const auto max_threads = std::max((uint32_t)1, num_threads);
 	auto threads = std::make_unique<std::thread[]>( max_threads );
+	const uint32_t bitfield_block_size = max_threads<<12; // SHOULD BE EVEN!!!
 	std::mutex read_mutex[2];//, union_mutex;
 	// ensure buffer size is even.
 	const int64_t read_bufsize = (BUF_SIZE/entry_size)*entry_size; // allign size to entry length
 
+	next_bitfield.PrepareToThreads( max_threads );
+
 	// Run the threads
 	for( uint32_t i = 0; i < max_threads; i++ ){
-		threads[i] = std::thread( [ entry_size, pos_offset_size, read_bufsize, &read_mutex/*, &union_mutex*/]
+		threads[i] = std::thread( [ entry_size, pos_offset_size, read_bufsize, &read_mutex]
 															(IReadDiskStream *disk, int64_t *read_cursor, const bitfield * current_bitfield, bitfield *next_bitfield){
 			auto buffer = std::make_unique<uint8_t[]>(read_bufsize);
 			bitfieldReader cur_bitfield( *current_bitfield );
-			auto processed = std::make_unique<uint64_t[]>( read_bufsize/entry_size*2 );
+//			uint32_t processed_count = 0;
+//			auto processed = std::make_unique<uint64_t[]>( bitfield_block_size );
 			int64_t buf_size = 0, buf_start = 0;
+			auto writer = bitfield::ThreadWriter( *next_bitfield );
 
 			while( true ){
 				{	// Read next buffer
@@ -77,7 +82,6 @@ inline void ScanTable( IReadDiskStream *disk, int16_t const &entry_size,
 					if( current_bitfield->is_readonly() ) read_mutex[1].unlock();
 				}
 
-				uint32_t processed_count = 0;
 
 				// Convert buffer to numbers in final bitfield
 				for( int64_t buf_ptr = 0, entry_pos_offset = 0; buf_ptr < buf_size; buf_ptr += entry_size ){
@@ -92,15 +96,20 @@ inline void ScanTable( IReadDiskStream *disk, int16_t const &entry_size,
 					uint64_t entry_offset = entry_pos_offset & ((1U << kOffsetSize) - 1);
 
 					// mark the two matching entries as used (pos and pos+offset)
-					processed[processed_count++] = entry_pos;
-					processed[processed_count++] = entry_pos + entry_offset;
-				}
-
-				if( processed_count > 0 ){
-					//const std::lock_guard<std::mutex> lk(union_mutex);
-					next_bitfield->setTS( processed.get(), processed_count );
+					writer.set( entry_pos );
+					writer.set( entry_pos + entry_offset );
+//					processed[processed_count++] = entry_pos;
+//					processed[processed_count++] = entry_pos + entry_offset;
+//					if( processed_count >= bitfield_block_size ){
+//						next_bitfield->setTS( processed.get(), processed_count );
+//						processed_count = 0;
+//					}
 				}
 			}
+
+//			if( processed_count > 0 )
+//				next_bitfield->setTS( processed.get(), processed_count );
+
 		}, disk, &read_cursor, &current_bitfield, &next_bitfield );
 	}
 
