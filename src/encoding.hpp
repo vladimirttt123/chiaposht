@@ -93,14 +93,14 @@ TMemoCache tmCache;
 class Encoding {
 public:
     // Calculates x * (x-1) / 2. Division is done before multiplication.
-    static uint128_t GetXEnc(uint64_t x)
+		static inline uint128_t GetXEnc( const uint64_t &x)
     {
         uint64_t a = x, b = x - 1;
 
         if (a % 2 == 0)
-            a /= 2;
+						a >>= 1;
         else
-            b /= 2;
+						b >>= 1;
 
         return (uint128_t)a * b;
     }
@@ -111,16 +111,17 @@ public:
     // storing the differences between them. Representing numbers as pairs in two
     // dimensions limits the compression strategies that can be used.
     // The x and y here represent table positions in previous tables.
-    static uint128_t SquareToLinePoint(uint64_t x, uint64_t y)
+		static inline uint128_t SquareToLinePoint( const uint64_t &x, const uint64_t &y)
     {
         // Always makes y < x, which maps the random x, y  points from a square into a
         // triangle. This means less data is needed to represent y, since we know it's less
         // than x.
-        if (y > x) {
-            std::swap(x, y);
-        }
+			return (y>x) ? (GetXEnc(y) + x) : (GetXEnc(x) + y);
+//        if (y > x) {
+//            std::swap(x, y);
+//        }
 
-        return GetXEnc(x) + y;
+//        return GetXEnc(x) + y;
     }
 
     // Does the opposite as the above function, deterministicaly mapping a one dimensional

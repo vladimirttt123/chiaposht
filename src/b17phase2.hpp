@@ -302,7 +302,7 @@ std::vector<uint64_t> b17RunPhase2(
                             // If we are not taking up all the bits, make sure they are zeroed
                             if (Util::ByteAlign(new_left_entry.GetSize()) < left_entry_size_bytes * 8) {
                                 new_left_entry +=
-                                    Bits(0, left_entry_size_bytes * 8 - new_left_entry.GetSize());
+																		Bits( (uint128_t)0, left_entry_size_bytes * 8 - new_left_entry.GetSize());
                             }
                             L_sort_manager->AddToCache(new_left_entry);
                         } else {

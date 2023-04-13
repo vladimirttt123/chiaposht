@@ -30,7 +30,7 @@
 #include "exceptions.hpp"
 #include "sorting_bucket.hpp"
 
-const uint32_t CacheBucketSize = 1024; // mesured in number of entries
+const uint32_t CacheBucketSize = 256; // mesured in number of entries
 // Small bucket used in thread writings
 struct CacheBucket{
 	explicit CacheBucket( SortingBucket &cacheFor )

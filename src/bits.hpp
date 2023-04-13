@@ -109,30 +109,43 @@ public:
     {
         if (size > 64) {
             // std::cout << "SPLITTING BitsGeneric" << std::endl;
-            InitBitsGeneric(value >> 64, size - 64);
+						InitBitsGeneric( (uint64_t)(value >> 64), size - 64);
             AppendValue((uint64_t)value, 64);
         } else {
             InitBitsGeneric((uint64_t)value, size);
         }
     }
 
+		BitsGeneric<T>(uint64_t value, uint32_t size){
+			InitBitsGeneric( value, size);
+		}
+
     // Converts from unit64_t to Bits. If the number of bits of value is smaller than size, adds 0
     // bits at the beginning. i.e. Bits(5, 10) = 0000000101
     void InitBitsGeneric(uint64_t value, uint32_t size)
     {
-        this->last_size_ = 0;
+//        this->last_size_ = 0;
         if (size > 64) {
-            // Get number of extra 0s added at the beginning.
-            uint32_t zeros = size - Util::GetSizeBits(value);
-            // Add a full group of 0s (length 64)
-            while (zeros > 64) {
-                AppendValue(0, 64);
-                zeros -= 64;
-            }
-            // Add the incomplete group of 0s and then the value.
-            AppendValue(0, zeros);
-            AppendValue(value, Util::GetSizeBits(value));
-        } else {
+//						// Get number of extra 0s added at the beginning.
+//						uint32_t zeros = size - Util::GetSizeBits(value);
+//						// Add a full group of 0s (length 64)
+//						while (zeros > 64) {
+//								AppendValue( 0UL, 64 );
+//								zeros -= 64;
+//						}
+//						// Add the incomplete group of 0s and then the value.
+//						AppendValue( 0UL, zeros);
+//						AppendValue(value, Util::GetSizeBits(value));
+
+					uint32_t zeros = size - 64;
+					last_size_ = zeros > 64 ? 64 : 0;
+					while( zeros > 64 ){
+						values_.push_back(0);
+						zeros -= 64;
+					}
+					AppendValue( 0UL, zeros );
+					AppendValue( value, 64 );
+				} else {
             /* 'value' must be under 'size' bits. */
             assert(size == 64 || value == (value & ((1ULL << size) - 1)));
             values_.push_back(value);
@@ -150,11 +163,11 @@ public:
         // Add the extra 0 bits at the beginning.
         uint32_t extra_space = size - total_size;
         while (extra_space >= 64) {
-            AppendValue(0, 64);
+						AppendValue(0UL, 64);
             extra_space -= 64;
         }
         if (extra_space > 0)
-            AppendValue(0, extra_space);
+						AppendValue(0UL, extra_space);
         // Copy the Bits object element by element, and append it to the current Bits object.
         if (other.values_.size() > 0) {
             for (uint32_t i = 0; i < other.values_.size() - 1; i++)
@@ -169,11 +182,11 @@ public:
         this->last_size_ = 0;
         uint32_t extra_space = size_bits - num_bytes * 8;
         while (extra_space >= 64) {
-            AppendValue(0, 64);
+						AppendValue(0UL, 64);
             extra_space -= 64;
         }
         if (extra_space > 0) {
-            AppendValue(0, extra_space);
+						AppendValue(0UL, extra_space);
         }
         for (uint32_t i = 0; i < num_bytes; i += sizeof(uint64_t) / sizeof(uint8_t)) {
             uint64_t val = 0;
@@ -207,8 +220,8 @@ public:
 
         if (b.values_.size() > 0) {
             for (typename T::size_type i = 0; i < b.values_.size() - 1; i++)
-                result.AppendValue(b.values_[i], 64);
-            result.AppendValue(b.values_[b.values_.size() - 1], b.last_size_);
+								result.AppendValue( b.values_[i], 64);
+						result.AppendValue( b.values_[b.values_.size() - 1], b.last_size_);
         }
         return result;
     }
@@ -219,8 +232,8 @@ public:
     {
         if (b.values_.size() > 0) {
             for (typename T2::size_type i = 0; i < b.values_.size() - 1; i++)
-                this->AppendValue(b.values_[i], 64);
-            this->AppendValue(b.values_[b.values_.size() - 1], b.last_size_);
+								this->AppendValue( (uint64_t)b.values_[i], 64);
+						this->AppendValue( (uint64_t)b.values_[b.values_.size() - 1], b.last_size_);
         }
         return *this;
     }
@@ -362,18 +375,23 @@ public:
         return ((uint32_t)values_.size() - 1) * 64 + last_size_;
     }
 
-    void AppendValue(uint128_t value, uint8_t length)
-    {
-        if (length > 64) {
-            std::cout << "SPLITTING AppendValue" << std::endl;
-            DoAppendValue(value >> 64, length - 64);
-            DoAppendValue((uint64_t)value, 64);
-        } else {
-            DoAppendValue((uint64_t)value, length);
-        }
-    }
+//    void AppendValue(uint128_t value, uint8_t length)
+//    {
+//        if (length > 64) {
+//            std::cout << "SPLITTING AppendValue" << std::endl;
+//            DoAppendValue(value >> 64, length - 64);
+//            DoAppendValue((uint64_t)value, 64);
+//        } else {
+//            DoAppendValue((uint64_t)value, length);
+//        }
+//    }
 
-    void DoAppendValue(uint64_t value, uint8_t length)
+		inline void AppendValue( uint64_t value, uint8_t length ){
+			assert( length <= 64 );
+			DoAppendValue( value, length );
+		}
+
+		inline void DoAppendValue(uint64_t value, uint8_t length)
     {
         // The last bucket is full or no bucket yet, create a new one.
         if (values_.size() == 0 || last_size_ == 64) {

@@ -286,6 +286,8 @@ Phase3Results RunPhase3(
 				uint64_t cached_entry_pos = 0;
 				uint64_t cached_entry_offset = 0;
 
+				const uint64_t POSITION_LIMIT = ((uint64_t)1 << k);
+
 				{ // Scope for sort_adder
 					SortManager::AsyncAdder sort_adder = SortManager::AsyncAdder( *R_sort_manager.get() );
 
@@ -372,10 +374,10 @@ Phase3Results RunPhase3(
 									}
 							}
 
-							uint64_t const write_pointer_pos = current_pos - kReadMinusWrite + 1;
 
 							// Rewrites each right entry as (line_point, sort_key)
 							if (current_pos + 1 >= kReadMinusWrite) {
+									uint64_t const write_pointer_pos = current_pos - kReadMinusWrite + 1;
 									uint64_t left_new_pos_1 = left_new_pos[write_pointer_pos % kCachedPositionsSize];
 									for (uint32_t counter = 0;
 											 counter < old_counters[write_pointer_pos % kReadMinusWrite];
@@ -388,8 +390,7 @@ Phase3Results RunPhase3(
 											uint128_t line_point =
 													Encoding::SquareToLinePoint(left_new_pos_1, left_new_pos_2);
 
-											if (left_new_pos_1 > ((uint64_t)1 << k) ||
-													left_new_pos_2 > ((uint64_t)1 << k)) {
+											if( left_new_pos_1 > POSITION_LIMIT || left_new_pos_2 > POSITION_LIMIT ) {
 													std::cout << "left or right positions too large" << std::endl;
 													std::cout << (line_point > ((uint128_t)1 << (2 * k)));
 													if ((line_point > ((uint128_t)1 << (2 * k)))) {

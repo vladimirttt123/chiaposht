@@ -158,7 +158,7 @@ void RunPhase4(uint8_t k, uint8_t pos_size, FileDisk &tmp2_disk, Phase3Results &
         Encoding::ANSFree(kC3R);
     }
 
-    Bits(0, Util::ByteAlign(k)).ToBytes(C1_entry_buf);
+		Bits( (uint128_t)0, Util::ByteAlign(k) ).ToBytes(C1_entry_buf);
     tmp2_disk.Write(final_file_writer_1, (C1_entry_buf), Util::ByteAlign(k) / 8);
     final_file_writer_1 += Util::ByteAlign(k) / 8;
     std::cout << "\tFinished writing C1 and C3 tables" << std::endl;
@@ -169,7 +169,7 @@ void RunPhase4(uint8_t k, uint8_t pos_size, FileDisk &tmp2_disk, Phase3Results &
         tmp2_disk.Write(final_file_writer_1, (C1_entry_buf), Util::ByteAlign(k) / 8);
         final_file_writer_1 += Util::ByteAlign(k) / 8;
     }
-    Bits(0, Util::ByteAlign(k)).ToBytes(C1_entry_buf);
+		Bits( (uint128_t)0, Util::ByteAlign(k)).ToBytes(C1_entry_buf);
     tmp2_disk.Write(final_file_writer_1, (C1_entry_buf), Util::ByteAlign(k) / 8);
     final_file_writer_1 += Util::ByteAlign(k) / 8;
     std::cout << "\tFinished writing C2 table" << std::endl;

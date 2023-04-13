@@ -49,7 +49,7 @@ inline void ScanTable( IReadDiskStream *disk, int16_t const &entry_size,
 	int64_t read_cursor = 0;
 	const auto max_threads = std::max((uint32_t)1, num_threads);
 	auto threads = std::make_unique<std::thread[]>( max_threads );
-	const uint32_t bitfield_block_size = max_threads<<12; // SHOULD BE EVEN!!!
+//	const uint32_t bitfield_block_size = max_threads<<12; // SHOULD BE EVEN!!!
 	std::mutex read_mutex[2];//, union_mutex;
 	// ensure buffer size is even.
 	const int64_t read_bufsize = (BUF_SIZE/entry_size)*entry_size; // allign size to entry length

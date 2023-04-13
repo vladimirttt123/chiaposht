@@ -192,8 +192,9 @@ namespace Util {
      */
     inline void IntToEightBytes(uint8_t *result, const uint64_t input)
     {
-        uint64_t r = bswap_64(input);
-        memcpy(result, &r, sizeof(r));
+//        uint64_t r = bswap_64(input);
+//        memcpy(result, &r, sizeof(r));
+			*((uint64_t*)result) = bswap_64( input );
     }
 
     /*
@@ -201,18 +202,23 @@ namespace Util {
      */
     inline uint64_t EightBytesToInt(const uint8_t *bytes)
     {
-        uint64_t i;
-        memcpy(&i, bytes, sizeof(i));
-        return bswap_64(i);
+//        uint64_t i;
+//        memcpy(&i, bytes, sizeof(i));
+//        return bswap_64(i);
+			return bswap_64( *((const uint64_t*)bytes) );
     }
 
-    static void IntTo16Bytes(uint8_t *result, const uint128_t input)
+		inline void IntTo16Bytes(uint8_t *result, const uint128_t input)
     {
-        uint64_t r = bswap_64(input >> 64);
-        memcpy(result, &r, sizeof(r));
-        r = bswap_64((uint64_t)input);
-        memcpy(result + 8, &r, sizeof(r));
-    }
+//        uint64_t r = bswap_64(input >> 64);
+//        memcpy(result, &r, sizeof(r));
+//        r = bswap_64((uint64_t)input);
+//        memcpy(result + 8, &r, sizeof(r));
+
+			// WARNING this implementation for BIGENDIANS only!!!
+			((uint64_t*)result)[0] = bswap_64( ((const uint64_t*)&input)[1] );
+			((uint64_t*)result)[1] = bswap_64( ((const uint64_t*)&input)[0] );
+		}
 
     /*
      * Retrieves the size of an integer, in Bits.

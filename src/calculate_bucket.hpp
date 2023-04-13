@@ -148,8 +148,9 @@ public:
         // output
         Bits extra_data = L.Slice(0, kExtraBits);
         if (extra_data.GetSize() < kExtraBits) {
-            extra_data += Bits(0, kExtraBits - extra_data.GetSize());
-        }
+//					extra_data += Bits( 0UL, kExtraBits - extra_data.GetSize());
+					extra_data.AppendValue( 0UL, kExtraBits - extra_data.GetSize() );
+				}
         return output_bits + extra_data;
     }
 

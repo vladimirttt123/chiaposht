@@ -169,7 +169,7 @@ TEST_CASE( "DISK_STREAMS" ){
 
 		for( auto test_data : tests ){
 			auto num_buckets = test_data[0];
-			auto entry_size = test_data[1];
+			uint16_t entry_size = test_data[1];
 			auto bits_begin = test_data[2];
 			bool is_compact = test_data[3];
 			auto sequence_start_bit = test_data[4];
@@ -457,7 +457,7 @@ TEST_CASE("Bits")
 {
     SECTION("Slicing and manipulating")
     {
-        Bits g = Bits(13271, 15);
+				Bits g = Bits(13271UL, 15);
         cout << "G: " << g << endl;
         cout << "G Slice: " << g.Slice(4, 9) << endl;
         cout << "G Slice: " << g.Slice(0, 9) << endl;
@@ -472,13 +472,13 @@ TEST_CASE("Bits")
              << endl;
         cout << "Back to Bits: " << Bits(bytes, 2, 16) << endl;
 
-        Bits(256, 9).ToBytes(bytes);
+				Bits(256UL, 9).ToBytes(bytes);
         cout << "bytes: " << static_cast<int>(bytes[0]) << " " << static_cast<int>(bytes[1])
              << endl;
         cout << "Back to Bits: " << Bits(bytes, 2, 16) << endl;
 
-        cout << Bits(640, 11) << endl;
-        Bits(640, 11).ToBytes(bytes);
+				cout << Bits(640UL, 11) << endl;
+				Bits(640UL, 11).ToBytes(bytes);
         cout << "bytes: " << static_cast<int>(bytes[0]) << " " << static_cast<int>(bytes[1])
              << endl;
 
@@ -495,14 +495,14 @@ TEST_CASE("Bits")
         REQUIRE(shifted.GetSize() == 15);
         REQUIRE(shifted.ToString() == "000000000000000");
 
-        Bits large = Bits(13271, 200);
+				Bits large = Bits(13271UL, 200);
         REQUIRE(large == ((large << 160)) >> 160);
         REQUIRE((large << 160).GetSize() == 200);
 
-        Bits l = Bits(123287490 & ((1U << 20) - 1), 20);
-        l = l + Bits(0, 5);
+				Bits l = Bits(123287490UL & ((1UL << 20) - 1), 20);
+				l = l + Bits(0UL, 5);
 
-        Bits m = Bits(5, 3);
+				Bits m = Bits(5UL, 3);
         uint8_t buf[1];
         m.ToBytes(buf);
         REQUIRE(buf[0] == (5 << 5));
@@ -640,11 +640,11 @@ TEST_CASE("F functions")
                               1, 2, 3, 41, 5, 6, 7, 8, 9, 10, 11, 12, 13, 11, 15, 16};
         F1Calculator f1(test_k, test_key);
 
-        Bits L = Bits(525, test_k);
+				Bits L = Bits(525UL, test_k);
         pair<Bits, Bits> result1 = f1.CalculateBucket(L);
-        Bits L2 = Bits(526, test_k);
+				Bits L2 = Bits(526UL, test_k);
         pair<Bits, Bits> result2 = f1.CalculateBucket(L2);
-        Bits L3 = Bits(625, test_k);
+				Bits L3 = Bits(625UL, test_k);
         pair<Bits, Bits> result3 = f1.CalculateBucket(L3);
 
         uint64_t results[256];
@@ -656,13 +656,13 @@ TEST_CASE("F functions")
         uint32_t max_batch = 1 << kBatchSizes;
         test_k = 32;
         F1Calculator f1_2(test_k, test_key);
-        L = Bits(192837491, test_k);
+				L = Bits(192837491UL, test_k);
         result1 = f1_2.CalculateBucket(L);
-        L2 = Bits(192837491 + 1, test_k);
+				L2 = Bits(192837491UL + 1, test_k);
         result2 = f1_2.CalculateBucket(L2);
-        L3 = Bits(192837491 + 2, test_k);
+				L3 = Bits(192837491UL + 2, test_k);
         result3 = f1_2.CalculateBucket(L3);
-        Bits L4 = Bits(192837491 + max_batch - 1, test_k);
+				Bits L4 = Bits(192837491UL + max_batch - 1, test_k);
         pair<Bits, Bits> result4 = f1_2.CalculateBucket(L4);
 
         f1_2.CalculateBuckets(L.GetValue(), max_batch, results);
