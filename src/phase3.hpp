@@ -233,7 +233,7 @@ Phase3Results RunPhase3(
 				// Sort key is k bits for all tables. For table 7 it is just y, which
 				// is k bits, and for all other tables the number of entries does not
 				// exceed 0.865 * 2^k on average.
-				uint32_t right_sort_key_size = k;
+				const uint32_t right_sort_key_size = k;
 
 				uint32_t left_entry_size_bytes = EntrySizes::GetMaxEntrySize(k, table_index, false);
 				uint32_t p2_entry_size_bytes = EntrySizes::GetKeyPosOffsetSize(k);
@@ -266,14 +266,16 @@ Phase3Results RunPhase3(
 						(flags&NO_COMPACTION)==0 );
 
 				bool should_read_entry = true;
-				std::vector<uint64_t> left_new_pos(kCachedPositionsSize);
+				uint64_t left_new_pos[kCachedPositionsSize];
 
 				uint64_t old_sort_keys[kReadMinusWrite][kMaxMatchesSingleEntry];
 				uint64_t old_offsets[kReadMinusWrite][kMaxMatchesSingleEntry];
 				uint16_t old_counters[kReadMinusWrite];
-				for (uint16_t &old_counter : old_counters) {
-						old_counter = 0;
-				}
+				memset( old_counters, 0, sizeof(uint16_t)*kReadMinusWrite );
+//				for (uint16_t &old_counter : old_counters) {
+//						old_counter = 0;
+//				}
+
 				bool end_of_right_table = false;
 				uint64_t current_pos = 0;
 				uint64_t end_of_table_pos = 0;
@@ -292,7 +294,7 @@ Phase3Results RunPhase3(
 					SortManager::AsyncAdder sort_adder = SortManager::AsyncAdder( *R_sort_manager.get() );
 
 					// Similar algorithm as Backprop, to read both L and R tables simultaneously
-					while (!end_of_right_table || (current_pos - end_of_table_pos <= kReadMinusWrite)) {
+					while( !end_of_right_table || (current_pos - end_of_table_pos <= kReadMinusWrite) ) {
 
 						old_counters[current_pos % kReadMinusWrite] = 0;
 
@@ -305,8 +307,7 @@ Phase3Results RunPhase3(
 															right_disk.FreeMemory();
 															break;
 													}
-													// The right entries are in the format from backprop, (sort_key, pos,
-													// offset)
+													// The right entries are in the format from backprop, (sort_key, pos, offset)
 													uint8_t const* right_entry_buf = right_disk.Read(right_reader, p2_entry_size_bytes);
 													right_reader += p2_entry_size_bytes;
 													right_reader_count++;
@@ -379,11 +380,13 @@ Phase3Results RunPhase3(
 							if (current_pos + 1 >= kReadMinusWrite) {
 									uint64_t const write_pointer_pos = current_pos - kReadMinusWrite + 1;
 									uint64_t left_new_pos_1 = left_new_pos[write_pointer_pos % kCachedPositionsSize];
+									uint64_t const write_pointer_pos_rm_div = write_pointer_pos % kReadMinusWrite;
+
 									for (uint32_t counter = 0;
-											 counter < old_counters[write_pointer_pos % kReadMinusWrite];
+											 counter < old_counters[write_pointer_pos_rm_div];
 											 counter++) {
 											uint64_t left_new_pos_2 = left_new_pos
-													[old_offsets[write_pointer_pos % kReadMinusWrite][counter] %
+													[old_offsets[write_pointer_pos_rm_div][counter] %
 													 kCachedPositionsSize];
 
 											// A line point is an encoding of two k bit values into one 2k bit value.
@@ -402,7 +405,7 @@ Phase3Results RunPhase3(
 											}
 											Bits to_write = Bits(line_point, line_point_size);
 											to_write.AppendValue(
-													old_sort_keys[write_pointer_pos % kReadMinusWrite][counter],
+													old_sort_keys[write_pointer_pos_rm_div][counter],
 													right_sort_key_size);
 
 											//R_sort_manager->AddToCache( to_write ); // Single thread writing -> no locks
