@@ -74,10 +74,12 @@ struct SortingBucket{
 		if( free_memory ){
 			disk->FlusToDisk();
 
-			// Save statistics to file
-			auto statistcs_file = FileDisk(disk->getFileName() + ".statistics.tmp" );
-			statistcs_file.Write( 0, (uint8_t*)statistics.get(), sizeof(uint32_t)<<bucket_bits_count_ );
-			statistcs_file.Close();
+			if( entries_count > 0 ){
+				// Save statistics to file
+				auto statistcs_file = FileDisk(disk->getFileName() + ".statistics.tmp" );
+				statistcs_file.Write( 0, (uint8_t*)statistics.get(), sizeof(uint32_t)<<bucket_bits_count_ );
+				statistcs_file.Close();
+			}
 			statistics.reset();
 		}
 	}
@@ -101,12 +103,13 @@ struct SortingBucket{
 	void SortToMemory( uint32_t num_threads = 2 ){
 		assert( disk );
 
-		if( memory_ ) return; // already sorted;
+		if( memory_ || entries_count == 0 ) return; // already sorted or nothing to sort
 
 		auto start_time = std::chrono::high_resolution_clock::now();
-		if(!statistics){
+		if( !statistics ) {
 			// Read statistics from file
 			statistics.reset( new uint32_t[1<<bucket_bits_count_] );
+
 			auto statistcs_file = FileDisk(disk->getFileName() + ".statistics.tmp", false );
 			statistcs_file.Read( 0, (uint8_t*)statistics.get(), sizeof(uint32_t)<<bucket_bits_count_ );
 			statistcs_file.Close();
