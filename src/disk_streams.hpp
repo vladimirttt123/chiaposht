@@ -321,6 +321,7 @@ private:
 
 			if( (buffer_idx + 1 + entry_size ) > BUF_SIZE ){ // next value could not fit buffer
 				disk->Write( buffer, BUF_SIZE );
+				cur_buf = buffer.get(); // the buffer can be changed after writing.
 				buffer_idx = 0;
 				last_write_value = 0;
 			}
@@ -607,44 +608,134 @@ private:
 	std::unique_ptr<uint8_t[]> buffer;
 };
 
+struct NotFreeingWriteStream: IWriteDiskStream{
+	NotFreeingWriteStream( IWriteDiskStream * wstream ) :wstream(wstream){}
 
-struct CacheStream : IWriteDiskStream {
+	void Write( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) override{
+		wstream->Write( buf, buf_size );
+	}
+	void Close() override{ }
 
-	CacheStream( IWriteDiskStream* disk, uint32_t cache_count )
-		: disk(disk), cache_count(cache_count)
-		,	buf_sizes( std::make_unique<uint32_t[]>(cache_count) )
-		, bufs( std::make_unique<uint8_t*[]>(cache_count) )
-	{	}
+	private:
+		IWriteDiskStream * wstream;
+};
 
-	void Write( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ){
-		if( bufs_count < cache_count ){
-			buf_sizes[bufs_count] = buf_size;
-			bufs[bufs_count] = buf.release();
-			bufs_count++;
-			buf.reset( new uint8_t[ buf_size ] );
+struct CachedFileStream : IWriteDiskStream, IReadDiskStream, ICacheConsumer {
+
+	CachedFileStream( const std::string &fileName, MemoryManager &memory_manager, uint32_t buf_size )
+		: memory_manager(memory_manager), buf_size(buf_size), disk( new FileDisk( fileName ) )
+	{
+		consumer_idx = memory_manager.registerConsumer( this );
+	}
+
+	void Write( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) override{
+		std::lock_guard<std::mutex> lk(file_sync);
+		if( caching ){
+			if( buf_size == this->buf_size && memory_manager.request( buf_size ) ){
+				bufs.push_back( buf.release() );
+				buf.reset( new uint8_t[buf_size] );
+				write_position += buf_size;
+				return;
+			} else {
+				caching = false;
+			}
 		}
-		else
-			disk->Write( buf, buf_size );
+
+		disk->Write( write_position, buf.get(), buf_size );
+		write_position += buf_size;
 	}
 
+	uint32_t Read( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) override{
+		std::lock_guard<std::mutex> lk(file_sync);
+		caching = false;
+		if( !bufs.empty() ){
+			// we have cached buffer
+			assert( buf_size == this->buf_size );
+			uint32_t idx = read_position/buf_size;
+			// when bucket is compacted than real buffer size is bigger than buf_size than we need a copy.
+			// it is possible to distinguish with compaction and without
+			memcpy( buf.get(), bufs[idx], buf_size );
+			delete [] bufs[idx];
+			memory_manager.release( buf_size );
+			if( idx+1 == bufs.size() ){
+				// end of cache
+				memory_manager.unregisterConsumer( this, consumer_idx );
+				consumer_idx = -1; // mark as unregistered
+				bufs.clear();
+				bufs.shrink_to_fit(); // clear ram
+			}
 
-	void Close(){
+			read_position += buf_size;
+
+			return buf_size;
+		}
+
+		uint32_t to_read = (uint32_t) std::min( (uint64_t)buf_size, write_position - read_position );
+		if( to_read ){
+			disk->Read( read_position, buf.get(), to_read );
+			read_position += to_read;
+		}
+		return to_read;
+	};
+
+	bool atEnd() const override{
+		return read_position >= write_position;
+	};
+
+	uint64_t getUsedCache() const override {
+		return ((uint64_t)buf_size) * bufs.size();
+	}
+	void FreeCache() override{
+		std::lock_guard<std::mutex> lk(file_sync);
+		disk->Flush();
+		caching = false;
+		consumer_idx = -1; // this call clears from consumers
+		uint64_t pos = read_position;
+		for( uint32_t i = read_position/buf_size; i < bufs.size(); i++ ){
+			disk->Write( pos, bufs[i], buf_size );
+			delete [] bufs[i];
+			pos += buf_size;
+		}
+		bufs.clear();
+		bufs.shrink_to_fit(); // clear ram
+		memory_manager.release( pos - read_position );
+
+		disk->Flush();
 	}
 
-	~CacheStream(){ Close(); }
+	void Close() override{ caching = false; }
+
+	void Remove(){ if(disk) disk->Remove( false ); }
+
+	~CachedFileStream(){
+		if( (int32_t)consumer_idx != -1 )
+			memory_manager.unregisterConsumer( this, consumer_idx );
+		Remove();
+		if( !bufs.empty() ){
+			for( uint32_t i = read_position/buf_size; i < bufs.size(); i++ ){
+				delete [] bufs[i];
+				memory_manager.release( buf_size );
+			}
+		}
+	}
 private:
-	IWriteDiskStream * disk;
-	const uint32_t cache_count;
-	uint32_t bufs_count = 0;
-	std::unique_ptr<uint32_t[]> buf_sizes;
-	std::unique_ptr<uint8_t*[]> bufs;
+	MemoryManager &memory_manager;
+	uint32_t consumer_idx;
+	const uint32_t buf_size;
+	std::unique_ptr<FileDisk> disk;
+	uint64_t write_position = 0;
+	uint64_t read_position = 0;
+	std::mutex file_sync;
+	bool caching = true;
+	std::vector<uint8_t*> bufs;
 };
 
 // This stream not garantee same read order as write order
 struct BucketStream{
-	BucketStream( std::string fileName, uint16_t bucket_no, uint8_t log_num_buckets, uint16_t entry_size,
-								uint16_t begin_bits, bool compact = true, int8_t sequence_start_bit = -1 )
+	BucketStream( std::string fileName, MemoryManager &memory_manager, uint16_t bucket_no, uint8_t log_num_buckets,
+								uint16_t entry_size, uint16_t begin_bits, bool compact = true, int8_t sequence_start_bit = -1 )
 		: fileName(fileName)
+		, memory_manager( memory_manager )
 		, bucket_no_( bucket_no )
 		, log_num_buckets_( log_num_buckets )
 		, entry_size_(entry_size)
@@ -671,8 +762,8 @@ struct BucketStream{
 
 		// std::lock_guard<std::mutex> lk( sync_mutex );
 		if( !disk_output ){
-			bucket_file.reset( new FileDisk( fileName ) );
-			disk_output.reset( new WriteFileStream( bucket_file.get() ) );
+			bucket_file.reset( new CachedFileStream( fileName, memory_manager, size_to_read ) );
+			disk_output.reset( new NotFreeingWriteStream( bucket_file.get() ) );
 			if( compact ){
 				if( sequence_start_bit >= 0 )
 					disk_output.reset( compacter = new SequenceCompacterWriter( disk_output.release(), entry_size_-1,
@@ -707,7 +798,7 @@ struct BucketStream{
 	// This can be called from thread safly without additional syncs.
 	uint32_t Read( std::unique_ptr<uint8_t[]> &buf ){
 		{
-			if( !bucket_file ) return 0;// nothing has been written
+			if( !bucket_file && !disk_input ) return 0;// nothing has been written
 			uint32_t read_size = 0;
 
 			{ // reading file part is locked by mutex
@@ -743,8 +834,7 @@ struct BucketStream{
 					if( disk_output )
 						disk_output.reset(); // close output stream
 
-					disk_input.reset( new ReadFileStream( bucket_file.get(), bucket_file->GetWriteMax() ) );
-					//disk_input.reset( new AsyncStreamReader( disk_input.release(), BUF_SIZE ) );
+					disk_input.reset( bucket_file.release() );
 				}
 
 
@@ -787,7 +877,8 @@ struct BucketStream{
 
 private:
 	const std::string fileName;
-	std::unique_ptr<FileDisk> bucket_file;
+	MemoryManager &memory_manager;
+	std::unique_ptr<CachedFileStream> bucket_file;
 	std::unique_ptr<IWriteDiskStream> disk_output;
 	std::unique_ptr<IReadDiskStream> disk_input;
 	const uint16_t bucket_no_;

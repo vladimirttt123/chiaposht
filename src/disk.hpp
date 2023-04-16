@@ -36,12 +36,12 @@ using namespace std::chrono_literals; // for operator""min;
 #include "./bits.hpp"
 #include "./util.hpp"
 #include "threading.hpp"
+#include "memory_manager.hpp"
 
 constexpr uint64_t write_cache = 256 * 1024;
 constexpr uint64_t read_ahead = 256 * 1024;
 uint64_t BUF_SIZE = 256*1024;
 bool LEAVE_FILES = false;
-
 
 struct Disk {
     virtual uint8_t const* Read(uint64_t begin, uint64_t length) = 0;
@@ -378,7 +378,7 @@ uint64_t GetTotalBytesWritten(){ return FileDisk::GetTotalBytesWritten(); }
 
 struct BufferedDisk : Disk
 {
-    BufferedDisk(FileDisk* disk, uint64_t file_size) : disk_(disk), file_size_(file_size) {}
+		BufferedDisk(FileDisk* disk, uint64_t file_size) : disk_(disk), file_size_(file_size) {}
 
     uint8_t const* Read(uint64_t begin, uint64_t length) override
     {

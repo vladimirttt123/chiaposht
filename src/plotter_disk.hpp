@@ -242,6 +242,7 @@ public:
         fs::remove(tmp_2_filename);
         fs::remove(final_filename);
 
+				MemoryManager memory_manager = MemoryManager( memory_size );
         {
             // Scope for FileDisk
             std::vector<FileDisk> tmp_1_disks;
@@ -264,7 +265,7 @@ public:
                 id,
                 tmp_dirname,
                 filename,
-                memory_size,
+								memory_manager,
                 num_buckets,
                 log_num_buckets,
                 stripe_size,
@@ -336,6 +337,9 @@ public:
                       << "Starting phase 2/4: Backpropagation into tmp files... "
                       << Timer::GetNow();
 
+								memory_manager.reorginizeConsumers();
+								memory_manager.mode = FREE_FIRST;
+
                 Timer p2;
                 Phase2Results res2 = RunPhase2(
                     tmp_1_disks,
@@ -344,12 +348,15 @@ public:
                     id,
                     tmp_dirname,
                     filename,
-                    memory_size,
+										memory_manager,
                     num_buckets,
                     log_num_buckets,
 										phases_flags,
 										num_threads );
-                p2.PrintElapsed("Time for phase 2 =");
+
+								memory_manager.reorginizeConsumers();
+								memory_manager.mode = FREE_LAST;
+								p2.PrintElapsed("Time for phase 2 =");
 
                 // Now we open a new file, where the final contents of the plot will be stored.
                 uint32_t header_size = WriteHeader(tmp2_disk, k, id, memo, memo_len);
@@ -366,12 +373,14 @@ public:
                     tmp_dirname,
                     filename,
                     header_size,
-                    memory_size,
+										memory_manager,
                     num_buckets,
                     log_num_buckets,
 										phases_flags,
 										num_threads );
-                p3.PrintElapsed("Time for phase 3 =");
+
+								memory_manager.reorginizeConsumers();
+								p3.PrintElapsed("Time for phase 3 =");
 
                 std::cout << std::endl
                       << "Starting phase 4/4: Write Checkpoint tables into " << tmp_2_filename

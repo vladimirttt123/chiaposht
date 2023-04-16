@@ -66,7 +66,7 @@ private:
 class SortManager : public Disk, IReadDiskStream {
 public:
     SortManager(
-        uint64_t const memory_size,
+				MemoryManager &memory_manager,
         uint32_t const num_buckets,
         uint32_t const log_num_buckets,
         uint16_t const entry_size,
@@ -80,7 +80,7 @@ public:
 				uint32_t num_threads = 2,
 				bool enable_compaction = true )
 
-        : memory_size_(memory_size)
+				: memory_manager(memory_manager)
         , entry_size_(entry_size)
         , begin_bits_(begin_bits)
         , log_num_buckets_(log_num_buckets)
@@ -111,7 +111,7 @@ public:
 								case 4: sequence_start = k; break;
 							}
 						}
-						buckets_.emplace_back( SortingBucket( bucket_filename.string(), bucket_i, log_num_buckets_,
+						buckets_.emplace_back( SortingBucket( bucket_filename.string(), memory_manager, bucket_i, log_num_buckets_,
 																									entry_size, begin_bits_ + log_num_buckets, subbucket_bits,
 																									enable_compaction, sequence_start ) );
         }
@@ -350,6 +350,9 @@ public:
 				if( next_bucket_sorting_thread )
 					next_bucket_sorting_thread->join();
 
+				if( reserved_buffer_size > 0 )
+					memory_manager.release( reserved_buffer_size ); // release last bucket
+
         // Close and delete files in case we exit without doing the sort
 				for (auto& b : buckets_)
 					b.Remove( );
@@ -358,7 +361,7 @@ public:
 private:
 
     // Size of the whole memory array
-		const uint64_t memory_size_;
+		MemoryManager &memory_manager;
     // Size of each entry
 		const uint16_t entry_size_;
     // Bucket determined by the first "log_num_buckets" bits starting at "begin_bits"
@@ -384,6 +387,7 @@ private:
 		uint64_t time_total_wait = 0;
 
 		uint64_t stream_read_position = 0;
+		uint64_t reserved_buffer_size = 0;
 
 		const inline uint8_t* memory_start() const {return buckets_[next_bucket_to_sort-1].get();}
 
@@ -394,22 +398,22 @@ private:
         }
 
 				uint64_t const bucket_i = this->next_bucket_to_sort;
-				if( bucket_i > 0 ) buckets_[bucket_i-1].FreeMemory();
+				if( bucket_i > 0 ){
+					buckets_[bucket_i-1].FreeMemory();
+					// do not release in memory manager because other thread can request it for background sorting that we do not want.
+//					memory_manager.release( buckets_[bucket_i-1].Size() );
+				}
 				SortingBucket& b = buckets_[bucket_i];
 
-				if( b.Size() > this->memory_size_ ) {
-            throw InsufficientMemoryException(
-                "Not enough memory for sort in memory. Need to sort " +
-								std::to_string(b.Size() / (1024.0 * 1024.0 * 1024.0)) +
-                "GiB");
-        }
 
-				double const have_ram = memory_size_ / (1024.0 * 1024.0 * 1024.0);
-				double const qs_ram = entry_size_ * b.Count() / (1024.0 * 1024.0 * 1024.0);
+				double const have_ram = ( memory_manager.getAccessibleRam() + b.Size() ) / (1024.0 * 1024.0 * 1024.0);
+				double const free_ram = ( memory_manager.getFreeRam() ) / (1024.0 * 1024.0 * 1024.0);
+				double const qs_ram = b.Size() / (1024.0 * 1024.0 * 1024.0);
 
 				std::cout << "\r\tk" << (uint32_t)k_ << " p" << (uint32_t)phase_ << " t" << (uint32_t)table_index_
 									<< " Bucket " << bucket_i << " Ram: " << std::fixed
-									<< std::setprecision( have_ram > 10 ? 1:( have_ram>1? 2 : 3) ) << have_ram << "GiB, size: "
+									<< std::setprecision( have_ram > 10 ? 1:( have_ram>1? 2 : 3) ) << have_ram << "GiB, free: "
+									<< std::setprecision( free_ram > 10 ? 1:( free_ram>1? 2 : 3) ) << free_ram << "GiB, size: "
 									<< std::setprecision( qs_ram > 10 ? 1:( qs_ram>1? 2 : 3) ) <<  qs_ram << "GiB" << std::flush;
 
 
@@ -420,17 +424,31 @@ private:
 					next_bucket_sorting_thread->join();
 					auto end_time = std::chrono::high_resolution_clock::now();
 					next_bucket_sorting_thread.reset();
+					memory_manager.release( b.Size() ); // release extra that was requested for background sorting.
 
 					wait_time = (end_time - start_time)/std::chrono::milliseconds(1);
 					time_total_wait += wait_time;
 					// if we are waiting for sorts than we can add threads to it
 					if( wait_time > 10 && num_background_treads < num_threads )
 						num_background_treads++;
-//					if( wait_time == 0 && num_background_treads > 1 )
-//						num_background_treads--;
 				}
-				else
+				else{
+					if( b.Size() > reserved_buffer_size ) {
+						// need to request more than previously requested
+						if( !memory_manager.request( b.Size() - reserved_buffer_size, true ) ) {
+							std::cout<< "!!! Not enough memory for sort in RAM. Need to sort " <<
+													(b.Size() / (1024.0 * 1024.0 * 1024.0)) << "GiB!!!" << std::endl;
+							std::cout<< "!!!Going to continue using bigger buffer than in parameters!!!" << std::endl;
+//							throw InsufficientMemoryException(
+//										"Not enough memory for sort in RAM. Need to sort " +
+//										std::to_string(b.Size() / (1024.0 * 1024.0 * 1024.0)) +
+//										"GiB");
+						}
+						else
+							reserved_buffer_size = b.Size();
+					}
 					b.SortToMemory( num_threads );
+				}
 
 				if( b.Size() > 0 )
 					std::cout << ", times: ( wait:" << wait_time/1000.0 << ", read:" << b.read_time/1000.0 << "s, total: "
@@ -456,7 +474,7 @@ private:
 				}
 
 				if( num_threads > 1 && this->next_bucket_to_sort < buckets_.size() &&
-						( b.Size() + buckets_[this->next_bucket_to_sort].Size() ) < memory_size_ ){
+						memory_manager.request( buckets_[this->next_bucket_to_sort].Size() ) ){
 					// we have memory to sort next bucket
 					next_bucket_sorting_thread.reset(
 								new std::thread( [this](){ buckets_[this->next_bucket_to_sort].SortToMemory( num_background_treads );} ) );

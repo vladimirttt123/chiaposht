@@ -590,7 +590,7 @@ std::vector<uint64_t> RunPhase1(
     const uint8_t* const id,
     std::string const tmp_dirname,
     std::string const filename,
-    uint64_t const memory_size,
+		MemoryManager &memory_manager,
     uint32_t const num_buckets,
     uint32_t const log_num_buckets,
     uint32_t const stripe_size,
@@ -607,7 +607,7 @@ std::vector<uint64_t> RunPhase1(
 
     uint32_t const t1_entry_size_bytes = EntrySizes::GetMaxEntrySize(k, 1, true);
     globals.L_sort_manager = std::make_unique<SortManager>(
-        memory_size,
+				memory_manager,
         num_buckets,
         log_num_buckets,
         t1_entry_size_bytes,
@@ -685,7 +685,7 @@ std::vector<uint64_t> RunPhase1(
         globals.left_writer = 0;
 
         globals.R_sort_manager = std::make_unique<SortManager>(
-            memory_size,
+						memory_manager,
             num_buckets,
             log_num_buckets,
             right_entry_size_bytes,

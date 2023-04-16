@@ -8,10 +8,9 @@
 
 struct FilteredDisk : Disk
 {
-		FilteredDisk(BufferedDisk underlying, bitfield *filter, int entry_size)
-				: filter_( filter )
-				, underlying_(std::move(underlying))
-				, entry_size_(entry_size)
+		FilteredDisk(BufferedDisk underlying, MemoryManager &memory_manager, bitfield *filter, int entry_size)
+			: memory_manager(memory_manager), filter_( filter )
+			, underlying_(std::move(underlying)), entry_size_(entry_size)
 		{
 				assert(entry_size_ > 0);
 				while (!filter_->get(last_idx_)) {
@@ -74,6 +73,7 @@ struct FilteredDisk : Disk
 		void FreeMemory() override
 		{
 				if( filter_ != nullptr ){
+					memory_manager.release( filter_->memSize() );
 					filter_->FreeMemory();
 					delete filter_;
 					filter_ = nullptr;
@@ -83,7 +83,7 @@ struct FilteredDisk : Disk
 
 
 private:
-
+		MemoryManager &memory_manager;
 		// only entries whose bit is set should be read
 		bitfield *filter_;
 		BufferedDisk underlying_;

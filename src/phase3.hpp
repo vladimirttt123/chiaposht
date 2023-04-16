@@ -188,7 +188,7 @@ Phase3Results RunPhase3(
 		const std::string &tmp_dirname,
 		const std::string &filename,
 		uint32_t header_size,
-		uint64_t memory_size,
+		MemoryManager &memory_manager,
 		uint32_t num_buckets,
 		uint32_t log_num_buckets,
 		const uint8_t flags,
@@ -251,7 +251,7 @@ Phase3Results RunPhase3(
 				// We read only from this SortManager during the second pass, so all
 				// memory is available
 				R_sort_manager = std::make_unique<SortManager>(
-						memory_size,
+						memory_manager,
 						num_buckets,
 						log_num_buckets,
 						right_entry_size_bytes,
@@ -272,9 +272,6 @@ Phase3Results RunPhase3(
 				uint64_t old_offsets[kReadMinusWrite][kMaxMatchesSingleEntry];
 				uint16_t old_counters[kReadMinusWrite];
 				memset( old_counters, 0, sizeof(uint16_t)*kReadMinusWrite );
-//				for (uint16_t &old_counter : old_counters) {
-//						old_counter = 0;
-//				}
 
 				bool end_of_right_table = false;
 				uint64_t current_pos = 0;
@@ -444,7 +441,8 @@ Phase3Results RunPhase3(
 				// the next table, which will use the other half of memory_size.
 				// Tables 6 and 7 will be sorted alone, so we use all memory for them.
 				L_sort_manager = std::make_unique<SortManager>(
-						(table_index >= 5) ? memory_size : (memory_size / 2),
+						//(table_index >= 5) ? memory_size : (memory_size / 2),
+						memory_manager,
 						num_buckets,
 						log_num_buckets,
 						new_pos_entry_size_bytes,

@@ -167,6 +167,7 @@ TEST_CASE( "DISK_STREAMS" ){
 		const auto cur_buf_size = BUF_SIZE;
 		BUF_SIZE = 4096; // set small buffer size for fast testing
 
+		MemoryManager memory_manager = MemoryManager(0);
 		for( auto test_data : tests ){
 			auto num_buckets = test_data[0];
 			uint16_t entry_size = test_data[1];
@@ -179,7 +180,7 @@ TEST_CASE( "DISK_STREAMS" ){
 								<< ", bits_begin: " << bits_begin << ", sequence_start_bit: " << sequence_start_bit << std::endl;
 
 			uint16_t cur_bucket_no = bucket_no % num_buckets;
-			BucketStream stream = BucketStream( "bucket.stream.tmp", cur_bucket_no
+			BucketStream stream = BucketStream( "bucket.stream.tmp", memory_manager, cur_bucket_no
 																					, log2(num_buckets), entry_size, bits_begin + log2(num_buckets)
 																					, is_compact, sequence_start_bit );
 
@@ -954,23 +955,29 @@ TEST_CASE("Plotting")
 //		{
 //				PlotAndTestProofOfSpace("cpp-test-plot.dat", 5000, 23, plot_id_3, 125 , 4853, 16384, 12, 256);
 //		}
+	SECTION("Disk plot k22 small buffer single-thread")
+	{
+			PlotAndTestProofOfSpace("cpp-test-plot.dat", 5000, 22, plot_id_3, 18 , 4932, 65536, 1, 16);
+	}
 
 		SECTION("Disk plot k18")
     {
 				PlotAndTestProofOfSpace("cpp-test-plot.dat", 100, 18, plot_id_1, 11, 95, 4000, 1);
     }
-    SECTION("Disk plot k19")
+
+		SECTION("Disk plot k19 single-thread")
+		{
+				PlotAndTestProofOfSpace("cpp-test-plot.dat", 100, 19, plot_id_1, 100, 71, 8192, 1);
+		}
+		SECTION("Disk plot k19 2 threads")
     {
         PlotAndTestProofOfSpace("cpp-test-plot.dat", 100, 19, plot_id_1, 100, 71, 8192, 2);
     }
-    SECTION("Disk plot k19 single-thread")
-    {
-        PlotAndTestProofOfSpace("cpp-test-plot.dat", 100, 19, plot_id_1, 100, 71, 8192, 1);
-    }
-    SECTION("Disk plot k20")
-    {
-        PlotAndTestProofOfSpace("cpp-test-plot.dat", 500, 20, plot_id_3, 100, 469, 16000, 2);
-    }
+
+		SECTION("Disk plot k20")
+		{
+				PlotAndTestProofOfSpace("cpp-test-plot.dat", 500, 20, plot_id_3, 100, 469, 16000, 2);
+		}
     SECTION("Disk plot k21")
     {
         PlotAndTestProofOfSpace("cpp-test-plot.dat", 5000, 21, plot_id_3, 100, 4945, 8192, 4);
@@ -983,10 +990,6 @@ TEST_CASE("Plotting")
 //				PlotAndTestProofOfSpace("cpp-test-plot.dat", 5000, 22, plot_id_3, 100 , 4932, 65536, 1, 16);
 //		}
 
-		SECTION("Disk plot k22 small buffer single-thread")
-		{
-				PlotAndTestProofOfSpace("cpp-test-plot.dat", 5000, 22, plot_id_3, 12 , 4932, 65536, 1, 16);
-		}
 
 		SECTION("Disk plot k21 small buffer multi-thread")
 		{
@@ -1123,7 +1126,8 @@ TEST_CASE("Sort on disk")
 				const uint32_t memory_len = 550000;
 				for( int threads_num = 0; threads_num < 8; threads_num++ ){
 					vector<Bits> input;
-					SortManager manager(memory_len, 16, 4, size, ".", "test-files", 0, 1, std::log2(iters), 1, 1, threads_num);
+					MemoryManager memory_manager = MemoryManager( memory_len );
+					SortManager manager(memory_manager, 16, 4, size, ".", "test-files", 0, 1, std::log2(iters), 1, 1, threads_num);
 					for (uint32_t i = 0; i < iters; i++) {
 							vector<unsigned char> hash_input = intToBytes(i, 4);
 							vector<unsigned char> hash(picosha2::k_digest_size);
@@ -1150,7 +1154,8 @@ TEST_CASE("Sort on disk")
         const uint32_t memory_len = 1000000;
 				for( int threads_num = 0; threads_num < 8; threads_num++ ){
 					vector<Bits> input;
-					SortManager manager(memory_len, 16, 4, size, ".", "test-files", 0, 1, std::log2(iters), 1, threads_num);
+					MemoryManager memory_manager = MemoryManager( memory_len );
+					SortManager manager(memory_manager, 16, 4, size, ".", "test-files", 0, 1, std::log2(iters), 1, threads_num);
 					for (uint32_t i = 0; i < iters; i++) {
 							vector<unsigned char> hash_input = intToBytes(i, 4);
 							vector<unsigned char> hash(picosha2::k_digest_size);
@@ -1176,7 +1181,8 @@ TEST_CASE("Sort on disk")
         uint32_t const size = 32;
         vector<Bits> input;
         const uint32_t memory_len = 1000000;
-				SortManager manager(memory_len, 16, 4, size, ".", "test-files", 0, 1, std::log2(iters), 1, 1 );
+				MemoryManager memory_manager = MemoryManager( memory_len );
+				SortManager manager(memory_manager, 16, 4, size, ".", "test-files", 0, 1, std::log2(iters), 1, 1 );
         for (uint32_t i = 0; i < iters; i++) {
             vector<unsigned char> hash_input = intToBytes(i, 4);
             vector<unsigned char> hash(picosha2::k_digest_size);
@@ -1301,7 +1307,8 @@ TEST_CASE( "SortThreads" ){
 		std::cout << "Sort in " << threads_num << " threads " << std::endl;
 
 
-		SortManager manager1( memory_len, num_buckets, std::log2(num_buckets), entry_size, "." /*temp_dir*/, "test-files1" /*file name*/, 0, 1, std::log2(iters), threads_num, 1, threads_num );
+		MemoryManager memory_manager = MemoryManager( memory_len );
+		SortManager manager1( memory_manager, num_buckets, std::log2(num_buckets), entry_size, "." /*temp_dir*/, "test-files1" /*file name*/, 0, 1, std::log2(iters), threads_num, 1, threads_num );
 		auto threads = std::make_unique<std::thread[]>(threads_num);
 
 		Timer fill_timer1;
@@ -1702,7 +1709,9 @@ TEST_CASE("FilteredDisk")
         for (int i = 0; i < num_test_entries; ++i) {
 						if ((i & 1) == 1) filter->set(i);
         }
-				FilteredDisk fd(std::move(bd), filter, 4);
+				MemoryManager memory_manager( filter->memSize() * 2 );
+				memory_manager.request( filter->memSize() );
+				FilteredDisk fd(std::move(bd), memory_manager, filter, 4);
 
         for (uint32_t i = 0; i < num_test_entries / 2 - 1; ++i) {
             auto const val = *reinterpret_cast<std::uint32_t const*>(fd.Read(i * 4, 4));
@@ -1725,7 +1734,9 @@ TEST_CASE("FilteredDisk")
         for (int i = 0; i < num_test_entries; ++i) {
 					if ((i & 1) == 0) filter->set(i);
         }
-				FilteredDisk fd(std::move(bd), filter, 4);
+				MemoryManager memory_manager( filter->memSize() * 2 );
+				memory_manager.request( filter->memSize() );
+				FilteredDisk fd(std::move(bd), memory_manager, filter, 4);
 
         for (uint32_t i = 0; i < num_test_entries / 2 - 1; ++i) {
             auto const val = *reinterpret_cast<std::uint32_t const*>(fd.Read(i * 4, 4));
