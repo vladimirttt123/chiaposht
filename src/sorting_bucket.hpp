@@ -30,6 +30,7 @@ struct SortingBucket{
 		, entry_size_(entry_size)
 		, begin_bits_(begin_bits)
 		, statistics( new uint32_t[1<<bucket_bits_count] )
+		, memory_manager(memory_manager)
 	{
 		// clear statistics
 		memset( statistics.get(), 0, sizeof(uint32_t)*(1<<bucket_bits_count) );
@@ -76,9 +77,10 @@ struct SortingBucket{
 
 			if( entries_count > 0 ){
 				// Save statistics to file
-				auto statistcs_file = FileDisk(disk->getFileName() + ".statistics.tmp" );
-				statistcs_file.Write( 0, (uint8_t*)statistics.get(), sizeof(uint32_t)<<bucket_bits_count_ );
-				statistcs_file.Close();
+				statistics_file.reset( new CachedFileStream( disk->getFileName() + ".statistics.tmp", memory_manager, sizeof(uint32_t)<<bucket_bits_count_ ) );
+				std::unique_ptr<uint8_t[]> buf( (uint8_t*)statistics.release() );
+				statistics_file->Write( buf, sizeof(uint32_t)<<bucket_bits_count_ );
+				statistics_file->Close();
 			}
 			statistics.reset();
 		}
@@ -107,13 +109,13 @@ struct SortingBucket{
 
 		auto start_time = std::chrono::high_resolution_clock::now();
 		if( !statistics ) {
+			assert( statistics_file );
 			// Read statistics from file
-			statistics.reset( new uint32_t[1<<bucket_bits_count_] );
+			auto buf = std::make_unique<uint8_t[]>( sizeof(uint32_t)<<bucket_bits_count_ );
+			statistics_file->Read( buf, sizeof(uint32_t)<<bucket_bits_count_ );
+			statistics_file->Remove();
 
-			auto statistcs_file = FileDisk(disk->getFileName() + ".statistics.tmp", false );
-			statistcs_file.Read( 0, (uint8_t*)statistics.get(), sizeof(uint32_t)<<bucket_bits_count_ );
-			statistcs_file.Close();
-			statistcs_file.Remove();
+			statistics.reset( (uint32_t*)buf.release() );
 		}
 
 		// Init memory to sort into
@@ -257,8 +259,10 @@ private:
 	const uint16_t begin_bits_;
 	// this is the number of entries for each subbucket
 	std::unique_ptr<uint32_t[]> statistics;
+	std::unique_ptr<CachedFileStream> statistics_file;
 	uint64_t entries_count = 0;
 	std::unique_ptr<uint8_t[]> memory_;
+	MemoryManager &memory_manager;
 
 
 	/* Used for reading from disk */

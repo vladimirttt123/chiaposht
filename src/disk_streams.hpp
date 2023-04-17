@@ -705,7 +705,7 @@ struct CachedFileStream : IWriteDiskStream, IReadDiskStream, ICacheConsumer {
 		}
 	}
 
-	void Close() override{  }
+	void Close() override{ if( disk ) disk->Close(); }
 
 	void Remove(){ if(disk) disk->Remove( false ); }
 

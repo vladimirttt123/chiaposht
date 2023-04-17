@@ -390,18 +390,8 @@ public:
                 finalsize = res.final_table_begin_pointers[11];
             }
 
-            // The total number of bytes used for sort is saved to table_sizes[0]. All other
-            // elements in table_sizes represent the total number of entries written by the end of
-            // phase 1 (which should be the highest total working space time). Note that the max
-            // sort on disk space does not happen at the exact same time as max table sizes, so this
-            // estimate is conservative (high).
-            uint64_t total_working_space = table_sizes[0];
-            for (size_t i = 1; i <= 7; i++) {
-                total_working_space += table_sizes[i] * EntrySizes::GetMaxEntrySize(k, i, false);
-            }
-            std::cout << "Approximate working space used (without final file): "
-                      << static_cast<double>(total_working_space) / (1024 * 1024 * 1024) << " GiB"
-                      << std::endl;
+						assert( memory_manager.getAccessibleRam() == memory_manager.getFreeRam() ); // all ram should be free now
+
 
             std::cout << "Final File size: "
                       << static_cast<double>(finalsize) /
