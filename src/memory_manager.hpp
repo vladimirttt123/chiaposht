@@ -25,8 +25,8 @@
 //};
 
 enum cache_mode : uint8_t {
-	FREE_FIRST = 1,
-	FREE_LAST = 2
+	SKIP_NEW = 1,
+	FLUSH_OLD = 2
 };
 
 struct ICacheConsumer{
@@ -36,9 +36,10 @@ struct ICacheConsumer{
 
 
 struct MemoryManager{
-	cache_mode mode;
+	bool isForced = false;
+	bool isFIFO = false;
 
-	MemoryManager( uint64_t size, cache_mode mode = FREE_LAST ) : mode(mode), total_size(size){}
+	MemoryManager( uint64_t size ) : total_size(size){}
 
 	inline uint64_t getAccessibleRam() const {
 		uint64_t res = total_size - consumed;
@@ -54,7 +55,11 @@ struct MemoryManager{
 		return total_size - consumed;
 	}
 
-	inline bool request( const uint64_t &size, bool forced = false ){
+	inline bool request( const uint64_t &size, ICacheConsumer *consumer ){
+		return request( size, false, consumer );
+	}
+
+	inline bool request( const uint64_t &size, bool forced = false, ICacheConsumer *consumer = nullptr ){
 
 		{
 			std::scoped_lock lk (syncMutex );
@@ -65,15 +70,23 @@ struct MemoryManager{
 			}
 
 			// check if forced and we can clean enough
-			if( !forced || getAccessibleRam() < size )
+			if( !(forced || isForced )
+					|| ( getAccessibleRam() - ( consumer == nullptr ? 0 : consumer->getUsedCache() ) ) < size  )
 				return false;
 		}
 
-		if( forced ){
-			while( releaseConsumer() && total_size - consumed < size );
-			return request( size, false );
-		}
+		// no lock here to allow releasing
+		while( releaseConsumer( consumer ) && total_size - consumed < size )
+			/* empty body */;
 
+		{ // second check for space
+			std::scoped_lock lk (syncMutex );
+
+			if( total_size - consumed >= size ){
+				consumed += size;
+				return true;
+			}
+		}
 		return false;
 	}
 
@@ -122,7 +135,7 @@ private:
 	uint32_t consumers_start = 0;
 
 
-	inline bool releaseConsumer(){
+	inline bool releaseConsumer( ICacheConsumer * cur_consumer ){
 
 		ICacheConsumer * consumer;
 
@@ -130,14 +143,18 @@ private:
 			std::scoped_lock lk (syncMutex );
 			if( consumers.size() <= consumers_start ) return false;
 
-			if( mode == FREE_FIRST ){
-				consumer = consumers[consumers_start++];
-			}
-			else {
+			if( isFIFO ){
 				consumer = consumers.back();
+				if( consumer == cur_consumer ) return false;
 				consumers.pop_back();
 			}
+			else {
+				consumer = consumers[consumers_start];
+				if( consumer == cur_consumer ) return false;
+				consumers_start++;
+			}
 		}
+
 
 		if( consumer != nullptr )
 			consumer->FreeCache();

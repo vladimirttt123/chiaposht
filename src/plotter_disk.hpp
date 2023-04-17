@@ -338,7 +338,8 @@ public:
                       << Timer::GetNow();
 
 								memory_manager.reorginizeConsumers();
-								memory_manager.mode = FREE_FIRST;
+								// in phase 2 if not enought cache than discard old cache because it helps to use more cache in phase 3
+								memory_manager.isForced = memory_manager.isFIFO = true;
 
                 Timer p2;
                 Phase2Results res2 = RunPhase2(
@@ -355,7 +356,8 @@ public:
 										num_threads );
 
 								memory_manager.reorginizeConsumers();
-								memory_manager.mode = FREE_LAST;
+								// after phase 2 return default cache mode
+								memory_manager.isForced = memory_manager.isFIFO = false;
 								p2.PrintElapsed("Time for phase 2 =");
 
                 // Now we open a new file, where the final contents of the plot will be stored.

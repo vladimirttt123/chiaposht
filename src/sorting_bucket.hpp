@@ -90,7 +90,7 @@ struct SortingBucket{
 	void Remove(){
 		if( !disk ) return; // already removed
 		disk->EndToRead();
-		FileDisk(disk->getFileName() + ".statistics.tmp" ).Remove( true );
+		FileDisk( disk->getFileName() + ".statistics.tmp" ).Remove( true );
 		disk.reset();
 		statistics.reset();
 	}
