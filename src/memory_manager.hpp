@@ -17,12 +17,6 @@
 #include <assert.h>
 #include <vector>
 
-//enum cache_type : uint8_t {
-//	BITFIELD = 1,
-//	SORT_BUFFER = 2,
-//	BUCKET_STREAM = 3,
-//	TABLE_FILE = 4
-//};
 
 enum cache_mode : uint8_t {
 	SKIP_NEW = 1,
@@ -34,6 +28,25 @@ struct ICacheConsumer{
 	virtual void FreeCache() = 0;
 };
 
+struct ConsumerEntry {
+	ICacheConsumer * consumer;
+	ConsumerEntry * next = nullptr;
+	ConsumerEntry * prev;
+
+	ConsumerEntry( ICacheConsumer * cons, ConsumerEntry * prev ) : consumer(cons), prev(prev){}
+
+	bool isInList( const ConsumerEntry *entry ){
+		for( auto c = this; c != nullptr; c = c->next )
+			if( c == entry ) return true;
+		return false;
+	}
+
+	bool isInList( const ICacheConsumer *entry ){
+		for( auto c = this; c != nullptr; c = c->next )
+			if( c->consumer == entry ) return true;
+		return false;
+	}
+};
 
 struct MemoryManager{
 	bool isForced = false;
@@ -41,18 +54,21 @@ struct MemoryManager{
 
 	MemoryManager( uint64_t size ) : total_size(size){}
 
-	inline uint64_t getAccessibleRam() const {
-		uint64_t res = total_size - consumed;
+	inline uint64_t getAccessibleRam() {
+		uint64_t res = total_size - used_ram;
 
-		for( int32_t i = consumers.size() - 1; i >= (int32_t)consumers_start; i-- )
-			if( consumers[i] != nullptr )
-				res += consumers[i]->getUsedCache();
+		{
+			std::lock_guard<std::mutex> lk(sync_consumers);
+
+			for( auto cur = consumers; cur != nullptr; cur = cur->next )
+				res += cur->consumer->getUsedCache();
+		}
 
 		return res;
 	}
 
-	inline uint64_t getFreeRam() const {
-		return total_size - consumed;
+	inline int64_t getFreeRam() const {
+		return total_size - used_ram;
 	}
 
 	inline bool request( const uint64_t &size, ICacheConsumer *consumer ){
@@ -62,123 +78,114 @@ struct MemoryManager{
 	inline bool request( const uint64_t &size, bool forced = false, ICacheConsumer *consumer = nullptr ){
 
 		{
-			std::scoped_lock lk (syncMutex );
+			std::scoped_lock lk (sync_size);
 
-			if( total_size - consumed >= size ){
-				consumed += size;
-				return true;
-			}
-
-			// check if forced and we can clean enough
-			if( !(forced || isForced )
-					|| ( getAccessibleRam() - ( consumer == nullptr ? 0 : consumer->getUsedCache() ) ) < size  )
-				return false;
-		}
-
-		// no lock here to allow releasing
-		while( releaseConsumer( consumer ) && total_size - consumed < size )
-			/* empty body */;
-
-		{ // second check for space
-			std::scoped_lock lk (syncMutex );
-
-			if( total_size - consumed >= size ){
-				consumed += size;
+			if( getFreeRam() >= size ){
+				used_ram += size;
 				return true;
 			}
 		}
+
+		if( ( forced || (isForced && ( getAccessibleRam() - ( consumer == nullptr ? 0 : consumer->getUsedCache() ) ) < size) )
+					&& CleanCache( consumer, size ) ){
+			std::scoped_lock lk (sync_size);
+			used_ram += size;
+			return true;
+		}
+
 		return false;
 	}
 
+	inline void requier( const uint64_t & size ){
+		CleanCache( nullptr, size );
+		std::scoped_lock lk(sync_size);
+		used_ram += size;
+	}
+
 	inline void release( const uint32_t &size ){
-		std::scoped_lock lk (syncMutex );
-		assert( (int64_t)size <= consumed );
-		consumed -= size;
+		std::scoped_lock lk(sync_size);
+
+		assert( (int64_t)size <= used_ram );
+		used_ram -= size;
+
 	}
 
-	inline uint32_t registerConsumer( ICacheConsumer * consumer ){
-		std::scoped_lock lk (syncMutex );
-		consumers.push_back( consumer );
-		return consumers.size()-1;
+	inline ConsumerEntry* registerConsumer( ICacheConsumer * consumer ){
+		std::scoped_lock lk ( sync_consumers );
+		assert( consumers == nullptr || !consumers->isInList(consumer) );
+
+		if( consumers == nullptr )
+			return consumers = last_consumer = new ConsumerEntry( consumer, consumers );
+
+		return last_consumer = (last_consumer->next = new ConsumerEntry( consumer, last_consumer ) );
 	}
 
-	inline void unregisterConsumer( ICacheConsumer * cleaner, uint32_t idx ){
-		std::scoped_lock lk (syncMutex );
-		if( idx < consumers.size() && consumers[idx] == cleaner )
-			consumers[idx] = nullptr;
-		else{ // TODO update idx in consumer...
-			for( uint32_t i = consumers_start; i < consumers.size(); i++ )
-				if( consumers[i] == cleaner ){
-					consumers[i] = nullptr;
-					return;
-				}
-		}
-	}
+	inline void unregisterConsumer( ConsumerEntry * consumer ){
+		assert( consumer != nullptr );
 
-	void reorginizeConsumers(){
-		std::scoped_lock lk (syncMutex );
-		uint32_t cur = 0;
-		for( uint32_t i = consumers_start; i < consumers.size(); i++ ){
-			if( consumers[i] != nullptr )
-				consumers[cur++] = consumers[i];
-		}
-		consumers_start = 0;
-		consumers.resize(cur);
+		std::scoped_lock lk ( sync_consumers );
+		removeConsumer( consumer );
+		delete consumer;
 	}
 
 
 private:
-	const uint64_t total_size;
-	int64_t consumed = 0;
-	std::mutex syncMutex;
-	std::vector<ICacheConsumer*> consumers;
-	uint32_t consumers_start = 0;
+
+	const int64_t total_size;
+	int64_t used_ram = 0;
+	std::mutex sync_size, sync_consumers;
+	ConsumerEntry * consumers = nullptr;
+	ConsumerEntry * last_consumer = nullptr;
 
 
-	inline bool releaseConsumer( ICacheConsumer * cur_consumer ){
+	inline void removeConsumer( const ConsumerEntry * consumer ){
+		assert( consumers != nullptr );
+		assert( consumers->isInList(consumer) );
 
-		ICacheConsumer * consumer;
-
-		{
-			std::scoped_lock lk (syncMutex );
-			if( consumers.size() <= consumers_start ) return false;
-
-			if( isFIFO ){
-				consumer = consumers.back();
-				if( consumer == cur_consumer ) return false;
-				consumers.pop_back();
+		if( consumer == last_consumer )	{
+			last_consumer = consumer->prev;
+			if( last_consumer == nullptr ){
+				assert( consumer == consumers );
+				consumers = nullptr; // list is clear
 			}
-			else {
-				consumer = consumers[consumers_start];
-				if( consumer == cur_consumer ) return false;
-				consumers_start++;
+			else{
+				assert( last_consumer->next == consumer );
+				last_consumer->next = nullptr;
 			}
+		} else if( consumer == consumers ) {
+			consumers = consumers->next;
+			assert( consumers != nullptr );
+			consumers->prev = nullptr;
+		} else {
+			assert( consumer->prev != nullptr ); // it is because it is not the head
+			assert( consumer-> next != nullptr ); // it is because it is not the last
+			consumer->prev->next = consumer->next;
+			consumer->next->prev = consumer->prev;
+		}
+	}
+
+	inline bool CleanCache( ICacheConsumer * cur_consumer, uint32_t need_size ){
+
+		std::lock_guard<std::mutex> lk(sync_consumers);
+
+		auto cur = isFIFO ? consumers : last_consumer;
+		while( cur != nullptr && getFreeRam() < need_size ) {
+
+			auto next = isFIFO ? cur->next : cur->prev;
+
+			if( cur->consumer != cur_consumer ){
+				removeConsumer( cur );
+				cur->consumer->FreeCache();
+				delete cur;
+			}
+
+			cur = next;
 		}
 
-
-		if( consumer != nullptr )
-			consumer->FreeCache();
-
-		return true;
+		return getFreeRam() >= need_size;
 	}
 
 };
 
-
-//struct MemoryLocker{
-//	MemoryLocker( MemoryManager memory_manager, uint32_t lock_size = 0 )
-//		:memory_manager(memory_manager)
-//	{
-//		if( lock_size ) {
-
-//		}
-//	}
-
-//	lock
-//private:
-//	MemoryManager &memory_manager;
-//	uint64_t locked_size;
-
-//};
 
 #endif // SRC_CPP_CACHE_MANAGER_HPP_

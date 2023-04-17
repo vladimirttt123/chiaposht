@@ -337,7 +337,6 @@ public:
                       << "Starting phase 2/4: Backpropagation into tmp files... "
                       << Timer::GetNow();
 
-								memory_manager.reorginizeConsumers();
 								// in phase 2 if not enought cache than discard old cache because it helps to use more cache in phase 3
 								memory_manager.isForced = memory_manager.isFIFO = true;
 
@@ -355,7 +354,6 @@ public:
 										phases_flags,
 										num_threads );
 
-								memory_manager.reorginizeConsumers();
 								// after phase 2 return default cache mode
 								memory_manager.isForced = memory_manager.isFIFO = false;
 								p2.PrintElapsed("Time for phase 2 =");
@@ -381,7 +379,6 @@ public:
 										phases_flags,
 										num_threads );
 
-								memory_manager.reorginizeConsumers();
 								p3.PrintElapsed("Time for phase 3 =");
 
                 std::cout << std::endl

@@ -393,20 +393,35 @@ private:
 
 		void SortBucket()
     {
-        if (next_bucket_to_sort >= buckets_.size()) {
+				if( next_bucket_to_sort >= buckets_.size() ) {
             throw InvalidValueException("Trying to sort bucket which does not exist.");
         }
 
 				uint64_t const bucket_i = this->next_bucket_to_sort;
-				if( bucket_i > 0 ){
+				if( bucket_i == 0 ){
+					// find biggerst bucket and reserv ram to sort it
+					for( auto &b : buckets_ )
+						if( b.Size() > reserved_buffer_size ) reserved_buffer_size = b.Size();
+
+					if( !memory_manager.request(  reserved_buffer_size, true ) ) {
+						std::cout<< "!!! Not enough memory for sort in RAM. Need to sort " <<
+												(reserved_buffer_size / (1024.0 * 1024.0 * 1024.0)) << "GiB!!!" << std::endl;
+						std::cout<< "!!!Going to continue using bigger buffer than in parameters!!!" << std::endl;
+
+						memory_manager.requier( reserved_buffer_size );
+//							throw InsufficientMemoryException(
+//										"Not enough memory for sort in RAM. Need to sort " +
+//										std::to_string(b.Size() / (1024.0 * 1024.0 * 1024.0)) +
+//										"GiB");
+					}
+				} else {
 					buckets_[bucket_i-1].FreeMemory();
 					// do not release in memory manager because other thread can request it for background sorting that we do not want.
-//					memory_manager.release( buckets_[bucket_i-1].Size() );
 				}
 				SortingBucket& b = buckets_[bucket_i];
 
 
-				double const have_ram = ( memory_manager.getAccessibleRam() + b.Size() ) / (1024.0 * 1024.0 * 1024.0);
+				double const have_ram = ( memory_manager.getAccessibleRam() + reserved_buffer_size ) / (1024.0 * 1024.0 * 1024.0);
 				double const free_ram = ( memory_manager.getFreeRam() ) / (1024.0 * 1024.0 * 1024.0);
 				double const qs_ram = b.Size() / (1024.0 * 1024.0 * 1024.0);
 
@@ -433,20 +448,6 @@ private:
 						num_background_treads++;
 				}
 				else{
-					if( b.Size() > reserved_buffer_size ) {
-						// need to request more than previously requested
-						if( !memory_manager.request( b.Size() - reserved_buffer_size, true ) ) {
-							std::cout<< "!!! Not enough memory for sort in RAM. Need to sort " <<
-													(b.Size() / (1024.0 * 1024.0 * 1024.0)) << "GiB!!!" << std::endl;
-							std::cout<< "!!!Going to continue using bigger buffer than in parameters!!!" << std::endl;
-//							throw InsufficientMemoryException(
-//										"Not enough memory for sort in RAM. Need to sort " +
-//										std::to_string(b.Size() / (1024.0 * 1024.0 * 1024.0)) +
-//										"GiB");
-						}
-						else
-							reserved_buffer_size = b.Size();
-					}
 					b.SortToMemory( num_threads );
 				}
 
@@ -474,7 +475,7 @@ private:
 				}
 
 				if( num_threads > 1 && this->next_bucket_to_sort < buckets_.size() &&
-						memory_manager.request( buckets_[this->next_bucket_to_sort].Size() ) ){
+						memory_manager.request( buckets_[this->next_bucket_to_sort].Size(), true ) ){
 					// we have memory to sort next bucket
 					next_bucket_sorting_thread.reset(
 								new std::thread( [this](){ buckets_[this->next_bucket_to_sort].SortToMemory( num_background_treads );} ) );

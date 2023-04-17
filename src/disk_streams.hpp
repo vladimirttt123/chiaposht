@@ -635,7 +635,7 @@ struct CachedFileStream : IWriteDiskStream, IReadDiskStream, ICacheConsumer {
 	void Write( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) override{
 		std::lock_guard<std::mutex> lk(file_sync);
 
-		if( consumer_idx >= 0 // we are caching
+		if( consumer_idx != nullptr // we are caching
 				&& memory_manager.request( buf_size, this ) // there is ram to store
 				) {
 			if( buf_size == this->buf_size ){
@@ -657,12 +657,12 @@ struct CachedFileStream : IWriteDiskStream, IReadDiskStream, ICacheConsumer {
 
 	// warning this is not thread safe function
 	uint32_t Read( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) override{
-		if( consumer_idx >= 0 ){
+		if( consumer_idx != nullptr ){
 			// to prevent futher locks on read we unregister started to read stream
 			std::lock_guard<std::mutex> lk(file_sync);
-			if( consumer_idx >= 0 ){
-				consumer_idx = -1;
-				memory_manager.unregisterConsumer( this, consumer_idx );
+			if( consumer_idx != nullptr ){
+				memory_manager.unregisterConsumer( consumer_idx );
+				consumer_idx = nullptr;
 			}
 		}
 
@@ -696,8 +696,9 @@ struct CachedFileStream : IWriteDiskStream, IReadDiskStream, ICacheConsumer {
 	}
 	void FreeCache() override{
 		std::lock_guard<std::mutex> lk(file_sync);
+		assert( consumer_idx->consumer == this );
 
-		consumer_idx = -1; // this call clears from consumers
+		consumer_idx = nullptr; // this call clears from consumers
 		while( cache != nullptr ){
 			DiskWrite( cache->start_pos, cache->buf, cache->buf_size );
 			moveNextCache();
@@ -709,8 +710,8 @@ struct CachedFileStream : IWriteDiskStream, IReadDiskStream, ICacheConsumer {
 	void Remove(){ if(disk) disk->Remove( false ); }
 
 	~CachedFileStream(){
-		if( consumer_idx != -1 ){
-			memory_manager.unregisterConsumer( this, consumer_idx );
+		if( consumer_idx != nullptr ){
+			memory_manager.unregisterConsumer( consumer_idx );
 			memory_manager.release( getUsedCache() );
 		}
 		Remove();
@@ -742,7 +743,7 @@ private:
 
 	fs::path file_name;
 	MemoryManager &memory_manager;
-	int32_t consumer_idx;
+	ConsumerEntry * consumer_idx;
 	const uint32_t buf_size;
 	std::unique_ptr<FileDisk> disk;
 	uint64_t write_position = 0;
