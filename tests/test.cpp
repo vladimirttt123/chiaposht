@@ -78,6 +78,39 @@ TEST_CASE( "DISK_STREAMS" ){
 //		time_read.PrintElapsed( "Sort time:" );
 //	}
 
+	SECTION( "CachedFileStream" ){
+		uint32_t buf_size = 256*1024; // 256k
+		uint64_t mem_size = 1UL<<29UL; // 0.5Gb
+		uint32_t buffers_to_write = mem_size/buf_size*2;
+		const uint32_t number_of_files = 16;
+
+		MemoryManager mem_mngr(mem_size);
+		CachedFileStream *cfile[number_of_files];
+		for( uint32_t i = 0; i < number_of_files; i++ )
+			cfile[i] = new CachedFileStream( "cached.stream" + std::to_string(i) + ".tmp", mem_mngr, buf_size );
+
+		for( uint32_t i = 0; i < buffers_to_write; i++ ){
+			std::unique_ptr<uint8_t[]> buf( new uint8_t[buf_size] );
+			memset( buf.get(), i, buf_size );
+			cfile[i%number_of_files]->Write( buf, buf_size );
+		}
+
+		std::cout << "request half of the ram: " << mem_mngr.request( mem_size/2, true ) << std::endl;
+
+		for( uint32_t i = 0; i < buffers_to_write; i++ ){
+			auto buf = std::make_unique<uint8_t[]>(buf_size);
+			memset( buf.get(), i, buf_size );
+
+			auto read_buf = std::make_unique<uint8_t[]>(buf_size);
+			REQUIRE( cfile[i%number_of_files]->Read( read_buf, buf_size ) == buf_size );
+
+			REQUIRE( memcmp( buf.get(), read_buf.get(), buf_size ) == 0 );
+		}
+
+		for( uint32_t i = 0; i < number_of_files; i++ )
+			delete cfile[i];
+	}
+
 	SECTION( "SequenceCompacterStream" ) {
 		const uint64_t iteration = 3000;
 		const uint32_t begins[] = { 24, 25, 27, 30 };

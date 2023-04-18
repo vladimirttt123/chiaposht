@@ -621,10 +621,6 @@ std::vector<uint64_t> RunPhase1(
 				num_threads,
 				(flags&NO_COMPACTION)==0);
 
-		globals.table7 = CreateLastTableWriter( &tmp_1_disks[7], k,
-				EntrySizes::GetKeyPosOffsetSize(k),
-				(flags&NO_COMPACTION) == 0 && (flags&ENABLE_BITFIELD) != 0,
-				(flags&ENABLE_BITFIELD) == 0 ? 0 : ( (flags&FORCE_TABLE_7_SCAN) == 0 ? 2 : 1 ) );
 
     // These are used for sorting on disk. The sort on disk code needs to know how
     // many elements are in each bucket.
@@ -655,6 +651,14 @@ std::vector<uint64_t> RunPhase1(
     double progress_percent[] = {0.06, 0.12, 0.2, 0.28, 0.36, 0.42};
     for (uint8_t table_index = 1; table_index < 7; table_index++) {
         Timer table_timer;
+
+				if( table_index == 6 )
+					globals.table7 = CreateLastTableWriter( &tmp_1_disks[7], k,
+							EntrySizes::GetKeyPosOffsetSize(k),
+							(flags&NO_COMPACTION) == 0 && (flags&ENABLE_BITFIELD) != 0,
+							(flags&ENABLE_BITFIELD) == 0 ? 0 : ( (flags&FORCE_TABLE_7_SCAN) == 0 ? 2 : 1 ) );
+
+
         uint8_t const metadata_size = kVectorLens[table_index + 1] * k;
 
         // Determines how many bytes the entries in our left and right tables will take up.

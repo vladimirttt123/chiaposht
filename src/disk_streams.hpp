@@ -711,7 +711,7 @@ struct CachedFileStream : IWriteDiskStream, IReadDiskStream, ICacheConsumer {
 
 	void Close() override{ if( disk ) disk->Close(); }
 
-	void Remove(){ if(disk) disk->Remove( false ); }
+	void Remove(){ if(disk){ disk->Remove( false ); disk.reset(); } }
 
 	~CachedFileStream(){
 		if( consumer_idx != nullptr ){
@@ -719,6 +719,11 @@ struct CachedFileStream : IWriteDiskStream, IReadDiskStream, ICacheConsumer {
 			memory_manager.release( getUsedCache(), this );
 		}
 		Remove();
+		while( cache != nullptr ){
+			auto prev = cache;
+			cache = prev->next;
+			delete prev;
+		}
 	}
 private:
 	struct CacheEntry{
@@ -786,6 +791,7 @@ private:
 		uint32_t to_read;
 
 		if( cache != nullptr ){
+			assert( read_position < (cache->start_pos + cache->buf_size) );
 			if( read_position == cache->start_pos ) {
 				// this function cannot be called when buf_size equals current cache buffer!
 

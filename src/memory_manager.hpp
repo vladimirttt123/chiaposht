@@ -203,7 +203,7 @@ private:
 		}
 	}
 
-	inline bool CleanCache( ICacheConsumer * cur_consumer, uint32_t need_size ){
+	inline bool CleanCache( ICacheConsumer * cur_consumer, int64_t need_size ){
 
 		std::lock_guard<std::mutex> lk(sync_consumers);
 
