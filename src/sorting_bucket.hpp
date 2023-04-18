@@ -55,7 +55,7 @@ struct SortingBucket{
 
 	inline void AddBulkTS( const uint8_t * entries, const uint32_t * stats, const uint32_t &count ){
 
-		std::lock_guard<std::mutex> lk( addMutex );
+		std::lock_guard<std::mutex> lk( *addMutex.get() );
 
 		disk->Write( entries, count*entry_size_ );
 
@@ -251,7 +251,7 @@ struct SortingBucket{
 	}
 
 private:
-	std::mutex addMutex;
+	std::unique_ptr<std::mutex> addMutex = std::make_unique<std::mutex>();
 	std::unique_ptr<BucketStream> disk;
 	const uint16_t bucket_no_;
 	const uint8_t log_num_buckets_;
