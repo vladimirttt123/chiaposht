@@ -879,7 +879,6 @@ struct BucketStream{
 																	entry_size_, begin_bits_ - log_num_buckets_ ) );
 			}
 
-			// disk_output.reset( new AsyncStreamWriter( disk_output.release(), BUF_SIZE/entry_size_*entry_size_ ) );
 			disk_output.reset( new BufferedWriter( disk_output.release(), entry_size_ ) );
 		}
 

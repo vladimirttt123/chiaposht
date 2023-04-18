@@ -38,7 +38,6 @@ struct SortingBucket{
 
 	inline uint64_t Size() const { return entry_size_*entries_count; }
 	inline uint64_t Count() const { return entries_count; }
-	inline uint8_t	SubBucketBits() const { return bucket_bits_count_; }
 	inline uint16_t EntrySize() const { return entry_size_; }
 
 	uint64_t prepare_time = 0, read_time = 0, sort_time = 0;
@@ -56,7 +55,7 @@ struct SortingBucket{
 
 	inline void AddBulkTS( const uint8_t * entries, const uint32_t * stats, const uint32_t &count ){
 
-		std::lock_guard<std::mutex> lk( *addMutex.get() );
+		std::lock_guard<std::mutex> lk( addMutex );
 
 		disk->Write( entries, count*entry_size_ );
 
@@ -90,9 +89,12 @@ struct SortingBucket{
 
 	/* Like destructor totaly removes the bucket including underlying file */
 	void Remove(){
+		if( statistics_file ) {
+			statistics_file->Remove();
+			statistics_file.reset();
+		}
 		if( !disk ) return; // already removed
 		disk->EndToRead();
-		FileDisk( disk->getFileName() + ".statistics.tmp" ).Remove( true );
 		disk.reset();
 		statistics.reset();
 	}
@@ -114,6 +116,7 @@ struct SortingBucket{
 			auto buf = std::make_unique<uint8_t[]>( sizeof(uint32_t)<<bucket_bits_count_ );
 			statistics_file->Read( buf, sizeof(uint32_t)<<bucket_bits_count_ );
 			statistics_file->Remove();
+			statistics_file.reset();
 
 			statistics.reset( (uint32_t*)buf.release() );
 		}
@@ -247,9 +250,8 @@ struct SortingBucket{
 #endif
 	}
 
-
 private:
-	std::unique_ptr<std::mutex> addMutex = std::make_unique<std::mutex>();
+	std::mutex addMutex;
 	std::unique_ptr<BucketStream> disk;
 	const uint16_t bucket_no_;
 	const uint8_t log_num_buckets_;
