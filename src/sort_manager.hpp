@@ -34,8 +34,7 @@ const uint32_t CacheBucketSize = 256; // mesured in number of entries
 // Small bucket used in thread writings
 struct CacheBucket{
 	explicit CacheBucket( SortingBucket &cacheFor )
-		: statistics(new uint32_t[CacheBucketSize])
-		, entries(new uint8_t[((uint32_t)cacheFor.EntrySize())*CacheBucketSize])
+		: entries(new uint8_t[((uint32_t)cacheFor.EntrySize())*CacheBucketSize])
 		, entry_size( cacheFor.EntrySize() )
 		, parent( cacheFor )
 	{	}
@@ -48,14 +47,14 @@ struct CacheBucket{
 
 	inline void Flush(){
 		if( count > 0 ){
-			parent.AddBulkTS( entries.get(), statistics.get(), count );
+			parent.AddBulkTS( entries.get(), statistics, count );
 			count = 0;
 		}
 	}
 
 	~CacheBucket(){Flush();}
 private:
-	std::unique_ptr<uint32_t[]> statistics;
+	uint32_t statistics[CacheBucketSize];
 	std::unique_ptr<uint8_t[]> entries;
 	uint16_t count = 0;
 	const uint16_t entry_size;
@@ -351,7 +350,7 @@ public:
 					next_bucket_sorting_thread->join();
 
 				if( reserved_buffer_size > 0 )
-					memory_manager.release( reserved_buffer_size ); // release last bucket
+					memory_manager.release( reserved_buffer_size, nullptr ); // release last bucket
 
         // Close and delete files in case we exit without doing the sort
 				for (auto& b : buckets_)
@@ -439,7 +438,7 @@ private:
 					next_bucket_sorting_thread->join();
 					auto end_time = std::chrono::high_resolution_clock::now();
 					next_bucket_sorting_thread.reset();
-					memory_manager.release( b.Size() ); // release extra that was requested for background sorting.
+					memory_manager.release( b.Size(), nullptr ); // release extra that was requested for background sorting.
 
 					wait_time = (end_time - start_time)/std::chrono::milliseconds(1);
 					time_total_wait += wait_time;

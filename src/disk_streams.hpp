@@ -477,7 +477,7 @@ private:
 	const uint8_t bytes_begin;
 	const uint8_t mask;
 
-	uint32_t CompactBuffer( uint8_t *buf, uint32_t buf_size ){
+	inline uint32_t CompactBuffer( uint8_t *buf, uint32_t buf_size ){
 		assert( (buf_size%entry_size) == 0 );
 
 		// extract current bucket
@@ -694,9 +694,13 @@ struct CachedFileStream : IWriteDiskStream, IReadDiskStream, ICacheConsumer {
 
 		return res;
 	}
+	void DetachFromCache() override {
+		assert( consumer_idx == nullptr || consumer_idx->consumer == this );
+		consumer_idx = nullptr;
+	}
 	void FreeCache() override{
 		std::lock_guard<std::mutex> lk(file_sync);
-		assert( consumer_idx->consumer == this );
+		assert( consumer_idx == nullptr || consumer_idx->consumer == this );
 
 		consumer_idx = nullptr; // this call clears from consumers
 		while( cache != nullptr ){
@@ -712,7 +716,7 @@ struct CachedFileStream : IWriteDiskStream, IReadDiskStream, ICacheConsumer {
 	~CachedFileStream(){
 		if( consumer_idx != nullptr ){
 			memory_manager.unregisterConsumer( consumer_idx );
-			memory_manager.release( getUsedCache() );
+			memory_manager.release( getUsedCache(), this );
 		}
 		Remove();
 	}
@@ -762,7 +766,7 @@ private:
 	}
 
 	inline void moveNextCache(){
-		memory_manager.release( cache->buf_size );
+		memory_manager.release( cache->buf_size, this );
 		auto next = cache->next;
 		delete cache;
 		cache = next;

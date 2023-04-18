@@ -15,16 +15,13 @@
 
 #include <mutex>
 #include <assert.h>
-#include <vector>
-
-
-enum cache_mode : uint8_t {
-	SKIP_NEW = 1,
-	FLUSH_OLD = 2
-};
+#include <thread>
+#include <chrono>
+using namespace std::chrono_literals; // for operator""ms;
 
 struct ICacheConsumer{
 	virtual uint64_t getUsedCache() const = 0;
+	virtual void DetachFromCache() = 0;
 	virtual void FreeCache() = 0;
 };
 
@@ -48,29 +45,57 @@ struct ConsumerEntry {
 	}
 };
 
+
 struct MemoryManager{
-	bool isForced = false;
-	bool isFIFO = false;
+
 
 	MemoryManager( uint64_t size ) : total_size(size){}
 
-	inline uint64_t getAccessibleRam() {
-		uint64_t res = total_size - used_ram;
-
-		{
-			std::lock_guard<std::mutex> lk(sync_consumers);
-
-			for( auto cur = consumers; cur != nullptr; cur = cur->next )
-				res += cur->consumer->getUsedCache();
-		}
-
-		return res;
+	inline uint64_t getAccessibleRam() const {
+		return  total_size - used_ram + cleanable_ram;
 	}
 
 	inline int64_t getFreeRam() const {
 		return total_size - used_ram;
 	}
 
+	void SetMode( bool isForceClean, bool isFIFO ){
+		this->isFIFO = isFIFO;
+		if( isForceClean != isBackgroundClean ){
+
+			if( background_cleaner ){
+				isBackgroundClean = false;
+				background_cleaner->join(); // wait for previous thread to finish
+				background_cleaner.reset();
+			}
+
+			isBackgroundClean = isForceClean;
+
+			if( isBackgroundClean ){
+				// start background cleaner thread
+				background_cleaner.reset( new std::thread( [this]{
+					while( this->isBackgroundClean ){
+						std::this_thread::sleep_for( 100ms );
+						if( this->isNeedClean ){
+							// clean one consumer
+							ConsumerEntry * cur;
+							{
+								std::lock_guard<std::mutex> lk(sync_consumers);
+
+								cur = this->isFIFO ? this->consumers : this->last_consumer;
+								if( cur != nullptr ) this->removeConsumer( cur );
+							}
+							if( cur != nullptr ) {
+								isNeedClean = false;
+								cur->consumer->FreeCache();
+								delete cur;
+							}
+						}
+					}
+				}) );
+			}
+		}
+	}
 	inline bool request( const uint64_t &size, ICacheConsumer *consumer ){
 		return request( size, false, consumer );
 	}
@@ -80,18 +105,20 @@ struct MemoryManager{
 		{
 			std::scoped_lock lk (sync_size);
 
-			if( getFreeRam() >= size ){
+			if( getFreeRam() >= (int64_t)size ){
 				used_ram += size;
+				if( consumer != nullptr ) cleanable_ram += size;
 				return true;
 			}
 		}
 
-		if( ( forced || (isForced && ( getAccessibleRam() - ( consumer == nullptr ? 0 : consumer->getUsedCache() ) ) < size) )
-					&& CleanCache( consumer, size ) ){
+		if( forced && CleanCache( consumer, size ) ){
 			std::scoped_lock lk (sync_size);
 			used_ram += size;
+			if( consumer != nullptr ) cleanable_ram += size;
 			return true;
 		}
+		if( isBackgroundClean ) isNeedClean = true;
 
 		return false;
 	}
@@ -102,11 +129,12 @@ struct MemoryManager{
 		used_ram += size;
 	}
 
-	inline void release( const uint32_t &size ){
+	inline void release( const uint32_t &size, ICacheConsumer *consumer ){
 		std::scoped_lock lk(sync_size);
 
 		assert( (int64_t)size <= used_ram );
 		used_ram -= size;
+		if( consumer != nullptr ) cleanable_ram -= size;
 
 	}
 
@@ -128,19 +156,30 @@ struct MemoryManager{
 		delete consumer;
 	}
 
-
+	~MemoryManager(){
+		if( background_cleaner ){
+			isBackgroundClean = false;
+			background_cleaner->join();
+		}
+	}
 private:
 
 	const int64_t total_size;
-	int64_t used_ram = 0;
+	int64_t used_ram = 0, cleanable_ram = 0;
 	std::mutex sync_size, sync_consumers;
 	ConsumerEntry * consumers = nullptr;
 	ConsumerEntry * last_consumer = nullptr;
-
+	bool isBackgroundClean = false;
+	bool isFIFO = false;
+	bool isNeedClean = false;
+	std::unique_ptr<std::thread> background_cleaner;
 
 	inline void removeConsumer( const ConsumerEntry * consumer ){
 		assert( consumers != nullptr );
 		assert( consumers->isInList(consumer) );
+		assert( consumer != nullptr );
+
+		consumer->consumer->DetachFromCache();
 
 		if( consumer == last_consumer )	{
 			last_consumer = consumer->prev;

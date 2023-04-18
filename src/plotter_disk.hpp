@@ -338,7 +338,7 @@ public:
                       << Timer::GetNow();
 
 								// in phase 2 if not enought cache than discard old cache because it helps to use more cache in phase 3
-								memory_manager.isForced = memory_manager.isFIFO = true;
+								memory_manager.SetMode( true, true );
 
                 Timer p2;
                 Phase2Results res2 = RunPhase2(
@@ -355,7 +355,7 @@ public:
 										num_threads );
 
 								// after phase 2 return default cache mode
-								memory_manager.isForced = memory_manager.isFIFO = false;
+								memory_manager.SetMode( false, false );
 								p2.PrintElapsed("Time for phase 2 =");
 
                 // Now we open a new file, where the final contents of the plot will be stored.
@@ -390,7 +390,7 @@ public:
                 finalsize = res.final_table_begin_pointers[11];
             }
 
-						assert( memory_manager.getAccessibleRam() == memory_manager.getFreeRam() ); // all ram should be free now
+						assert( (int64_t)memory_manager.getAccessibleRam() == memory_manager.getFreeRam() ); // all ram should be free now
 
 
             std::cout << "Final File size: "
