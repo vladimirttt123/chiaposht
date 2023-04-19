@@ -306,11 +306,21 @@ namespace Util {
         return Util::SliceInt64FromBytes(bytes, begin_bits, take_bits);
     }
 
+		//Warning! this function can access beyond the buffer because it needs at least 8 bytes after begin_bits/8 also when extracting only 16bit
 		inline uint64_t ExtractNum64( const uint8_t *bytes, const uint32_t begin_bits, const uint32_t take_bits ){
 			assert( (begin_bits&7) + take_bits <= 64 );
 			auto moved = bswap_64( ((uint64_t*)(bytes + (begin_bits>>3) ))[0] ) >> (64-take_bits - (begin_bits&7));
 			auto mask = (((uint64_t)1)<<take_bits)-1;
 			return moved&mask;
+		}
+
+		// extracts exact 32 bit - access at most 5 bytes if begin_bits > 0 and only 4 when begin_bits == 0
+		// begin bits should be less than 8
+		inline uint32_t ExtractNum32( const uint8_t *bytes, const uint32_t begin_bits ){
+			assert( begin_bits < 8 );
+
+			return begin_bits == 0 ? bswap_32( ((uint32_t*)bytes)[0] )
+					: ( (bswap_32( ((uint32_t*)bytes)[0] ) << begin_bits ) | (bytes[4]>>(8-begin_bits)) );
 		}
 
     // The number of memory entries required to do the custom SortInMemory algorithm, given the

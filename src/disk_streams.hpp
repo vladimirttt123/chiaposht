@@ -274,7 +274,7 @@ private:
 #define setNext( v ) cur_buf[buffer_idx++] = v
 
 		for( uint32_t i = 0; i < buf_size; ){
-			uint64_t next_val = Util::ExtractNum64( buf + i + begin_bytes, begin_bits_, 32 );
+			uint64_t next_val = Util::ExtractNum32( buf + i + begin_bytes, begin_bits_ );
 			uint64_t diff = next_val - last_write_value;
 			if( diff < 128 ){
 				// to save one byte of diff
@@ -320,6 +320,7 @@ private:
 			last_write_value = next_val;
 
 			if( (buffer_idx + 1 + entry_size ) > BUF_SIZE ){ // next value could not fit buffer
+				memset( cur_buf + buffer_idx, 0, BUF_SIZE - buffer_idx ); // remove valgring Error :)
 				disk->Write( buffer, BUF_SIZE );
 				cur_buf = buffer.get(); // the buffer can be changed after writing.
 				buffer_idx = 0;
