@@ -88,7 +88,7 @@ void RunPhase4(uint8_t k, uint8_t pos_size, FileDisk &tmp2_disk, Phase3Results &
 				auto right_entry_buf = res.table7_sm->ReadEntry(plot_file_reader);
 
         plot_file_reader += right_entry_size_bytes;
-        uint64_t entry_y = Util::SliceInt64FromBytes(right_entry_buf, 0, k);
+				uint64_t entry_y = Util::SliceInt64FromBytes(right_entry_buf, k);
         uint64_t entry_new_pos = Util::SliceInt64FromBytes(right_entry_buf, k, pos_size);
 
         Bits entry_y_bits = Bits(entry_y, k);

@@ -96,14 +96,14 @@ PlotEntry GetLeftEntry(
 
     if (table_index == 1) {
         // For table 1, we only have y and metadata
-        left_entry.y = Util::SliceInt64FromBytes(left_buf, 0, k + kExtraBits);
+				left_entry.y = Util::SliceInt64FromBytes(left_buf, k + kExtraBits);
         left_entry.left_metadata =
             Util::SliceInt64FromBytes(left_buf, k + kExtraBits, metadata_size);
     } else {
         // For tables 2-6, we we also have pos and offset. We need to read this because
         // this entry will be written again to the table without the y (and some entries
         // are dropped).
-        left_entry.y = Util::SliceInt64FromBytes(left_buf, 0, ysize);
+				left_entry.y = Util::SliceInt64FromBytes(left_buf, ysize);
         left_entry.read_posoffset =
             Util::SliceInt64FromBytes(left_buf, ysize, pos_size + kOffsetSize);
         if (metadata_size <= 128) {

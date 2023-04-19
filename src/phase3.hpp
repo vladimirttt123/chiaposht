@@ -310,7 +310,7 @@ Phase3Results RunPhase3(
 													right_reader_count++;
 
 													entry_sort_key =
-															Util::SliceInt64FromBytes(right_entry_buf, 0, right_sort_key_size);
+															Util::SliceInt64FromBytes(right_entry_buf, right_sort_key_size);
 													entry_pos = Util::SliceInt64FromBytes(
 															right_entry_buf, right_sort_key_size, pos_size);
 													entry_offset = Util::SliceInt64FromBytes(
@@ -364,7 +364,7 @@ Phase3Results RunPhase3(
 									if (table_index == 1) {
 											// Only k bits, since this is x
 											left_new_pos[current_pos % kCachedPositionsSize] =
-													Util::SliceInt64FromBytes(left_entry_disk_buf, 0, k);
+													Util::SliceInt64FromBytes(left_entry_disk_buf, k);
 									} else {
 											// k+1 bits in case it overflows
 											left_new_pos[current_pos % kCachedPositionsSize] =

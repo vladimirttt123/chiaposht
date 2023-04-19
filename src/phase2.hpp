@@ -60,7 +60,7 @@ inline void ScanTable( IReadDiskStream *disk, int16_t const &entry_size,
 	for( uint32_t i = 0; i < max_threads; i++ ){
 		threads[i] = std::thread( [ entry_size, pos_offset_size, read_bufsize, &read_mutex]
 															(IReadDiskStream *disk, int64_t *read_cursor, const bitfield * current_bitfield, bitfield *next_bitfield){
-			auto buffer = std::make_unique<uint8_t[]>(read_bufsize);
+			std::unique_ptr<uint8_t[]> buffer( Util::NewSafeBuffer(read_bufsize) );
 			bitfieldReader cur_bitfield( *current_bitfield );
 			int64_t buf_size = 0, buf_start = 0;
 			auto writer = bitfield::ThreadWriter( *next_bitfield );
@@ -88,7 +88,7 @@ inline void ScanTable( IReadDiskStream *disk, int16_t const &entry_size,
 							// This entry should be dropped.
 							continue;
 					}
-					entry_pos_offset = Util::SliceInt64FromBytes( buffer.get() + buf_ptr, 0, pos_offset_size);
+					entry_pos_offset = Util::SliceInt64FromBytes( buffer.get() + buf_ptr, pos_offset_size);
 
 					uint64_t entry_pos = entry_pos_offset >> kOffsetSize;
 					uint64_t entry_offset = entry_pos_offset & ((1U << kOffsetSize) - 1);
@@ -119,7 +119,7 @@ inline void SortRegularTableThread( IReadDiskStream * disk, const uint64_t &tabl
 	uint8_t const pos_offset_shift = write_counter_shift - pos_offset_size;
 
 	uint64_t buf_size = (BUF_SIZE/entry_size)*entry_size;
-	auto buffer = std::make_unique<uint8_t[]>(buf_size);
+	std::unique_ptr<uint8_t[]> buffer( Util::NewSafeBuffer(buf_size) );
 	SortManager::ThreadWriter writer = SortManager::ThreadWriter( *sort_manager );
 
 	bitfieldReader cur_bitfield = bitfieldReader( *current_bitfield );
@@ -145,7 +145,7 @@ inline void SortRegularTableThread( IReadDiskStream * disk, const uint64_t &tabl
 
 			uint8_t const* entry = buffer.get() + buf_ptr;
 
-			uint64_t entry_pos_offset = Util::SliceInt64FromBytes( entry, 0, pos_offset_size );
+			uint64_t entry_pos_offset = Util::SliceInt64FromBytes( entry, pos_offset_size );
 			uint64_t entry_pos = entry_pos_offset >> kOffsetSize;
 			uint64_t entry_offset = entry_pos_offset & ((1U << kOffsetSize) - 1);
 

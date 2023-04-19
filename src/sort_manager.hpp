@@ -34,7 +34,7 @@ const uint32_t CacheBucketSize = 256; // mesured in number of entries
 // Small bucket used in thread writings
 struct CacheBucket{
 	explicit CacheBucket( SortingBucket &cacheFor )
-		: entries(new uint8_t[((uint32_t)cacheFor.EntrySize())*CacheBucketSize])
+		: entries( Util::NewSafeBuffer( CacheBucketSize*cacheFor.EntrySize() ) )
 		, entry_size( cacheFor.EntrySize() )
 		, parent( cacheFor )
 	{	}
@@ -87,7 +87,7 @@ public:
             2 * (stripe_size + 10 * (kBC / pow(2, kExtraBits))) * entry_size)
 				, num_threads( num_threads )
 				, num_background_treads( num_threads > 1 ? 2 : 1 )
-				, subbucket_bits( std::min( (uint8_t)32, std::max( (uint8_t)2, (uint8_t)(k - log_num_buckets - kSubBucketBits) ) ) )
+				, subbucket_bits( std::min( (uint8_t)(32-log_num_buckets), std::max( (uint8_t)2, (uint8_t)(k - log_num_buckets - kSubBucketBits) ) ) )
 				, k_(k), phase_(phase), table_index_(table_index)
 				, stats_mask( ( (uint64_t)1<<subbucket_bits)-1 )
     {
@@ -120,14 +120,16 @@ public:
 		struct ThreadWriter{
 			explicit ThreadWriter( SortManager &parent ) : parent_(parent)
 						, buckets_cache(new std::unique_ptr<CacheBucket>[parent.buckets_.size()])
+						, begin_bytes( parent.begin_bits_/8 ), begin_bits( parent.begin_bits_&7 )
+						, bits_shift( 32 - parent.log_num_buckets_ - parent.subbucket_bits )
 			{
 				for( uint32_t i = 0; i < parent.buckets_.size(); i++ )
 					buckets_cache[i].reset( new CacheBucket( parent.buckets_[i] ) );
 			}
 
 			inline void Add( const uint8_t *entry ){
-				uint64_t const bucket_index =
-						Util::ExtractNum64(entry, parent_.begin_bits_, parent_.log_num_buckets_ + parent_.subbucket_bits );
+				uint32_t const bucket_index = Util::ExtractNum32( entry + begin_bytes, begin_bits ) >> bits_shift;
+
 				buckets_cache[bucket_index>>parent_.subbucket_bits]->Add( entry, bucket_index & parent_.stats_mask );
 			}
 
@@ -146,6 +148,9 @@ public:
 		private:
 			SortManager &parent_;
 			std::unique_ptr<std::unique_ptr<CacheBucket>[]> buckets_cache;
+			const uint8_t begin_bytes;
+			const uint8_t begin_bits;
+			const uint8_t bits_shift;
 		}; // end of ThreadWriter
 
 
@@ -153,8 +158,8 @@ public:
 		struct AsyncAdder {
 			explicit AsyncAdder( SortManager &parent )
 				: parent_(parent), buf_size(BUF_SIZE/parent.entry_size_*parent.entry_size_)
-				, buf( new uint8_t[buf_size + 7] ) // 7 bytes head-room for SliceInt64FromBytes()
-				, write_buf( new uint8_t[buf_size + 7] ) // 7 bytes head-room for SliceInt64FromBytes()
+				, buf( Util::NewSafeBuffer( buf_size ) ) // 7 bytes head-room for SliceInt64FromBytes()
+				, write_buf( Util::NewSafeBuffer( buf_size ) ) // 7 bytes head-room for SliceInt64FromBytes()
 			{
 
 			}
@@ -322,13 +327,14 @@ public:
             // in the reading pattern,
             // position is the first position that we need in the new array
             uint64_t const cache_size = (this->final_position_end - position);
-            prev_bucket_buf_.reset(new uint8_t[prev_bucket_buf_size]);
-            memset(prev_bucket_buf_.get(), 0x00, this->prev_bucket_buf_size);
+						if( !prev_bucket_buf_ ) // init on first use
+							prev_bucket_buf_.reset( Util::NewSafeBuffer( prev_bucket_buf_size ) );
             memcpy(
                 prev_bucket_buf_.get(),
 								memory_start() + position - this->final_position_start,
                 cache_size);
-        }
+						memset( prev_bucket_buf_.get() + cache_size, 0x00, this->prev_bucket_buf_size - cache_size );
+				}
 
         SortBucket();
         this->prev_bucket_position_start = position;
@@ -370,7 +376,7 @@ private:
 
 		std::vector<SortingBucket> buckets_;
 
-    uint64_t prev_bucket_buf_size;
+		const uint64_t prev_bucket_buf_size;
     std::unique_ptr<uint8_t[]> prev_bucket_buf_;
     uint64_t prev_bucket_position_start = 0;
 

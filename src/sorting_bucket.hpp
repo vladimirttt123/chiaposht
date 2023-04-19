@@ -122,7 +122,7 @@ struct SortingBucket{
 		}
 
 		// Init memory to sort into
-		memory_.reset( new uint8_t[Size()] );
+		memory_.reset( Util::NewSafeBuffer(Size()) );
 		uint8_t* memory = memory_.get();
 
 		uint32_t buckets_count = 1<<bucket_bits_count_;
