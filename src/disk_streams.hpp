@@ -32,6 +32,9 @@ struct IReadDiskStream{
 	virtual ~IReadDiskStream() = default;
 };
 
+struct IReadWriteStream : public IReadDiskStream, IWriteDiskStream {
+	virtual void Remove() = 0;
+};
 
 // This class not thread safe!!!
 struct AsyncStreamWriter : public IWriteDiskStream {
@@ -162,6 +165,32 @@ private:
 			});
 
 	}
+};
+
+struct FileStream : public IReadWriteStream {
+	FileStream( std::string fileName ) : disk( new FileDisk(fileName) )	{	}
+
+	void Write( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) override {
+		disk->Write( write_position, buf.get(), buf_size );
+		write_position += buf_size;
+	};
+
+	uint32_t Read( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) override {
+		uint32_t to_read = std::min( (uint64_t)buf_size, write_position - read_position );
+		disk->Read( read_position, buf.get(), to_read );
+		read_position += to_read;
+		return to_read;
+	};
+
+	bool atEnd() const override { return write_position == read_position; };
+
+	void Close() override { if( disk ) disk->Close(); };
+	void Remove() override { if(disk) disk->Remove(); }
+	~FileStream() { Remove(); }
+private:
+	std::unique_ptr<FileDisk> disk;
+	uint64_t write_position = 0;
+	uint64_t read_position = 0;
 };
 
 struct WriteFileStream : public IWriteDiskStream{
@@ -623,7 +652,7 @@ struct NotFreeingWriteStream: IWriteDiskStream{
 
 
 /* This class stores in cache as many data as possible before wrtting it to file */
-struct CachedFileStream : IWriteDiskStream, IReadDiskStream, ICacheConsumer {
+struct CachedFileStream : IReadWriteStream, ICacheConsumer {
 
 	// @max_buf_size - is a size of buffer supposed to be full. if such side provided it is not copied but replaced
 	CachedFileStream( const fs::path &fileName, MemoryManager &memory_manager, uint32_t max_buf_size )
@@ -712,7 +741,7 @@ struct CachedFileStream : IWriteDiskStream, IReadDiskStream, ICacheConsumer {
 
 	void Close() override{ if( disk ) disk->Close(); }
 
-	void Remove(){ if(disk){ disk->Remove( false ); disk.reset(); } }
+	void Remove() override { if(disk){ disk->Remove( false ); disk.reset(); } }
 
 	~CachedFileStream(){
 		if( consumer_idx != nullptr ){
@@ -875,7 +904,9 @@ struct BucketStream{
 
 		// std::lock_guard<std::mutex> lk( sync_mutex );
 		if( !disk_output ){
-			bucket_file.reset( new CachedFileStream( fileName, memory_manager, size_to_read ) );
+			bucket_file.reset( memory_manager.CacheEnabled ?
+													 ((IReadWriteStream*)(new CachedFileStream( fileName, memory_manager, size_to_read )))
+												 : new FileStream( fileName ) );
 			disk_output.reset( new NotFreeingWriteStream( bucket_file.get() ) );
 			if( compact ){
 				if( sequence_start_bit >= 0 )
@@ -946,7 +977,7 @@ struct BucketStream{
 					if( disk_output )
 						disk_output.reset(); // close output stream
 
-					disk_input.reset( bucket_file.release() );
+					disk_input.reset( (IReadDiskStream*)bucket_file.release() );
 				}
 
 
@@ -982,7 +1013,7 @@ struct BucketStream{
 			disk_input.reset();
 		}
 		if( bucket_file ) {
-			bucket_file->Remove();
+			bucket_file.get()->Remove();
 			bucket_file.reset();
 		}
 	}
@@ -990,7 +1021,7 @@ struct BucketStream{
 private:
 	const std::string fileName;
 	MemoryManager &memory_manager;
-	std::unique_ptr<CachedFileStream> bucket_file;
+	std::unique_ptr<IReadWriteStream> bucket_file;
 	std::unique_ptr<IWriteDiskStream> disk_output;
 	std::unique_ptr<IReadDiskStream> disk_input;
 	const uint16_t bucket_no_;

@@ -47,9 +47,10 @@ struct ConsumerEntry {
 
 
 struct MemoryManager{
+	const bool CacheEnabled;
 
-
-	MemoryManager( uint64_t size ) : total_size(size){}
+	MemoryManager( uint64_t size, bool withCache = false )
+		: CacheEnabled(withCache), total_size(size) {}
 
 	inline uint64_t getAccessibleRam() const {
 		return  total_size - used_ram + cleanable_ram;
@@ -139,6 +140,7 @@ struct MemoryManager{
 	}
 
 	inline ConsumerEntry* registerConsumer( ICacheConsumer * consumer ){
+		if( !CacheEnabled ) return nullptr; // disable caching
 		std::scoped_lock lk ( sync_consumers );
 		assert( consumers == nullptr || !consumers->isInList(consumer) );
 

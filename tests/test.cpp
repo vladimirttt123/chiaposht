@@ -143,10 +143,10 @@ TEST_CASE( "DISK_STREAMS" ){
 					SequenceCompacterWriter wstream = SequenceCompacterWriter(
 								new WriteFileStream(&disk), entry_size, bits_begin );
 
-					for( uint64_t i = 0; i < iteration; i+=entries_per_buffer ){
+					for( uint64_t i = 0; i < iteration; i += entries_per_buffer ){
 						auto subBuf = std::unique_ptr<uint8_t[]>( buf.get() + i*entry_size );
 						wstream.Write( subBuf, ((i+entries_per_buffer) < iteration ?
-																			entries_per_buffer : iteration%entries_per_buffer) *entry_size );
+																			entries_per_buffer : (iteration%entries_per_buffer) ) *entry_size );
 						subBuf.release();
 					}
 				} // this destruct and closing write stream
@@ -982,6 +982,13 @@ void PlotAndTestProofOfSpace(
     REQUIRE(remove(filename.c_str()) == 0);
 }
 
+TEST_CASE("PlottingOne")
+{
+	SECTION("Disk plot k22 small buffer in dual-thread")
+	{
+			PlotAndTestProofOfSpace("cpp-test-plot.dat", 5000, 22, plot_id_3, 18 , 4932, 65536, 2, 16);
+	}
+}
 TEST_CASE("Plotting")
 {
 //		SECTION("Disk plot k22 small buffer single-thread")

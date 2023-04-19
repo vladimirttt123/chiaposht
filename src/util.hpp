@@ -233,6 +233,15 @@ namespace Util {
         return count;
     }
 
+		// Converting and extracting bits of last element of buffer
+		// usually needs additional 7 bytes at the end.
+		// this funciton is adds and inits this bytes.
+		inline uint8_t * NewSafeBuffer( const uint64_t &size ){
+			auto res = new uint8_t[size+8];
+			((uint64_t*)(res + size))[0] = reinterpret_cast<std::uint64_t>(res);
+			return res;
+		}
+
     // 'bytes' points to a big-endian 64 bit value (possibly truncated, if
     // (start_bit % 8 + num_bits > 64)). Returns the integer that starts at
     // 'start_bit' that is 'num_bits' long (as a native-endian integer).
@@ -257,6 +266,13 @@ namespace Util {
         tmp >>= 64 - num_bits;
         return tmp;
     }
+
+		inline uint64_t SliceInt64FromBytes(
+				const uint8_t *bytes,
+				const uint32_t &num_bits)
+		{
+			return Util::EightBytesToInt( bytes ) >> (64-num_bits);
+		}
 
     inline uint64_t SliceInt64FromBytesFull(
         const uint8_t *bytes,
@@ -319,8 +335,8 @@ namespace Util {
 		inline uint32_t ExtractNum32( const uint8_t *bytes, const uint32_t begin_bits ){
 			assert( begin_bits < 8 );
 
-			return begin_bits == 0 ? bswap_32( ((uint32_t*)bytes)[0] )
-					: ( (bswap_32( ((uint32_t*)bytes)[0] ) << begin_bits ) | (bytes[4]>>(8-begin_bits)) );
+			return begin_bits == 0 ? bswap_32( ((const uint32_t*)bytes)[0] )
+					: ( (bswap_32( ((const uint32_t*)bytes)[0] ) << begin_bits ) | (bytes[4]>>(8-begin_bits)) );
 		}
 
     // The number of memory entries required to do the custom SortInMemory algorithm, given the
