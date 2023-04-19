@@ -72,7 +72,7 @@ struct MemoryManager{
 
 			isBackgroundClean = isForceClean;
 
-			if( isBackgroundClean ){
+			if( CacheEnabled && isBackgroundClean ){
 				// start background cleaner thread
 				background_cleaner.reset( new std::thread( [this]{
 					while( this->isBackgroundClean ){

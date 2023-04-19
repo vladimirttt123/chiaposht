@@ -76,10 +76,12 @@ struct SortingBucket{
 
 			if( entries_count > 0 ){
 				// Save statistics to file
-				statistics_file.reset( new CachedFileStream( disk->getFileName() + ".statistics.tmp", memory_manager, sizeof(uint32_t)<<bucket_bits_count_ ) );
+				statistics_file.reset( memory_manager.CacheEnabled ?
+							 (IReadWriteStream*)	new CachedFileStream( disk->getFileName() + ".statistics.tmp", memory_manager, sizeof(uint32_t)<<bucket_bits_count_ )
+							: new FileStream( disk->getFileName() + ".statistics.tmp" ) );
 				std::unique_ptr<uint8_t[]> buf( (uint8_t*)statistics.release() );
 				statistics_file->Write( buf, sizeof(uint32_t)<<bucket_bits_count_ );
-				statistics_file->Close();
+				((IWriteDiskStream*)statistics_file.get())->Close();
 			}
 			statistics.reset();
 		}
@@ -261,7 +263,7 @@ private:
 	const uint16_t begin_bits_;
 	// this is the number of entries for each subbucket
 	std::unique_ptr<uint32_t[]> statistics;
-	std::unique_ptr<CachedFileStream> statistics_file;
+	std::unique_ptr<IReadWriteStream> statistics_file;
 	uint64_t entries_count = 0;
 	std::unique_ptr<uint8_t[]> memory_;
 	MemoryManager &memory_manager;
