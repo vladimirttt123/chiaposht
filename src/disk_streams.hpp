@@ -73,7 +73,7 @@ struct AsyncCopyStreamWriter : public IWriteDiskStream {
 	void Write( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) override {
 		if( io_thread ) io_thread->join();
 		if( !buffer || last_buf_size < buf_size )
-			buffer.reset( new uint8_t[last_buf_size = buf_size] );
+			buffer.reset( Util::NewSafeBuffer( last_buf_size = buf_size ) );
 		memcpy( buffer.get(), buf.get(), buf_size );
 		io_thread.reset( new std::thread( [this](uint32_t b_size){ disk->Write(buffer, b_size);}, buf_size ) );
 	};

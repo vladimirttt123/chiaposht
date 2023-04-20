@@ -500,7 +500,7 @@ private:
     void NeedReadCache()
     {
         if (read_buffer_) return;
-        read_buffer_.reset(new uint8_t[read_ahead]);
+				read_buffer_.reset( Util::NewSafeBuffer( read_ahead ) );
         read_buffer_start_ = -1;
         read_buffer_size_ = 0;
     }

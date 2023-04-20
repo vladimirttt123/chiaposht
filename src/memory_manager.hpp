@@ -49,7 +49,7 @@ struct ConsumerEntry {
 struct MemoryManager{
 	const bool CacheEnabled;
 
-	MemoryManager( uint64_t size, bool withCache = false )
+	MemoryManager( uint64_t size, bool withCache = true )
 		: CacheEnabled(withCache), total_size(size) {}
 
 	inline uint64_t getAccessibleRam() const {
