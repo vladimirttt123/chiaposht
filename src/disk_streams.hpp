@@ -655,8 +655,8 @@ struct NotFreeingWriteStream: IWriteDiskStream{
 struct CachedFileStream : IReadWriteStream, ICacheConsumer {
 
 	// @max_buf_size - is a size of buffer supposed to be full. if such side provided it is not copied but replaced
-	CachedFileStream( const fs::path &fileName, MemoryManager &memory_manager, uint32_t max_buf_size )
-		: memory_manager(memory_manager), buf_size(max_buf_size)
+	CachedFileStream( const fs::path &fileName, MemoryManager &memory_manager, uint32_t base_buf_size )
+		: memory_manager(memory_manager), buf_size(base_buf_size)
 	{
 		consumer_idx = memory_manager.registerConsumer( this );
 		file_name = fileName;
@@ -871,6 +871,12 @@ private:
 	}
 };
 
+// creates or cached or simple file stream depends of settings of memory manager
+IReadWriteStream * CreateFileStream( const fs::path &fileName, MemoryManager &memory_manager, uint32_t base_buf_size ){
+	return memory_manager.CacheEnabled ?
+				((IReadWriteStream*)(new CachedFileStream( fileName, memory_manager, base_buf_size )))
+			: new FileStream( fileName );
+}
 
 // This stream not garantee same read order as write order
 struct BucketStream{
@@ -904,9 +910,7 @@ struct BucketStream{
 
 		// std::lock_guard<std::mutex> lk( sync_mutex );
 		if( !disk_output ){
-			bucket_file.reset( memory_manager.CacheEnabled ?
-													 ((IReadWriteStream*)(new CachedFileStream( fileName, memory_manager, size_to_read )))
-												 : new FileStream( fileName ) );
+			bucket_file.reset( CreateFileStream( fileName, memory_manager, size_to_read ) );
 			disk_output.reset( new NotFreeingWriteStream( bucket_file.get() ) );
 			if( compact ){
 				if( sequence_start_bit >= 0 )
@@ -1145,6 +1149,8 @@ IReadDiskStream * CreateLastTableReader( FileDisk * file, uint8_t k, uint16_t en
 
 	return res;
 }
+
+
 
 
 struct LastTableScanner : IWriteDiskStream
