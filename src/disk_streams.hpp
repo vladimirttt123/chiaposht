@@ -185,7 +185,7 @@ struct FileStream : public IReadWriteStream {
 	bool atEnd() const override { return write_position == read_position; };
 
 	void Close() override { if( disk ) disk->Close(); };
-	void Remove() override { if(disk) disk->Remove(); }
+	void Remove() override { if(disk) disk->Remove( true ); }
 	~FileStream() { Remove(); }
 private:
 	std::unique_ptr<FileDisk> disk;
@@ -741,7 +741,7 @@ struct CachedFileStream : IReadWriteStream, ICacheConsumer {
 
 	void Close() override{ if( disk ) disk->Close(); }
 
-	void Remove() override { if(disk){ disk->Remove( false ); disk.reset(); } }
+	void Remove() override { if(disk){ disk->Remove( true ); disk.reset(); } }
 
 	~CachedFileStream(){
 		if( consumer_idx != nullptr ){
