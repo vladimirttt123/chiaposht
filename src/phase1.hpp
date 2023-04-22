@@ -649,14 +649,15 @@ std::vector<uint64_t> RunPhase1(
     // For tables 1 through 6, sort the table, calculate matches, and write
     // the next table. This is the left table index.
     double progress_percent[] = {0.06, 0.12, 0.2, 0.28, 0.36, 0.42};
-    for (uint8_t table_index = 1; table_index < 7; table_index++) {
+
+		for (uint8_t table_index = 1; table_index < 7; table_index++) {
         Timer table_timer;
 
 				if( table_index == 6 )
 					globals.table7 = CreateLastTableWriter( &tmp_1_disks[7], k,
 							EntrySizes::GetKeyPosOffsetSize(k),
 							(flags&NO_COMPACTION) == 0 && (flags&ENABLE_BITFIELD) != 0,
-							(flags&ENABLE_BITFIELD) == 0 ? 0 : ( (flags&FORCE_TABLE_7_SCAN) == 0 ? 2 : 1 ) );
+							(flags&ENABLE_BITFIELD) != 0, (flags&TABLE_7_FULL_SCAN) != 0 );
 
 
         uint8_t const metadata_size = kVectorLens[table_index + 1] * k;
@@ -775,7 +776,7 @@ std::vector<uint64_t> RunPhase1(
         if (flags & SHOW_PROGRESS) {
             progress(1, table_index, 6);
         }
-    }
+		} // end of for tables[2-7]
 		table_sizes[0] = 0;
     globals.R_sort_manager.reset();
 

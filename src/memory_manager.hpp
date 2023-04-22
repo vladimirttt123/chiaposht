@@ -60,6 +60,10 @@ struct MemoryManager{
 		return total_size - used_ram;
 	}
 
+	inline int64_t getInUseRam() const {
+		return used_ram;
+	}
+
 	void SetMode( bool isForceClean, bool isFIFO ){
 		this->isFIFO = isFIFO;
 		if( isForceClean != isBackgroundClean ){

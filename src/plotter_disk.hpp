@@ -190,9 +190,6 @@ public:
         }
 #endif /* defined(_WIN32) || defined(__x86_64__) */
 
-				if( phases_flags & ENABLE_BITFIELD )
-					phases_flags |= FORCE_TABLE_7_SCAN; // temporal solution
-
         std::cout << std::endl
                   << "Starting plotting progress into temporary dirs: " << tmp_dirname << " and "
                   << tmp2_dirname << std::endl;
@@ -203,7 +200,11 @@ public:
 				std::cout << "Per file buffer size is: " << (BUF_SIZE/1024) << "KiB" << std::endl;
 				std::cout << "Buckets number: " << num_buckets << std::endl;
 				std::cout << "Flags: " << ( phases_flags&ENABLE_BITFIELD ? " using bitfield" : " NO bitfield" )
-									<< ", "<< (phases_flags&NO_COMPACTION ? "NO compaction" : "with compaction" ) << std::endl;
+									<< ", " << (phases_flags&NO_COMPACTION ? "NO compaction" : "with compaction" )
+									<< ", " << (phases_flags&DISABLE_BUFFER_CACHE ? "NO buffer as cache": "USE free buffer as cache");
+				if( phases_flags&ENABLE_BITFIELD )
+					std::cout << ", " << (phases_flags&TABLE_7_FULL_SCAN ? "table 7 FULL scan" : "table 7 QUICK scan" );
+				std::cout << std::endl;
         std::cout << "Final Directory is: " << final_dirname << std::endl;
         std::cout << "Using " << (int)num_threads << " threads of stripe size " << stripe_size
                   << std::endl;
@@ -242,7 +243,7 @@ public:
         fs::remove(tmp_2_filename);
         fs::remove(final_filename);
 
-				MemoryManager memory_manager = MemoryManager( memory_size );
+				MemoryManager memory_manager = MemoryManager( memory_size, (phases_flags & DISABLE_BUFFER_CACHE)	 == 0 );
         {
             // Scope for FileDisk
             std::vector<FileDisk> tmp_1_disks;

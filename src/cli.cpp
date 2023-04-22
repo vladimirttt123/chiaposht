@@ -83,6 +83,8 @@ int main(int argc, char *argv[]) try {
     string id = "022fb42c08c12de3a6af053880199806532e79515f94e83461612101f9412f9e";
     bool nobitfield = false;
 		bool nocompaction = false;
+		bool full_scan_table_7 = false;
+		bool nobuffercache = false;
     bool show_progress = false;
     bool parallel_read = true;
     uint32_t buffmegabytes = 0;
@@ -101,6 +103,8 @@ int main(int argc, char *argv[]) try {
         "i, id", "Unique 32-byte seed for the plot", cxxopts::value<string>(id))(
 				"e, nobitfield", "Disable bitfield", cxxopts::value<bool>(nobitfield))(
 				"c, nocompaction", "Disable IO compaction", cxxopts::value<bool>(nocompaction))(
+				"C, nobuffercache", "do not use free buffer as cache", cxxopts::value<bool>(nobuffercache))(
+				"7, fullscantable7", "force full scan on table 7 (bitfield only)", cxxopts::value<bool>(full_scan_table_7))(
 				"b, buffer",
         "Megabytes to be used as buffer for sorting and plotting",
         cxxopts::value<uint32_t>(buffmegabytes))(
@@ -151,6 +155,12 @@ int main(int argc, char *argv[]) try {
         }
 				if( nocompaction ) {
 					phases_flags |= NO_COMPACTION;
+				}
+				if( full_scan_table_7 ){
+					phases_flags |= TABLE_7_FULL_SCAN;
+				}
+				if( nobuffercache ){
+					phases_flags |= DISABLE_BUFFER_CACHE;
 				}
 				BUF_SIZE = std::max( (uint64_t)64, (uint64_t)filebufkb ) << 10;
         if (show_progress) {

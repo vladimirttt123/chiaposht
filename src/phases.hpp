@@ -23,7 +23,8 @@ enum phase_flags : uint8_t {
     ENABLE_BITFIELD = 1 << 0,
     SHOW_PROGRESS = 1 << 1,
 		NO_COMPACTION = 1 << 2,
-		FORCE_TABLE_7_SCAN = 1 << 3
+		TABLE_7_FULL_SCAN = 1 << 3,
+		DISABLE_BUFFER_CACHE = 1 << 4
 };
 
 #endif  // SRC_CPP_PHASES_HPP

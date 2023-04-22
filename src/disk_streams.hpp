@@ -96,12 +96,13 @@ private:
 };
 // ====================================================
 struct AsyncStreamReader : public IReadDiskStream {
-	AsyncStreamReader( IReadDiskStream * disk, uint32_t buf_size )
-		: max_buffer_size(buf_size), disk(disk)
-	{
-	}
-
 	const uint32_t max_buffer_size;
+	const uint16_t bufs_count;
+
+	AsyncStreamReader( IReadDiskStream * disk, uint32_t buf_size, uint16_t bufs_count = 10 )
+		: max_buffer_size(buf_size), bufs_count(bufs_count), disk(disk)
+	{	}
+
 
 	uint32_t Read( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) override {
 		assert( io_thread == nullptr || buf_size == max_buffer_size );
@@ -166,6 +167,8 @@ private:
 
 	}
 };
+
+
 
 struct FileStream : public IReadWriteStream {
 	FileStream( std::string fileName ) : disk( new FileDisk(fileName) )	{	}
@@ -303,7 +306,8 @@ private:
 #define setNext( v ) cur_buf[buffer_idx++] = v
 
 		for( uint32_t i = 0; i < buf_size; ){
-			uint64_t next_val = Util::ExtractNum32( buf + i + begin_bytes, begin_bits_ );
+//			uint64_t next_val = Util::ExtractNum32( buf + i + begin_bytes, begin_bits_ );
+			uint64_t next_val = Util::ExtractNum64( buf + i + begin_bytes, begin_bits_, 32 );
 			uint64_t diff = next_val - last_write_value;
 			if( diff < 128 ){
 				// to save one byte of diff
@@ -749,11 +753,8 @@ struct CachedFileStream : IReadWriteStream, ICacheConsumer {
 			memory_manager.release( getUsedCache(), this );
 		}
 		Remove();
-		while( cache != nullptr ){
-			auto prev = cache;
-			cache = prev->next;
-			delete prev;
-		}
+		while( cache != nullptr )
+			moveNextCache();
 	}
 private:
 	struct CacheEntry{
@@ -1211,14 +1212,14 @@ private:
 
 /* scan_mode: 0 - no scan, 1 - full scan, 2 - quick scan */
 IWriteDiskStream * CreateLastTableWriter( FileDisk * file, uint8_t k, uint16_t entry_size,
-																					bool withCompaction, int scan_mode ){
+																					bool withCompaction, bool withScan, bool full_scan ){
 	IWriteDiskStream * res = new WriteFileStream( file );
 
 	if( withCompaction && k >= 30 )
 		res = new SequenceCompacterWriter( res, entry_size, k );
 
-	if( scan_mode )
-		res = new LastTableScanner( res, k, entry_size, scan_mode == 1,
+	if( withScan )
+		res = new LastTableScanner( res, k, entry_size, full_scan,
 								( file->GetFileName() + ".bitfield.tmp").c_str() );
 
 	res = new AsyncCopyStreamWriter( res );

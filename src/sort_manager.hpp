@@ -428,14 +428,19 @@ private:
 				SortingBucket& b = buckets_[bucket_i];
 
 
-				double const have_ram = ( memory_manager.getAccessibleRam() + reserved_buffer_size ) / (1024.0 * 1024.0 * 1024.0);
-				double const free_ram = ( memory_manager.getFreeRam() ) / (1024.0 * 1024.0 * 1024.0);
+				double const used_ram = memory_manager.getInUseRam() / (1024.0 * 1024.0 * 1024.0);
+				double const cache_ram = memory_manager.getAccessibleRam() / (1024.0 * 1024.0 * 1024.0);
+				double const free_ram = memory_manager.getFreeRam() / (1024.0 * 1024.0 * 1024.0);
 				double const qs_ram = b.Size() / (1024.0 * 1024.0 * 1024.0);
 
 				std::cout << "\r\tk" << (uint32_t)k_ << " p" << (uint32_t)phase_ << " t" << (uint32_t)table_index_
-									<< " Bucket " << bucket_i << " Ram: " << std::fixed
-									<< std::setprecision( have_ram > 10 ? 1:( have_ram>1? 2 : 3) ) << have_ram << "GiB, free: "
-									<< std::setprecision( free_ram > 10 ? 1:( free_ram>1? 2 : 3) ) << free_ram << "GiB, size: "
+									<< " Bucket " << bucket_i << " RAM: " << std::fixed
+									<< std::setprecision( used_ram > 10 ? 1:( used_ram>1? 2 : 3) ) << used_ram << "GiB";
+				if( memory_manager.CacheEnabled )
+					std::cout << std::fixed << ", cache: "
+									<< std::setprecision( cache_ram > 10 ? 1:( cache_ram>1? 2 : 3) ) << cache_ram << "GiB";
+				std::cout << std::fixed << ", free: "
+									<< std::setprecision( free_ram > 10 ? 1:( free_ram>1? 2 : 3) ) << free_ram << "GiB, bucket size: "
 									<< std::setprecision( qs_ram > 10 ? 1:( qs_ram>1? 2 : 3) ) <<  qs_ram << "GiB" << std::flush;
 
 
