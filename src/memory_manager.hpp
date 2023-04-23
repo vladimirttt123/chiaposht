@@ -48,6 +48,7 @@ struct ConsumerEntry {
 
 struct MemoryManager{
 	const bool CacheEnabled;
+	const int64_t total_size;
 
 	MemoryManager( uint64_t size, bool withCache = true )
 		: CacheEnabled(withCache), total_size(size) {}
@@ -62,6 +63,10 @@ struct MemoryManager{
 
 	inline int64_t getInUseRam() const {
 		return used_ram;
+	}
+
+	inline int64_t getNotWritten() const {
+		return not_written;
 	}
 
 	void SetMode( bool isForceClean, bool isFIFO ){
@@ -134,13 +139,13 @@ struct MemoryManager{
 		used_ram += size;
 	}
 
-	inline void release( const uint32_t &size, ICacheConsumer *consumer ){
+	inline void release( const uint32_t &size, bool byConsumer = false, bool isCacheHit = false ){
 		std::scoped_lock lk(sync_size);
 
 		assert( (int64_t)size <= used_ram );
 		used_ram -= size;
-		if( consumer != nullptr ) cleanable_ram -= size;
-
+		if( byConsumer ) cleanable_ram -= size;
+		if( !isCacheHit ) not_written += size;
 	}
 
 	inline ConsumerEntry* registerConsumer( ICacheConsumer * consumer ){
@@ -155,9 +160,8 @@ struct MemoryManager{
 	}
 
 	inline void unregisterConsumer( ConsumerEntry * consumer ){
-		assert( consumer != nullptr );
-
 		std::scoped_lock lk ( sync_consumers );
+		if( consumer == nullptr ) return; // it could happen when cleaning just started to read stream
 		removeConsumer( consumer );
 		delete consumer;
 	}
@@ -170,8 +174,7 @@ struct MemoryManager{
 	}
 private:
 
-	const int64_t total_size;
-	int64_t used_ram = 0, cleanable_ram = 0;
+	int64_t used_ram = 0, cleanable_ram = 0, not_written = 0;
 	std::mutex sync_size, sync_consumers;
 	ConsumerEntry * consumers = nullptr;
 	ConsumerEntry * last_consumer = nullptr;

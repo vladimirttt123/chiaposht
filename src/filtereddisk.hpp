@@ -73,7 +73,7 @@ struct FilteredDisk : Disk
 		void FreeMemory() override
 		{
 				if( filter_ != nullptr ){
-					memory_manager.release( filter_->memSize(), nullptr );
+					memory_manager.release( filter_->memSize() );
 					filter_->FreeMemory();
 					delete filter_;
 					filter_ = nullptr;

@@ -97,10 +97,9 @@ private:
 // ====================================================
 struct AsyncStreamReader : public IReadDiskStream {
 	const uint32_t max_buffer_size;
-	const uint16_t bufs_count;
 
-	AsyncStreamReader( IReadDiskStream * disk, uint32_t buf_size, uint16_t bufs_count = 10 )
-		: max_buffer_size(buf_size), bufs_count(bufs_count), disk(disk)
+	AsyncStreamReader( IReadDiskStream * disk, uint32_t buf_size )
+		: max_buffer_size(buf_size), disk(disk)
 	{	}
 
 
@@ -588,9 +587,7 @@ private:
 	const uint8_t bytes_begin;
 	const uint8_t removed_byte;
 	const uint8_t mask;
-
-
-};
+};// end of ByteInserterStream
 
 
 struct BufferedWriter : IWriteDiskStream{
@@ -655,91 +652,100 @@ struct NotFreeingWriteStream: IWriteDiskStream{
 };
 
 
-/* This class stores in cache as many data as possible before wrtting it to file */
+/* CachedFileStream class stores in cache as many data as possible before wrtting it to file
+	Warning! CachedFileStream class is not thread safe i.e. IO from more than one thread leads to unpredictable.
+	Warning! Writing after start to read can lead to unperdictable.
+*/
 struct CachedFileStream : IReadWriteStream, ICacheConsumer {
 
 	// @max_buf_size - is a size of buffer supposed to be full. if such side provided it is not copied but replaced
 	CachedFileStream( const fs::path &fileName, MemoryManager &memory_manager, uint32_t base_buf_size )
-		: memory_manager(memory_manager), buf_size(base_buf_size)
+		: memory_manager(memory_manager), cache(base_buf_size)
 	{
 		consumer_idx = memory_manager.registerConsumer( this );
 		file_name = fileName;
 	}
 
 	void Write( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) override{
-		std::lock_guard<std::mutex> lk(file_sync);
+		assert( read_position == 0 ); // cannot read and write same time
 
 		if( consumer_idx != nullptr // we are caching
-				&& memory_manager.request( buf_size, this ) // there is ram to store
-				) {
-			if( buf_size == this->buf_size ){
-				// buffer is allinged write by getting it
-				addToCache( buf.release(), buf_size );
-				buf.reset( new uint8_t[buf_size] );
-			}
-			else
-			{ // buffer is not alligned write by copy
-				uint8_t * new_buf = new uint8_t[buf_size];
-				memcpy( new_buf, buf.get(), buf_size );
-				addToCache( new_buf, buf_size );
-			}
-		} else
-			DiskWrite( write_position, buf.get(), buf_size );
+				&& cache_sync.try_lock() ) // and we can lock the cache
+		{
+			if( consumer_idx != nullptr // we are still caching - have to check because now it is safe to check
+					&& memory_manager.request( buf_size, this ) ) {// there is ram to store
+				if( buf_size == cache.buf_size ){
+					// buffer is allinged write by getting it
+					cache.add( buf.release(), write_position, buf_size );
+					buf.reset( new uint8_t[buf_size] );
+				}
+				else
+				{ // buffer is not alligned write by copy
+					assert( (write_position%cache.buf_size) == 0);
+					uint8_t * new_buf = new uint8_t[buf_size];
+					memcpy( new_buf, buf.get(), buf_size );
+					cache.add( new_buf, write_position, buf_size );
+				}
 
+				cache_sync.unlock();
+				write_position += buf_size;
+				return;
+			}
+			cache_sync.unlock();
+		}
+
+		DiskWrite( write_position, buf.get(), buf_size );
 		write_position += buf_size;
 	}
 
 	// warning this is not thread safe function
 	uint32_t Read( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) override{
 		if( consumer_idx != nullptr ){
-			// to prevent futher locks on read we unregister started to read stream
-			std::lock_guard<std::mutex> lk(file_sync);
-			if( consumer_idx != nullptr ){
-				memory_manager.unregisterConsumer( consumer_idx );
-				consumer_idx = nullptr;
-			}
+			// in order prevent locks on read we unregister started to read stream
+			// std::lock_guard<std::mutex> lk(cache_sync);
+			memory_manager.unregisterConsumer( consumer_idx );
+			consumer_idx = nullptr;
 		}
 
-		if( cache != nullptr ){
-			// we have cached buffers
-			if( read_position == cache->start_pos && buf_size == cache->buf_size ){
-				// simplest case
-				buf.reset( cache->buf );
-				cache->buf = nullptr; // clear without deletion
-				moveNextCache();
-				read_position += buf_size;
-				return buf_size;
-			}
+
+		if( !cache.isEmpty() // we have cached buffers
+					&& read_position == cache.startPosition() && buf_size == cache.bufSize() ){
+			// simplest case
+			buf.reset( cache.buffer() );
+			memory_manager.release( buf_size, true, true );
+			cache.moveNext( false ); // clear without deletion
+			read_position += buf_size;
+			return buf_size;
 		}
 
 		return Read( buf.get(), buf_size );
 	};
 
 
-	bool atEnd() const override{
-		return read_position >= write_position;
-	};
+	bool atEnd() const override { return read_position >= write_position; };
 
-	uint64_t getUsedCache() const override {
-		uint64_t res = 0;
+	uint64_t getUsedCache() const override { return cache.size();	}
 
-		for( auto c = cache; c != nullptr; c = c->next )
-			res += c->buf_size;
-
-		return res;
-	}
 	void DetachFromCache() override {
 		assert( consumer_idx == nullptr || consumer_idx->consumer == this );
 		consumer_idx = nullptr;
 	}
 	void FreeCache() override{
-		std::lock_guard<std::mutex> lk(file_sync);
 		assert( consumer_idx == nullptr || consumer_idx->consumer == this );
-
 		consumer_idx = nullptr; // this call clears from consumers
-		while( cache != nullptr ){
-			DiskWrite( cache->start_pos, cache->buf, cache->buf_size );
-			moveNextCache();
+
+		// we try to sync to prevent dead locks because it can be
+		// in read mode or currently in writting than we do not clean
+		if( cache_sync.try_lock() ){
+			if( !cache.isEmpty() ){
+				auto release_size = cache.size();
+				for( ; !cache.isEmpty(); cache.moveNext() )
+					DiskWrite( cache.startPosition(), cache.buffer(), cache.bufSize() );
+				disk->Flush();
+				memory_manager.release( release_size, true );
+				cache.reset(); // reset start counter.
+			}
+			cache_sync.unlock();
 		}
 	}
 
@@ -750,65 +756,63 @@ struct CachedFileStream : IReadWriteStream, ICacheConsumer {
 	~CachedFileStream(){
 		if( consumer_idx != nullptr ){
 			memory_manager.unregisterConsumer( consumer_idx );
-			memory_manager.release( getUsedCache(), this );
+			memory_manager.release( getUsedCache(), true, true );
 		}
 		Remove();
-		while( cache != nullptr )
-			moveNextCache();
 	}
 private:
-	struct CacheEntry{
-		uint8_t * buf;
-		uint32_t buf_size;
-		uint64_t start_pos;
+	struct CacheStorage {
+		const uint32_t buf_size;
+		uint32_t last_buf_size;
+		std::vector<uint8_t*> bufs;
+		std::vector<uint64_t> positions;
+		uint32_t start_idx = 0;
 
-		CacheEntry * next = nullptr;
+		CacheStorage( uint32_t buf_size ) : buf_size(buf_size), last_buf_size(buf_size){}
 
-		CacheEntry( uint8_t * buf, uint32_t size, uint64_t pos ) : buf(buf), buf_size(size), start_pos(pos){}
-		void clear(){
-			if( buf != nullptr ) {
-				delete[]buf;
-				buf = nullptr;
-			}
+		inline bool isEmpty() const { return start_idx >= bufs.size(); }
+		inline uint64_t startPosition() const { return positions[start_idx]; }
+		inline uint32_t bufSize() const { return (start_idx+1) == bufs.size() ? last_buf_size : buf_size; }
+		inline uint8_t* buffer() const { return bufs[start_idx]; }
+		inline uint64_t size() const { return (bufs.size() - start_idx)*buf_size - buf_size + last_buf_size; }
+		inline uint64_t bufLeftSize( uint64_t pos ) const { return startPosition() - pos + bufSize(); }
+		inline const uint8_t* bufLeft( uint64_t pos ) const { return buffer() + (pos - startPosition()); }
+
+		inline void reset() { start_idx = 0; bufs.clear(); positions.clear(); }
+
+		void add( uint8_t* buf, uint64_t position, uint32_t size ){
+			assert( last_buf_size == buf_size ); // last only buffer can be other size
+
+			last_buf_size = size;
+			bufs.push_back( buf );
+			positions.push_back( position );
 		}
 
-		uint32_t leftSize( uint64_t read_pos ) const {
-			return (start_pos + buf_size) - read_pos;
+		void moveNext( bool withDelete = true ){
+			if( withDelete && start_idx < bufs.size() )
+				delete[]bufs[start_idx];
+			start_idx++;
 		}
-		uint8_t* leftBuf( uint64_t read_pos ) const {
-			return buf + ( read_pos - start_pos );
+
+		~CacheStorage(){
+			for( uint32_t i = start_idx; i < bufs.size(); i++ )
+				delete [] bufs[i]; // this mem is released from memory manager in descrutor of Stream
 		}
-		~CacheEntry() { clear(); }
 	};
 
 	fs::path file_name;
 	MemoryManager &memory_manager;
 	ConsumerEntry * consumer_idx;
-	const uint32_t buf_size;
 	std::unique_ptr<FileDisk> disk;
 	uint64_t write_position = 0;
 	uint64_t read_position = 0;
+	std::mutex cache_sync;
 	std::mutex file_sync;
-	CacheEntry* cache = nullptr;
-	CacheEntry* cache_end = nullptr;
+	CacheStorage cache;
 
-	inline void addToCache( uint8_t* buf, uint32_t buf_size ) {
-		auto next = new CacheEntry( buf, buf_size, write_position );
-		if( cache == nullptr ) cache_end = cache = next;
-		else {
-			cache_end->next = next;
-			cache_end = next;
-		}
-	}
-
-	inline void moveNextCache(){
-		memory_manager.release( cache->buf_size, this );
-		auto next = cache->next;
-		delete cache;
-		cache = next;
-	}
 
 	inline void DiskWrite( uint64_t pos, uint8_t * buf, uint32_t buf_size ){
+		std::lock_guard<std::mutex> lk( file_sync );
 		if( !disk ) {
 			disk.reset( new FileDisk(file_name) );
 			file_name.clear();
@@ -821,44 +825,47 @@ private:
 
 		uint32_t to_read;
 
-		if( cache != nullptr ){
-			assert( read_position < (cache->start_pos + cache->buf_size) );
-			if( read_position == cache->start_pos ) {
+		if( !cache.isEmpty() ){
+			assert( read_position < ( cache.startPosition() + cache.bufSize() ) );
+			if( read_position == cache.startPosition() ) {
 				// this function cannot be called when buf_size equals current cache buffer!
 
-				if( buf_size < cache->buf_size ){
-					memcpy( buf, cache->buf, buf_size );
+				if( buf_size < cache.bufSize() ){
+					memcpy( buf, cache.buffer(), buf_size );
 					read_position += buf_size;
 					return buf_size;
 				}
 
 				// buf_size > cache[cache_idx].buf_size
-				to_read = cache->buf_size;
-				memcpy( buf, cache->buf, to_read );
+				to_read = cache.bufSize();
+				memcpy( buf, cache.buffer(), to_read );
 				read_position += to_read;
-				moveNextCache();
+				memory_manager.release( cache.bufSize(), true, true );
+				cache.moveNext();
 
 				return to_read + Read( buf + to_read, buf_size - to_read );
 			}
 
-			if( read_position > cache->start_pos ) {
+			if( read_position > cache.startPosition() ) {
 				// read from inside cache buffer
 
-				if( buf_size > cache->leftSize(read_position) ){
-					to_read = cache->leftSize(read_position);
-					memcpy( buf, cache->leftBuf( read_position), to_read );
+				if( buf_size > cache.bufLeftSize(read_position) ){
+					to_read = cache.bufLeftSize( read_position );
+					memcpy( buf, cache.bufLeft( read_position), to_read );
 					read_position += to_read;
-					moveNextCache();
+					memory_manager.release( cache.bufSize(), true, true );
+					cache.moveNext();
 					return to_read + Read( buf + to_read, buf_size - to_read );
 				}
 
-				memcpy( buf, cache->leftBuf( read_position ), buf_size );
+				// buf_size < cache.bufLeftSize
+				memcpy( buf, cache.bufLeft( read_position ), buf_size );
 				read_position += buf_size;
 				return buf_size;
 			}
 
 			// read_position < cache[cache_idx].start_pos
-			to_read = std::min( cache->start_pos - read_position, (uint64_t)buf_size );
+			to_read = std::min( cache.startPosition() - read_position, (uint64_t)buf_size );
 		}
 		else
 			to_read = std::min( write_position - read_position, (uint64_t)buf_size );
@@ -870,7 +877,10 @@ private:
 
 		return to_read + (to_read >= buf_size ? 0 : Read( buf+to_read, buf_size - to_read ) );
 	}
-};
+};  // end of CachedFileStream
+
+
+
 
 // creates or cached or simple file stream depends of settings of memory manager
 IReadWriteStream * CreateFileStream( const fs::path &fileName, MemoryManager &memory_manager, uint32_t base_buf_size ){
@@ -879,6 +889,7 @@ IReadWriteStream * CreateFileStream( const fs::path &fileName, MemoryManager &me
 			: new FileStream( fileName );
 }
 
+// =======================================================
 // This stream not garantee same read order as write order
 struct BucketStream{
 	BucketStream( std::string fileName, MemoryManager &memory_manager, uint16_t bucket_no, uint8_t log_num_buckets,

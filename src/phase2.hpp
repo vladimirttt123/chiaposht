@@ -239,7 +239,7 @@ Phase2Results RunPhase2(
 				if( memory_manager.getAccessibleRam() < bitfield::memSize( std::max( current_bitfield->size(), table_size ) ) ) { // ( bitfield::memSize(table_size) + current_bitfield->memSize() ) ){
 					std::cout << "Warning: Cannot fit 2 bitfields in buffer, flushing one to disk. Need Ram:"
 										<< ( ( bitfield::memSize(table_size) + current_bitfield->memSize() )/1024.0/1024/1024 ) << "GiB" << std::endl;
-					memory_manager.release( current_bitfield->memSize(), nullptr );
+					memory_manager.release( current_bitfield->memSize() );
 					current_bitfield->FlushToDisk( tmp_1_disks[table_index].GetFileName() + ".bitfield.tmp" );
 				}
 
@@ -334,7 +334,7 @@ Phase2Results RunPhase2(
 
 			sort_timer.PrintElapsed( ", time =" );
 			current_bitfield.swap(next_bitfield);
-			memory_manager.release( next_bitfield->memSize(), nullptr );
+			memory_manager.release( next_bitfield->memSize() );
 			next_bitfield->FreeMemory( table_index != 6 );// do not delete file of table 7 bitfield
 
 			// The files for Table 1 and 7 are re-used, overwritten and passed on to

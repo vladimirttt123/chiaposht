@@ -391,15 +391,18 @@ public:
                 finalsize = res.final_table_begin_pointers[11];
             }
 
-						assert( (int64_t)memory_manager.getAccessibleRam() == memory_manager.getFreeRam() ); // all ram should be free now
+						assert( (int64_t)memory_size == memory_manager.getFreeRam() ); // all ram should be free now
 
 
             std::cout << "Final File size: "
                       << static_cast<double>(finalsize) /
                              (1024 * 1024 * 1024)
-											<< " GiB; Total written: "
-											<< (FileDisk::GetTotalBytesWritten()/1024.0/1024/1024)
-											<< " GiB " << std::endl;
+											<< "GiB; Total written (without final file): "
+											<< ((FileDisk::GetTotalBytesWritten()-finalsize)/1024.0/1024/1024);
+						if( memory_manager.CacheEnabled )
+							std::cout << "GiB; Cache saved: " <<
+													 (memory_manager.getNotWritten()/1024.0/1024/1024) ;
+						std::cout<< "GiB" << std::endl;
             all_phases.PrintElapsed("Total time =");
 
 						for( uint32_t i = 0; i < tmp_1_disks.size(); i++)

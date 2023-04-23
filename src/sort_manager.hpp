@@ -358,7 +358,7 @@ public:
 					next_bucket_sorting_thread->join();
 
 				if( reserved_buffer_size > 0 )
-					memory_manager.release( reserved_buffer_size, nullptr ); // release last bucket
+					memory_manager.release( reserved_buffer_size ); // release last bucket
 
         // Close and delete files in case we exit without doing the sort
 				for (auto& b : buckets_)
@@ -428,14 +428,14 @@ private:
 				SortingBucket& b = buckets_[bucket_i];
 
 
-				double const used_ram = memory_manager.getInUseRam() / (1024.0 * 1024.0 * 1024.0);
+				double const total_ram = memory_manager.total_size / (1024.0 * 1024.0 * 1024.0);
 				double const cache_ram = memory_manager.getAccessibleRam() / (1024.0 * 1024.0 * 1024.0);
 				double const free_ram = memory_manager.getFreeRam() / (1024.0 * 1024.0 * 1024.0);
 				double const qs_ram = b.Size() / (1024.0 * 1024.0 * 1024.0);
 
 				std::cout << "\r\tk" << (uint32_t)k_ << " p" << (uint32_t)phase_ << " t" << (uint32_t)table_index_
-									<< " Bucket " << bucket_i << " RAM: " << std::fixed
-									<< std::setprecision( used_ram > 10 ? 1:( used_ram>1? 2 : 3) ) << used_ram << "GiB";
+									<< " Bucket " << bucket_i << " ram: " << std::fixed
+									<< std::setprecision( total_ram > 10 ? 1:( total_ram>1? 2 : 3) ) << total_ram << "GiB";
 				if( memory_manager.CacheEnabled )
 					std::cout << std::fixed << ", cache: "
 									<< std::setprecision( cache_ram > 10 ? 1:( cache_ram>1? 2 : 3) ) << cache_ram << "GiB";
@@ -451,7 +451,7 @@ private:
 					next_bucket_sorting_thread->join();
 					auto end_time = std::chrono::high_resolution_clock::now();
 					next_bucket_sorting_thread.reset();
-					memory_manager.release( b.Size(), nullptr ); // release extra that was requested for background sorting.
+					memory_manager.release( b.Size() ); // release extra that was requested for background sorting.
 
 					wait_time = (end_time - start_time)/std::chrono::milliseconds(1);
 					time_total_wait += wait_time;
