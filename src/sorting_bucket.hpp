@@ -168,7 +168,7 @@ struct SortingBucket{
 			// Define thread function
 			auto thread_func = [this, &memory , &num_sub_locks, &sub_locks_mask]( std::mutex *mutWrite,  uint64_t* bucket_positions, const int64_t direction ){
 				uint32_t buf_size = disk->MaxBufferSize();
-				auto buf = std::make_unique<uint8_t[]>( buf_size );
+				std::unique_ptr<uint8_t[]> buf( Util::NewSafeBuffer( buf_size ) );
 
 				auto buckets_bits_cache = std::make_unique<uint32_t[]>( buf_size/entry_size_ + 1 );
 				while( (buf_size = disk->Read( buf ) ) > 0 ){

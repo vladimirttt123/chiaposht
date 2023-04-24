@@ -479,7 +479,7 @@ Phase3Results RunPhase3(
 															&park_size_bytes](){
 
 						uint32_t sort_buf_size = kEntriesPerPark*right_entry_size_bytes;
-						auto sort_buf = std::make_unique<uint8_t[]>( sort_buf_size );
+						std::unique_ptr<uint8_t[]> sort_buf( Util::NewSafeBuffer( sort_buf_size ) );
 						ParkWriterTS parker( &tmp2_disk, &write_mutex,k, table_index,
 																 final_table_begin_pointers[table_index], park_size_bytes );
 						uint64_t index;

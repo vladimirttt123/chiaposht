@@ -669,11 +669,11 @@ struct CachedFileStream : IReadWriteStream, ICacheConsumer {
 	void Write( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) override{
 		assert( read_position == 0 ); // cannot read and write same time
 
-		if( consumer_idx != nullptr // we are caching
+		if( consumer_idx >= 0 // we are caching
 				&& cache_sync.try_lock() ) // and we can lock the cache
 		{
-			if( consumer_idx != nullptr // we are still caching - have to check because now it is safe to check
-					&& memory_manager.request( buf_size, this ) ) {// there is ram to store
+			if( consumer_idx >= 0 // we are still caching - have to check because now it is safe to check
+					&& memory_manager.consumerRequest( buf_size ) ) {// there is ram to store
 				if( buf_size == cache.buf_size ){
 					// buffer is allinged write by getting it
 					cache.add( buf.release(), write_position, buf_size );
@@ -700,11 +700,12 @@ struct CachedFileStream : IReadWriteStream, ICacheConsumer {
 
 	// warning this is not thread safe function
 	uint32_t Read( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) override{
-		if( consumer_idx != nullptr ){
+		if( consumer_idx >= 0  ){
+			assert( read_position == 0 ); // could happen on start of reading only
 			// in order prevent locks on read we unregister started to read stream
 			// std::lock_guard<std::mutex> lk(cache_sync);
-			memory_manager.unregisterConsumer( consumer_idx );
-			consumer_idx = nullptr;
+			memory_manager.unregisterConsumer( this, consumer_idx );
+			consumer_idx = -1;
 		}
 
 
@@ -727,12 +728,10 @@ struct CachedFileStream : IReadWriteStream, ICacheConsumer {
 	uint64_t getUsedCache() const override { return cache.size();	}
 
 	void DetachFromCache() override {
-		assert( consumer_idx == nullptr || consumer_idx->consumer == this );
-		consumer_idx = nullptr;
+		consumer_idx = -1;
 	}
 	void FreeCache() override{
-		assert( consumer_idx == nullptr || consumer_idx->consumer == this );
-		consumer_idx = nullptr; // this call clears from consumers
+		consumer_idx = -1; // this call clears from consumers
 
 		// we try to sync to prevent dead locks because it can be
 		// in read mode or currently in writting than we do not clean
@@ -754,8 +753,8 @@ struct CachedFileStream : IReadWriteStream, ICacheConsumer {
 	void Remove() override { if(disk){ disk->Remove( true ); disk.reset(); } }
 
 	~CachedFileStream(){
-		if( consumer_idx != nullptr ){
-			memory_manager.unregisterConsumer( consumer_idx );
+		if( consumer_idx >= 0 ){
+			memory_manager.unregisterConsumer( this, consumer_idx );
 			memory_manager.release( getUsedCache(), true, true );
 		}
 		Remove();
@@ -802,7 +801,7 @@ private:
 
 	fs::path file_name;
 	MemoryManager &memory_manager;
-	ConsumerEntry * consumer_idx;
+	int32_t consumer_idx;
 	std::unique_ptr<FileDisk> disk;
 	uint64_t write_position = 0;
 	uint64_t read_position = 0;
