@@ -700,10 +700,12 @@ struct CachedFileStream : IReadWriteStream, ICacheConsumer {
 
 	// warning this is not thread safe function
 	uint32_t Read( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) override{
+
+		// first read we need to lock
+		if( read_position == 0 ) cache_sync.lock();
+
 		if( consumer_idx >= 0  ){
-			assert( read_position == 0 ); // could happen on start of reading only
 			// in order prevent locks on read we unregister started to read stream
-			// std::lock_guard<std::mutex> lk(cache_sync);
 			memory_manager.unregisterConsumer( this, consumer_idx );
 			consumer_idx = -1;
 		}
@@ -715,11 +717,16 @@ struct CachedFileStream : IReadWriteStream, ICacheConsumer {
 			buf.reset( cache.buffer() );
 			memory_manager.release( buf_size, true, true );
 			cache.moveNext( false ); // clear without deletion
+			if( read_position == 0 ) cache_sync.unlock(); // do we need unlock?
 			read_position += buf_size;
 			return buf_size;
 		}
 
-		return Read( buf.get(), buf_size );
+		auto res = Read( buf.get(), buf_size );
+
+		if( read_position == 0 ) cache_sync.unlock(); // do we need unlock?
+
+		return res;
 	};
 
 

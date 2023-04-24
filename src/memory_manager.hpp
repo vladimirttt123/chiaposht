@@ -119,21 +119,20 @@ struct MemoryManager{
 	inline int32_t registerConsumer( ICacheConsumer * consumer ){
 		if( !CacheEnabled ) return -1; // disabled caching
 		std::scoped_lock lk ( sync_consumers );
+		if( min_consumer_idx > 0 ){
+			consumers[--min_consumer_idx] = consumer;
+			return min_consumer_idx;
+		}
 		consumers.push_back( consumer );
 		return consumers.size()-1;
 	}
 
 	inline void unregisterConsumer( ICacheConsumer * consumer, uint32_t idx ){
+		if( idx >= consumers.size() || consumers[idx] != consumer ) return; // check before lock to prevent deadlocks
 		std::scoped_lock lk ( sync_consumers );
 		if( idx >= min_consumer_idx && idx < consumers.size() && consumers[idx] == consumer ){
 			consumers[idx] = nullptr;
 			if( idx == min_consumer_idx ) min_consumer_idx++;
-			else if( (idx+1) == consumers.size() )
-				consumers.pop_back();
-			if( min_consumer_idx >= consumers.size() ){
-				min_consumer_idx = 0;
-				consumers.clear();
-			}
 		}
 	}
 
@@ -166,14 +165,16 @@ private:
 		ICacheConsumer * cur = nullptr;
 		{	// find consumer to clean
 			std::lock_guard<std::mutex> lk(sync_consumers);
-			while( cur == nullptr && min_consumer_idx < consumers.size() ){
-				if( this->isFIFO ){
+			if( isFIFO ){
+				while( cur == nullptr && min_consumer_idx < consumers.size() ){
 					cur = consumers[min_consumer_idx];
-					consumers[min_consumer_idx++] = nullptr; // it is not neccessary but for sure :)
+					consumers[min_consumer_idx++] = nullptr;
 				}
-				else{
-					cur = consumers.back();
-					consumers.pop_back();
+			}
+			else{
+				for( int32_t i = consumers.size()-1; cur == nullptr && i >= (int32_t)min_consumer_idx; i-- ){
+					cur = consumers[i];
+					consumers[i] = nullptr;
 				}
 			}
 		}
