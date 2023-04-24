@@ -128,11 +128,8 @@ public:
             }
             num_buckets = kMinBuckets;
         } else if (num_buckets > kMaxBuckets) {
-//            if (num_buckets_input != 0) {
-//                throw InvalidValueException("Maximum buckets is " + std::to_string(kMaxBuckets));
-//            }
 						if( num_buckets_input == 0 ){
-							std::cout << "Number of buckets is not proveded and automaticly selected to be "
+							std::cout << "Number of buckets is not provided and automaticly selected to be "
 												<< num_buckets << " that is not enough for proveded buffer size "
 												<< buf_megabytes_input
 												<< "MiB. Please increase buffer or override numer of buckets manually."
@@ -189,6 +186,13 @@ public:
             throw InvalidValueException("Bitfield plotting not supported by CPU");
         }
 #endif /* defined(_WIN32) || defined(__x86_64__) */
+
+
+				// allow to provide no cache throw the chia without changing chia executable.
+				if( tmp_dirname.find( ":NOCACHE:") == 0 ){
+					phases_flags |= DISABLE_BUFFER_CACHE;
+					tmp_dirname = tmp_dirname.substr(9);
+				}
 
         std::cout << std::endl
                   << "Starting plotting progress into temporary dirs: " << tmp_dirname << " and "
