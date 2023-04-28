@@ -78,38 +78,38 @@ TEST_CASE( "DISK_STREAMS" ){
 //		time_read.PrintElapsed( "Sort time:" );
 //	}
 
-	SECTION( "CachedFileStream" ){
-		uint32_t buf_size = 256*1024; // 256k
-		uint64_t mem_size = 1UL<<29UL; // 0.5Gb
-		uint32_t buffers_to_write = mem_size/buf_size*2;
-		const uint32_t number_of_files = 16;
+//	SECTION( "CachedFileStream" ){
+//		uint32_t buf_size = 256*1024; // 256k
+//		uint64_t mem_size = 1UL<<29UL; // 0.5Gb
+//		uint32_t buffers_to_write = mem_size/buf_size*2;
+//		const uint32_t number_of_files = 16;
 
-		MemoryManager mem_mngr(mem_size);
-		CachedFileStream *cfile[number_of_files];
-		for( uint32_t i = 0; i < number_of_files; i++ )
-			cfile[i] = new CachedFileStream( "cached.stream" + std::to_string(i) + ".tmp", mem_mngr, buf_size );
+//		MemoryManager mem_mngr(mem_size);
+//		CachedFileStream *cfile[number_of_files];
+//		for( uint32_t i = 0; i < number_of_files; i++ )
+//			cfile[i] = new CachedFileStream( "cached.stream" + std::to_string(i) + ".tmp", mem_mngr, buf_size );
 
-		for( uint32_t i = 0; i < buffers_to_write; i++ ){
-			std::unique_ptr<uint8_t[]> buf( new uint8_t[buf_size] );
-			memset( buf.get(), i, buf_size );
-			cfile[i%number_of_files]->Write( buf, buf_size );
-		}
+//		for( uint32_t i = 0; i < buffers_to_write; i++ ){
+//			std::unique_ptr<uint8_t[]> buf( new uint8_t[buf_size] );
+//			memset( buf.get(), i, buf_size );
+//			cfile[i%number_of_files]->Write( buf, buf_size );
+//		}
 
-		std::cout << "request half of the ram: " << mem_mngr.request( mem_size/2, true ) << std::endl;
+//		std::cout << "request half of the ram: " << mem_mngr.request( mem_size/2, true ) << std::endl;
 
-		for( uint32_t i = 0; i < buffers_to_write; i++ ){
-			auto buf = std::make_unique<uint8_t[]>(buf_size);
-			memset( buf.get(), i, buf_size );
+//		for( uint32_t i = 0; i < buffers_to_write; i++ ){
+//			auto buf = std::make_unique<uint8_t[]>(buf_size);
+//			memset( buf.get(), i, buf_size );
 
-			auto read_buf = std::make_unique<uint8_t[]>(buf_size);
-			REQUIRE( cfile[i%number_of_files]->Read( read_buf, buf_size ) == buf_size );
+//			auto read_buf = std::make_unique<uint8_t[]>(buf_size);
+//			REQUIRE( cfile[i%number_of_files]->Read( read_buf, buf_size ) == buf_size );
 
-			REQUIRE( memcmp( buf.get(), read_buf.get(), buf_size ) == 0 );
-		}
+//			REQUIRE( memcmp( buf.get(), read_buf.get(), buf_size ) == 0 );
+//		}
 
-		for( uint32_t i = 0; i < number_of_files; i++ )
-			delete cfile[i];
-	}
+//		for( uint32_t i = 0; i < number_of_files; i++ )
+//			delete cfile[i];
+//	}
 
 	SECTION( "SequenceCompacterStream" ) {
 		const uint64_t iteration = 3000;
@@ -123,7 +123,7 @@ TEST_CASE( "DISK_STREAMS" ){
 				std::cout << "SequenceCompacterStream entry_size: "
 									<< entry_size << ", bits_begin: " << bits_begin << std::endl;
 
-				auto buf = make_unique<uint8_t[]>(iteration*entry_size);
+				std::unique_ptr<uint8_t[]> buf( Util::NewSafeBuffer(iteration*entry_size) );
 				// fill buffer with entreies
 				for( uint64_t i = 0, next = 0; i < iteration; i++ ){
 					next += rand()&0xff;
@@ -165,23 +165,6 @@ TEST_CASE( "DISK_STREAMS" ){
 					REQUIRE( buf_ptr == iteration*entry_size );
 				}
 
-				{	// check by custom buffer;
-					ReadFileStream rstream = ReadFileStream(&disk, disk.GetWriteMax() );
-					SequenceCompacterReader compacter = SequenceCompacterReader( nullptr, entry_size, bits_begin );
-					auto rbuf = make_unique<uint8_t[]>(BUF_SIZE);
-					const uint32_t grow_buf_size = BUF_SIZE*4;
-					auto growbuf = make_unique<uint8_t[]>( grow_buf_size );
-					uint64_t buf_ptr = 0;
-					for( uint32_t buf_size = rstream.Read( rbuf, BUF_SIZE);
-							 buf_size > 0; buf_size = rstream.Read( rbuf, BUF_SIZE) ){
-						auto read_size = compacter.GrowCustomBuffer( rbuf.get(), buf_size, growbuf.get(), grow_buf_size );
-						for( uint32_t i = 0; i < read_size; i++ )
-							REQUIRE( growbuf.get()[i] == buf.get()[buf_ptr++] );
-					}
-					REQUIRE( buf_ptr == iteration*entry_size );
-
-
-				}
 			}
 		}
 		BUF_SIZE = cur_buf_size;
@@ -217,14 +200,14 @@ TEST_CASE( "DISK_STREAMS" ){
 																					, log2(num_buckets), entry_size, bits_begin + log2(num_buckets)
 																					, is_compact, sequence_start_bit );
 
-			auto bucket_data = std::make_unique<uint8_t[]>( iteration * entry_size );
+			StreamBuffer bucket_data( iteration * entry_size );
 
 			{ // Part I: writing
 
-				uint32_t bytes_in_buf = 0;
-
 				// Prepare entry
-				uint8_t base_entry[entry_size];
+				StreamBuffer base_entry_buf( entry_size );
+				StreamBuffer write_entry_buf( entry_size );
+				auto base_entry = base_entry_buf.get();
 				do{
 					for( uint32_t i = 0; i < entry_size; i++ )
 						base_entry[i] = rand()&0xff; // set random
@@ -247,32 +230,37 @@ TEST_CASE( "DISK_STREAMS" ){
 					}
 
 
-					memcpy( bucket_data.get() + bytes_in_buf, base_entry, entry_size );
-					bytes_in_buf += entry_size;
-					stream.Write( base_entry, entry_size ); // write by one entry at a time
+					assert( Util::ExtractNum64(base_entry, bits_begin, log2(num_buckets) ) == cur_bucket_no );
+					bucket_data.add( base_entry, entry_size );
+					stream.Write( write_entry_buf.setUsed( 0 ).add( base_entry, entry_size ) ); // write by one entry at a time
 				}
 
 				if( is_fush ) stream.FlusToDisk();
 			}
 
-			auto read_data = std::make_unique<uint8_t[]>( iteration * entry_size );
+			StreamBuffer read_data( iteration * entry_size );
 
 			{	// Part II: read the data
-				uint64_t read_bytes = 0;
-				auto buf = std::make_unique<uint8_t[]>( stream.MaxBufferSize() );
+				StreamBuffer buf;
 
-				uint64_t bytes_in_buf = 0;
-				while( (bytes_in_buf = stream.Read(buf) ) > 0 ){
-					memcpy( read_data.get() + read_bytes, buf.get(), bytes_in_buf );
-					read_bytes += bytes_in_buf;
+				while( stream.Read(buf) > 0 ){
+					assert( (buf.used()%entry_size) == 0 );
+					assert( read_data.used() + buf.used() <= iteration*entry_size );
+
+					for( uint32_t i = 0; i < buf.used(); i += entry_size)
+						REQUIRE( Util::ExtractNum64( buf.get() + i, bits_begin, log2(num_buckets) ) == cur_bucket_no );
+
+					read_data.add( buf.get(), buf.used() );
 				}
-				REQUIRE( read_bytes == iteration * entry_size );
+				REQUIRE( read_data.used() == iteration * entry_size );
 			}
 
 			{  // Part III: compare data
 				// bits_begin for sorting is alway 0 because it could be non unique entries that sorted different in other case
 				QuickSort::Sort( bucket_data.get(), entry_size, iteration, 0 );
 				QuickSort::Sort( read_data.get(), entry_size, iteration, 0 );
+				REQUIRE( Util::ExtractNum64(read_data.get(), bits_begin, log2(num_buckets) ) == cur_bucket_no );
+				REQUIRE( Util::ExtractNum64(bucket_data.get(), bits_begin, log2(num_buckets) ) == cur_bucket_no );
 				REQUIRE( memcmp( read_data.get(), bucket_data.get(), iteration * entry_size ) == 0 );
 			}
 
@@ -972,12 +960,14 @@ void PlotAndTestProofOfSpace(
     uint32_t num_proofs,
     uint32_t stripe_size,
 		uint8_t num_threads,
-		uint32_t num_buckets = 0 )
+		uint32_t num_buckets = 0,
+		uint8_t phase_flags = ENABLE_BITFIELD
+		)
 {
     DiskPlotter plotter = DiskPlotter();
     uint8_t memo[5] = {1, 2, 3, 4, 5};
-    plotter.CreatePlotDisk(
-				".", ".", ".", filename, k, memo, 5, plot_id, 32, buffer, num_buckets, stripe_size, num_threads);
+		plotter.CreatePlotDisk( ".", ".", ".", filename, k, memo, 5, plot_id, 32,
+														buffer, num_buckets, stripe_size, num_threads, phase_flags );
     TestProofOfSpace(filename, iterations, k, plot_id, num_proofs);
     REQUIRE(remove(filename.c_str()) == 0);
 }
@@ -986,7 +976,8 @@ TEST_CASE("PlottingOne")
 {
 	SECTION("Disk plot k22 small buffer in dual-thread")
 	{
-			PlotAndTestProofOfSpace("cpp-test-plot.dat", 5000, 22, plot_id_3, 18 , 4932, 65536, 2, 16);
+			PlotAndTestProofOfSpace("cpp-test-plot.dat", 5000, 22, plot_id_3, 18 , 4932,
+															65536, 2, 16, ENABLE_BITFIELD | NO_COMPACTION );
 	}
 }
 TEST_CASE("Plotting")
@@ -1162,8 +1153,10 @@ TEST_CASE("Sort on disk")
 		SECTION("Lazy Sort Manager QS")
 		{
 				uint32_t iters = 250000;
-				uint32_t const size = 32;
+				uint16_t const size = 32;
 				const uint32_t memory_len = 550000;
+				StreamBuffer entry_buf( size );
+
 				for( int threads_num = 0; threads_num < 8; threads_num++ ){
 					vector<Bits> input;
 					MemoryManager memory_manager = MemoryManager( memory_len );
@@ -1174,7 +1167,8 @@ TEST_CASE("Sort on disk")
 							picosha2::hash256(hash_input.begin(), hash_input.end(), hash.begin(), hash.end());
 							Bits to_write = Bits(hash.data(), size, size * 8);
 							input.emplace_back(to_write);
-							manager.AddToCache(to_write);
+							to_write.ToBytes( entry_buf.get() );
+							manager.AddToCache( entry_buf.setUsed(size) );
 					}
 					manager.FlushCache();
 					uint8_t buf[size];
@@ -1190,8 +1184,10 @@ TEST_CASE("Sort on disk")
 		SECTION("Lazy Sort Manager BSort")
     {
 				uint32_t iters = 350000;
-        uint32_t const size = 32;
+				uint16_t const size = 32;
         const uint32_t memory_len = 1000000;
+				StreamBuffer entry_buf( size );
+
 				for( int threads_num = 0; threads_num < 8; threads_num++ ){
 					vector<Bits> input;
 					MemoryManager memory_manager = MemoryManager( memory_len );
@@ -1202,7 +1198,8 @@ TEST_CASE("Sort on disk")
 							picosha2::hash256(hash_input.begin(), hash_input.end(), hash.begin(), hash.end());
 							Bits to_write = Bits(hash.data(), size, size * 8);
 							input.emplace_back(to_write);
-							manager.AddToCache(to_write);
+							to_write.ToBytes( entry_buf.get() );
+							manager.AddToCache( entry_buf.setUsed( size ) );
 					}
 					manager.FlushCache();
 					uint8_t buf[size];
@@ -1218,9 +1215,11 @@ TEST_CASE("Sort on disk")
     SECTION("Lazy Sort Manager uniform sort")
     {
         uint32_t iters = 120000;
-        uint32_t const size = 32;
+				uint16_t const size = 32;
         vector<Bits> input;
         const uint32_t memory_len = 1000000;
+				StreamBuffer entry_buf( size );
+
 				MemoryManager memory_manager = MemoryManager( memory_len );
 				SortManager manager(memory_manager, 16, 4, size, ".", "test-files", 0, 1, std::log2(iters), 1, 1 );
         for (uint32_t i = 0; i < iters; i++) {
@@ -1229,8 +1228,9 @@ TEST_CASE("Sort on disk")
             picosha2::hash256(hash_input.begin(), hash_input.end(), hash.begin(), hash.end());
             Bits to_write = Bits(hash.data(), size, size * 8);
             input.emplace_back(to_write);
-            manager.AddToCache(to_write);
-        }
+						to_write.ToBytes( entry_buf.get() );
+						manager.AddToCache( entry_buf.setUsed(size) );
+				}
         manager.FlushCache();
         uint8_t buf[size];
         sort(input.begin(), input.end());

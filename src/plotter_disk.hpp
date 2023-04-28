@@ -357,7 +357,7 @@ public:
                     num_buckets,
                     log_num_buckets,
 										phases_flags,
-										num_threads * (memory_manager.CacheEnabled?2:1) ); //double threads when cache enabled.
+										num_threads * ( (num_threads >  1 && memory_manager.CacheEnabled)?2:1) ); //double threads when cache enabled.
 
 								// after phase 2 return default cache mode
 								memory_manager.SetMode( false, false );

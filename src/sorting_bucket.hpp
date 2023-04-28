@@ -43,25 +43,29 @@ struct SortingBucket{
 	uint64_t prepare_time = 0, read_time = 0, sort_time = 0;
 
 	// Adds Entry to bucket
-	inline void AddEntry( const uint8_t * entry, const uint32_t &statistics_bits ){
-		assert(disk); // Check not closed
+	inline void AddEntry( StreamBuffer &entry, const uint32_t &statistics_bits ){
+		assert( disk ); // Check not closed
+		assert( entry.size() >= entry_size_ );
+		assert( entry.used() == entry_size_  );
 		assert( statistics_bits < ((uint32_t)1<<bucket_bits_count_) );
-		assert( Util::ExtractNum( entry, entry_size_, begin_bits_, bucket_bits_count_ ) == statistics_bits );
+		assert( Util::ExtractNum( entry.get(), entry_size_, begin_bits_, bucket_bits_count_ ) == statistics_bits );
 
 		statistics[statistics_bits]++;
 		entries_count++;
-		disk->Write( entry, entry_size_ );
+		disk->Write( entry );
 	}
 
-	inline void AddBulkTS( const uint8_t * entries, const uint32_t * stats, const uint32_t &count ){
+	inline void AddBulkTS( StreamBuffer & entries, const uint32_t * stats ){
 
 		std::lock_guard<std::mutex> lk( *addMutex.get() );
 
-		disk->Write( entries, count*entry_size_ );
+		auto count = entries.used() / entry_size_;
+
+		disk->Write( entries );
 
 		// Adding to statistics
 		for( uint32_t i = 0; i < count; i++ )	{
-			assert( Util::ExtractNum( entries + i*entry_size_, entry_size_, begin_bits_, bucket_bits_count_ ) == stats[i] );
+			assert( Util::ExtractNum( entries.get() + i*entry_size_, entry_size_, begin_bits_, bucket_bits_count_ ) == stats[i] );
 			statistics[stats[i]]++;
 		}
 		entries_count += count;
@@ -144,10 +148,8 @@ struct SortingBucket{
 		// Read from file to buckets, do not run threads if less than 1024 entries to read
 		if( num_threads <= 1 || /*read_size*/ Size() < 1024*entry_size_ ){
 
-			auto buf = std::make_unique<uint8_t[]>(disk->MaxBufferSize());
-			uint32_t buf_size;
-			while( ( buf_size = disk->Read( buf ) ) > 0 )
-				 FillBuckets( memory, buf.get(), buf_size, bucket_positions.get(), entry_size_ );
+			for( StreamBuffer buf; disk->Read( buf ) > 0; )
+				 FillBuckets( memory, buf.get(), buf.used(), bucket_positions.get(), entry_size_ );
 
 			assert( bucket_positions[0] == statistics[0]*entry_size_ ); // check first bucket is full
 			assert( bucket_positions[buckets_count-1]/entry_size_ == Count() ); // check last bucket is full
@@ -167,19 +169,19 @@ struct SortingBucket{
 			auto mutBackward = std::make_unique<std::mutex[]>(num_sub_locks);
 			// Define thread function
 			auto thread_func = [this, &memory , &num_sub_locks, &sub_locks_mask]( std::mutex *mutWrite,  uint64_t* bucket_positions, const int64_t direction ){
-				uint32_t buf_size = disk->MaxBufferSize();
-				std::unique_ptr<uint8_t[]> buf( Util::NewSafeBuffer( buf_size ) );
+				StreamBuffer buf( BUF_SIZE/entry_size_*entry_size_ );
+				std::unique_ptr<IBlockReader> reader( disk->CreateReader() );
 
-				auto buckets_bits_cache = std::make_unique<uint32_t[]>( buf_size/entry_size_ + 1 );
-				while( (buf_size = disk->Read( buf ) ) > 0 ){
+				auto buckets_bits_cache = std::make_unique<uint32_t[]>( buf.size()/entry_size_ + 1 );
+				while(  reader->Read( buf ) > 0 ){
 					// Extract all bucket_bits
 					uint32_t* bucket_bits = buckets_bits_cache.get();
-					for( uint64_t buf_ptr = 0; buf_ptr < buf_size; buf_ptr += entry_size_ )
+					for( uint64_t buf_ptr = 0; buf_ptr < buf.used(); buf_ptr += entry_size_ )
 						bucket_bits[buf_ptr/entry_size_] = (uint32_t)Util::ExtractNum64( buf.get() + buf_ptr, begin_bits_, bucket_bits_count_ );
 
 					for( uint32_t l = 0; l < num_sub_locks; l++ ){
 						std::lock_guard lk( mutWrite[l] );
-						for( uint64_t buf_ptr = 0; buf_ptr < buf_size; buf_ptr += entry_size_ ){
+						for( uint64_t buf_ptr = 0; buf_ptr < buf.used(); buf_ptr += entry_size_ ){
 							auto b_bits = bucket_bits[buf_ptr/entry_size_];
 							if( (b_bits&sub_locks_mask) == l ){
 								// Put next entry to its bucket
@@ -205,14 +207,15 @@ struct SortingBucket{
 						t.join();
 			}
 
-			// Clean underling resources
-			disk->EndToRead();
-
 #ifndef NDEBUG
 			// Chcek everything read as written.
 			for( uint32_t i = 0; i < buckets_count; i++ )
 				assert( (int64_t)bucket_positions[i] == (int64_t)back_bucket_positions[i] + entry_size_ );
 #endif
+			// Clean underling resources
+			disk->EndToRead();
+
+
 			// Fix bucket_positions for sorting step in such way that bucket_positions[i] reprsents end position of subbucket.
 			bucket_positions[0] = statistics[0]*entry_size_;
 			for( uint32_t i = 1; i < buckets_count; i++ )

@@ -19,6 +19,500 @@
 #include "util.hpp"
 
 
+struct StreamBuffer{
+
+	StreamBuffer( const StreamBuffer & other ) = delete;
+
+	StreamBuffer( uint32_t size = BUF_SIZE ) : size_(size){	}
+
+	uint8_t* get(){
+		return buffer == nullptr ?
+			( buffer = Util::NewSafeBuffer( size_ ) ) : buffer;
+	}
+
+	inline StreamBuffer & add( const uint8_t* data, uint32_t data_size) {
+		assert( used_size + data_size <= size_ );
+		memcpy( get() + used_size, data, data_size );
+		used_size += data_size;
+		return *this;
+	}
+
+	inline StreamBuffer & setUsed( uint32_t new_used ) {
+		assert( new_used <= size_ );
+		used_size = new_used;
+		return *this;
+	}
+
+
+	inline uint32_t used() const { return used_size; }
+	inline uint32_t size() const { return size_; }
+	inline bool isFull() const { return used_size >= size_; }
+
+	inline operator bool() const { return buffer != nullptr; }
+
+
+	inline StreamBuffer & ensureSize( uint32_t minSize, bool withClean = true ){
+		if( minSize > size_ ){
+			if( buffer != nullptr ){
+				if( used_size > 0 && !withClean ){
+					auto new_buf = Util::NewSafeBuffer( minSize );
+					memcpy( new_buf, buffer, used_size );
+					delete [] buffer;
+					buffer = new_buf;
+				} else {
+					delete [] buffer;
+					buffer = nullptr;
+				}
+
+			}
+			size_ = minSize;
+		}
+		if(withClean) used_size = 0;
+		return *this;
+	}
+
+	void swap( StreamBuffer & other ){
+		auto s = other.size_;
+		other.size_ = size_;
+		size_ = s;
+
+		auto buf = other.buffer;
+		other.buffer = buffer;
+		buffer = buf;
+	}
+
+	inline void reset(){
+		if( buffer != nullptr ){
+			delete[]buffer;
+			buffer = nullptr;
+		}
+	}
+
+	~StreamBuffer(){
+		if( buffer != nullptr ) delete[]buffer;
+	}
+
+private:
+	uint8_t * buffer = nullptr;
+	uint32_t size_;
+	uint32_t used_size = 0;
+};
+
+struct IBlockWriter{
+	virtual void Write( StreamBuffer & block ) = 0;
+	virtual void Flush() {};
+	virtual void Close() = 0;
+	virtual ~IBlockWriter() = default;
+};
+
+struct IBlockReader{
+	virtual uint32_t Read( StreamBuffer & block ) = 0;
+	virtual bool atEnd() const = 0;
+	virtual void Close() = 0;
+	virtual ~IBlockReader() = default;
+};
+
+struct IBlockWriterReader : public IBlockWriter, IBlockReader {
+	virtual void Remove() = 0;
+};
+
+
+struct BlockedFileStream : public IBlockWriterReader {
+	const int32_t read_block_size;
+	BlockedFileStream( const std::string &fileName, uint32_t read_block_size = 0 )
+		: read_block_size(read_block_size), file_name(fileName)	{	}
+
+	void Write( StreamBuffer & block ) override {
+		assert( read_position == 0 ); // do not read and write same time
+		if( !disk ){
+			assert( write_position == 0 );
+			disk.reset( new FileDisk(file_name) );
+		}
+		disk->Write( write_position, block.get(), block.used() );
+		write_position += block.used();
+	}
+
+	uint32_t Read( StreamBuffer & block ) override {
+		uint32_t to_read = std::min( (uint64_t)(read_block_size>0? read_block_size: block.size())
+																 , write_position - read_position );
+		block.ensureSize( to_read ).setUsed( to_read );
+		if( to_read > 0 ){
+			assert( read_position < write_position );
+
+			disk->Read( read_position, block.get(), to_read );
+			read_position += to_read;
+			assert( read_position <= write_position );
+		}
+
+		return to_read;
+	}
+
+	bool atEnd() const override{ return read_position >= write_position; };
+	void Flush() override { if( disk ) disk->Flush(); };
+	void Close() override { if( disk ) disk->Close(); };
+	void Remove() override { if(disk) disk->Remove( true ); }
+	~BlockedFileStream() { Remove(); }
+private:
+	std::unique_ptr<FileDisk> disk;
+	fs::path file_name;
+	uint64_t write_position = 0;
+	uint64_t read_position = 0;
+};
+
+
+// ============== Sequenc Compacter ========================
+struct BlockSequenceCompacterWriter : public IBlockWriter{
+	BlockSequenceCompacterWriter( IBlockWriter *disk,
+													 const uint16_t &entry_size, const uint8_t &begin_bits )
+		: disk( disk ) , entry_size(entry_size), begin_bits_( begin_bits&7 )
+		, begin_bytes( begin_bits>>3 ), mask( 0xff00 >> begin_bits_ )
+	{
+	}
+
+	void Write( StreamBuffer & block ) override {
+		CompactBuffer( block.get(), block.used() );
+	}
+
+	void Close() override {
+		if(disk){
+			if( buffer.used() > 0 )
+				disk->Write( buffer );
+			disk->Close();
+			disk.reset();
+		}
+		buffer.reset();
+	}
+
+	~BlockSequenceCompacterWriter(){Close();}
+private:
+	std::unique_ptr<IBlockWriter> disk;
+	uint64_t last_write_value = 0;
+	StreamBuffer buffer;
+	const uint16_t entry_size;
+	const uint8_t begin_bits_;
+	const uint8_t begin_bytes;
+	const uint8_t mask;
+
+	void CompactBuffer( uint8_t *buf, uint32_t buf_size ){
+		assert( (buf_size%entry_size) == 0 );
+
+		auto buffer_idx = buffer.used();
+		auto cur_buf = buffer.get();
+#define setNext( v ) { assert( buffer_idx < buffer.size() ); cur_buf[buffer_idx++] = v; }
+
+		for( uint32_t i = 0; i < buf_size; ){
+//			uint64_t next_val = Util::ExtractNum32( buf + i + begin_bytes, begin_bits_ );
+			uint64_t next_val = Util::ExtractNum64( buf + i + begin_bytes, begin_bits_, 32 );
+			uint64_t diff = next_val - last_write_value;
+			if( diff < 128 ){
+				// to save one byte of diff
+				setNext( diff );
+			} else if( diff < 16512 /* 2^14+128 */ ){
+				// to save 2 bytes b10xx xxxx xxxx xxxx: x = diff - 128;
+				diff -= 128;
+				assert( (diff >> 8) < 64 );
+				setNext( 128 + (diff>>8) );
+				setNext( diff );
+			} else if( diff < 2113664 /* 2^21 + 128 + 2^14 */ ){
+				// to save 3 bytes ;
+				diff -= 16512;
+				setNext( 192 + (diff>>16) );
+				setNext( diff>>8 );
+				setNext( diff );
+			} else if( diff < 270549120 /* 2^28 + 2^21 + 2^14 + 128 */){
+				// to save 4 bytes
+				diff = (diff-2113664) + (((uint32_t)0xe)<<28);
+				((uint32_t*)(cur_buf + buffer_idx))[0] = bswap_32( diff );
+				buffer_idx += 4;
+			}	else {
+				// save 255 & full value
+				setNext( 255 );
+				((uint32_t*)(cur_buf + buffer_idx))[0] = bswap_32( next_val );
+				buffer_idx += 4;
+			}
+
+			// Process cuted entry
+			for( uint32_t j = 0; j < begin_bytes; j++ )
+				setNext( buf[i++] );
+
+			// save one more bytes just in case need to do it i.e. there is a next byte
+			if( begin_bits_ || (begin_bytes + 4) < entry_size ){
+				setNext( (buf[i]&mask) | (buf[i+4]&~mask) );
+				i++;
+			}
+			i += 4; // move saved bytes forward
+			for( uint32_t j = begin_bytes + 5; j < entry_size; j++ )
+				setNext( buf[i++] );
+
+			// set result
+			last_write_value = next_val;
+
+			if( (buffer_idx + 1 + entry_size ) > BUF_SIZE ){ // next value could not fit buffer
+				memset( cur_buf + buffer_idx, 0, BUF_SIZE - buffer_idx ); // remove valgring Error :)
+				disk->Write( buffer.setUsed( BUF_SIZE ) );
+				cur_buf = buffer.setUsed( buffer_idx = 0 ).get(); // the buffer can be changed after writing.
+				last_write_value = 0;
+			}
+		}
+
+		buffer.setUsed( buffer_idx );
+	}
+};
+
+// <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+struct BlockSequenceCompacterReader : public IBlockReader {
+	BlockSequenceCompacterReader( IBlockReader *disk, const uint16_t &entry_size, uint8_t begin_bits )
+		: disk( disk ), entry_size(entry_size), begin_bits_( begin_bits&7 ), begin_bytes( begin_bits>>3 )
+		, mask( 0xff00 >> begin_bits_ )
+	{	}
+
+	uint32_t Read( StreamBuffer & block ) override{
+		block.setUsed( 0 );
+		if( read_buffer.used() == 0 // in case we get buffer from outside
+				&& disk->Read( read_buffer ) == 0 )
+			return 0; // end of input stream
+
+		return GrowBuffer( read_buffer, block );
+	}
+
+	inline bool atEnd() const override { return read_buffer.used() == 0 && disk->atEnd(); }
+	void Close() override { if(disk){ disk->Close(); disk.reset(); }buffer.reset(); }
+
+	~BlockSequenceCompacterReader(){ if( disk ) disk->Close(); }
+private:
+	std::unique_ptr<IBlockReader> disk;
+	StreamBuffer read_buffer;
+	StreamBuffer buffer;
+	const uint16_t entry_size;
+	const uint8_t begin_bits_;
+	const uint8_t begin_bytes;
+	const uint8_t mask;
+
+	// Returns growed buffer size
+	uint32_t GrowBuffer( StreamBuffer &from, StreamBuffer &to ){
+
+		to.setUsed(0).ensureSize( from.used()/(entry_size-3)*entry_size ); // if all entries are compacted this is the max buffer size
+
+		uint32_t j = 0;
+		auto src = from.get();
+		auto dst = to.get();
+
+		for( uint64_t i = 0, last_value = 0, buf_size = from.used();
+				 ( i + (buf_size < BUF_SIZE? 0 : entry_size ) + 1 ) <= buf_size;
+				 j += entry_size )
+			i += RecreateEntry( last_value, src + i, dst + j );
+
+		assert( j < to.size() );
+
+		from.setUsed( 0 ); // clear used for atEnd func
+		to.setUsed( j  );
+		return j;
+	}
+
+
+
+	// Recornstruct the entry, update l
+	inline uint32_t RecreateEntry( uint64_t &last_value, const uint8_t * src_buf, uint8_t * buf  ) const {
+		uint32_t ret = 1, value_to_insert;
+		uint8_t compress_code = src_buf[0];
+
+		if( compress_code < 128 )
+			value_to_insert = last_value + compress_code;
+		else if( compress_code < 192 ){
+			value_to_insert = last_value + 128 + ((((uint32_t)(compress_code - 128))<<8) | src_buf[1]);
+			ret = 2;
+		} else if( compress_code < 224 ){
+			value_to_insert = last_value + 16512 + ((((uint32_t)(compress_code-192))<<16) | ( ((uint32_t)src_buf[1]) <<8 ) | src_buf[2] );
+			ret = 3;
+		} else if( compress_code < 240 ){
+			value_to_insert = last_value + 2113664 + ((((uint32_t)(compress_code-224))<<24) |
+																								( ((uint32_t)src_buf[1]) <<16) | ( ((uint32_t)src_buf[2]) <<8 ) | src_buf[3] );
+			ret = 4;
+		} else {
+			assert( compress_code == 255 );
+			value_to_insert = bswap_32( ((uint32_t*)(src_buf+1))[0] );
+			ret = 5;
+		}
+
+		bool hasEnd = ( begin_bytes + 4 ) < entry_size || begin_bits_;
+		// recreate the entry
+		for( uint32_t j = 0; j < begin_bytes; j++ )
+			buf[j] = src_buf[ret++];
+		auto splitted = hasEnd ? src_buf[ret++] : 0;
+		buf[begin_bytes] = (splitted&mask)|(value_to_insert>>(24+begin_bits_));
+		buf[begin_bytes+1] = value_to_insert >> (16+begin_bits_);
+		buf[begin_bytes+2] = value_to_insert >> (8+begin_bits_);
+		buf[begin_bytes+3] = value_to_insert >> begin_bits_;
+		if( hasEnd )
+			buf[begin_bytes+4] = (value_to_insert<<(8-begin_bits_)) | (splitted&~mask);
+
+		for( uint32_t j = begin_bytes + 5; j < entry_size; j++ )
+			buf[j] = src_buf[ret++];
+
+		last_value = value_to_insert;
+		return ret;
+	}
+};
+
+
+
+// ============== Bytes Cutter =============================
+struct BlockByteCutter : public IBlockWriter{
+	BlockByteCutter( IBlockWriter *disk, uint16_t entry_size, uint16_t begin_bits )
+		: disk( disk ), entry_size(entry_size)
+		, bytes_begin(begin_bits>>3), mask( 0xff00 >> (begin_bits&7) )
+	{	}
+
+	void Write( StreamBuffer & block ) override {
+		disk->Write( CompactBuffer( block ) );
+	}
+
+	void Close() override { if( disk ) { disk->Close(); disk.reset(); } }
+
+	~BlockByteCutter(){ if(disk) disk->Close(); }
+private:
+	std::unique_ptr<IBlockWriter> disk;
+	const uint16_t entry_size;
+	const uint8_t bytes_begin;
+	const uint8_t mask;
+
+	inline StreamBuffer & CompactBuffer( StreamBuffer & buffer ){
+		uint32_t buf_size = buffer.used();
+		uint8_t * buf = buffer.get();
+
+		assert( (buf_size%entry_size) == 0 );
+
+		// extract current bucket
+		if( mask ){
+			for( uint32_t i = bytes_begin + 1; i < buf_size; i += entry_size ){
+				buf[i] = (buf[i-1]&mask) | (buf[i]&(~mask));
+			}
+		}
+
+		// remove current bucket
+		uint32_t i = bytes_begin + 1, j = bytes_begin;
+		for( ;i < (buf_size - entry_size); i += entry_size, j += entry_size - 1 )
+			memmove( buf + j, buf + i, entry_size - 1 );
+		// last tail
+		memmove( buf + j, buf + i, entry_size - 1 - bytes_begin );
+
+		return buffer.setUsed( buf_size/entry_size * (entry_size-1) );
+	}
+};
+
+// <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+struct BlockByteInserter : public IBlockReader{
+	BlockByteInserter( IBlockReader *disk, uint16_t entry_size, uint16_t begin_bits, uint8_t removed_byte )
+		: disk( disk ), entry_size(entry_size), begin_bits(begin_bits&7), bytes_begin(begin_bits>>3)
+		, removed_byte( removed_byte ), mask( 0xff00 >> (begin_bits&7) )
+	{	}
+
+	uint32_t Read( StreamBuffer & block ) override{
+		disk->Read( block );
+		assert( block.used()%(entry_size-1) == 0 );
+
+		return GrowBuffer( block );
+	}
+
+	bool atEnd() const override { return disk->atEnd(); }
+
+	void Close() override { if(disk){ disk->Close(); disk.reset(); } }
+
+
+	uint32_t GrowBuffer( StreamBuffer & block ){
+		auto buf_size = block.used();
+		if(buf_size == 0 ) return 0;
+		uint32_t full_buf_size = buf_size/(entry_size-1)*entry_size;
+
+		auto buf = block.ensureSize( full_buf_size ).get();
+
+		// copy last entry
+		uint64_t tail_idx = full_buf_size - entry_size + bytes_begin + 1;
+		int64_t compacted_idx = buf_size - entry_size + bytes_begin + 1;
+		memmove( buf + tail_idx, buf + compacted_idx, entry_size - bytes_begin - 1 );
+		for( tail_idx -= entry_size, compacted_idx -= entry_size - 1;
+				 compacted_idx >= 0;
+				 tail_idx -= entry_size, compacted_idx -= entry_size - 1 )
+			memmove( buf + tail_idx, buf + compacted_idx, entry_size - 1 );
+
+		// Now insert bucket
+		if( mask ){
+			const uint8_t shift = begin_bits&7;
+			const uint8_t insert_hi = (removed_byte)>>shift;
+			const uint8_t insert_lo = (removed_byte)<<(8-shift);
+			for( uint32_t i = bytes_begin; i < full_buf_size; i += entry_size ){
+				buf[i] = (buf[i+1]&mask) | insert_hi;
+				buf[i+1] = (buf[i+1]&~mask) | insert_lo;
+			}
+		}else{
+			for( uint32_t i = bytes_begin; i < full_buf_size; i += entry_size )
+				buf[i] = removed_byte;
+		}
+
+		block.setUsed( full_buf_size );
+		return full_buf_size;
+	}
+
+	~BlockByteInserter(){ if(disk) disk->Close();}
+private:
+	std::unique_ptr<IBlockReader> disk;
+	const uint16_t entry_size;
+	const uint16_t begin_bits;
+	const uint8_t bytes_begin;
+	const uint8_t removed_byte;
+	const uint8_t mask;
+};// end of ByteInserterStream
+
+
+
+// ============== Manager Streams =============================
+struct BlockNotFreeingWriter: IBlockWriter{
+	BlockNotFreeingWriter( IBlockWriter * wstream ) :wstream(wstream){}
+
+	void Write( StreamBuffer & block ) override{
+		assert( wstream != nullptr );
+		wstream->Write( block );
+	}
+	void Close() override{ if( wstream != nullptr ) { wstream->Close(); wstream = nullptr; } }
+
+	private:
+		IBlockWriter * wstream;
+};
+
+struct BlockNotFreeingReader : IBlockReader {
+	BlockNotFreeingReader( IBlockReader * reader ) : rstream(reader) {}
+
+	uint32_t Read( StreamBuffer & block ) override { return rstream->Read(block);};
+	virtual bool atEnd() const override {return rstream->atEnd(); };
+	virtual void Close() override {};
+private:
+	IBlockReader * rstream;
+};
+
+struct BlockThreadSafeReader : IBlockReader{
+	// Thread safe means more than one thread reads from underlying stream
+	// It means not delete and no close for underlying stream
+	BlockThreadSafeReader( IBlockReader *read_stream, std::mutex & sync_mutex )
+		: rstream(read_stream), sync_mutex(sync_mutex) {}
+
+	uint32_t Read( StreamBuffer & block ) override {
+		std::lock_guard<std::mutex> lk(sync_mutex);
+		return rstream->Read( block );
+	}
+	bool atEnd() const override { return rstream->atEnd();};
+	void Close() override{};
+
+private:
+	IBlockReader * rstream;
+	std::mutex &sync_mutex;
+};
+
+
+
+// ==================================================================================
+// ==================================================================================
+// ==================================================================================
+// ==================================================================================
 struct IWriteDiskStream{
 	virtual void Write( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) = 0;
 	virtual void Close() = 0;
@@ -36,35 +530,6 @@ struct IReadWriteStream : public IReadDiskStream, IWriteDiskStream {
 	virtual void Remove() = 0;
 };
 
-// This class not thread safe!!!
-struct AsyncStreamWriter : public IWriteDiskStream {
-	AsyncStreamWriter( IWriteDiskStream * disk, const uint32_t max_buffer_size = 0 )
-		: disk(disk), last_buf_size(max_buffer_size) {}
-
-	void Write( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) override {
-		if( io_thread ) io_thread->join();
-		if( !buffer || last_buf_size < buf_size )
-			buffer.reset( new uint8_t[last_buf_size = buf_size] );
-		buf.swap( buffer );
-		io_thread.reset( new std::thread( [this](uint32_t b_size){ disk->Write(buffer, b_size);}, buf_size ) );
-	};
-
-	void Close() override {
-		if( io_thread ){
-			io_thread->join();
-			io_thread.reset();
-		}
-		disk.reset();// may be close it before reset?
-		buffer.reset();
-	};
-
-	~AsyncStreamWriter(){ if( io_thread ) io_thread->join(); }
-private:
-	std::unique_ptr<IWriteDiskStream> disk;
-	std::unique_ptr<uint8_t[]> buffer;
-	std::unique_ptr<std::thread> io_thread;
-	uint32_t last_buf_size = 0;
-};
 
 // This class not thread safe!!!
 struct AsyncCopyStreamWriter : public IWriteDiskStream {
@@ -302,6 +767,7 @@ private:
 		assert( (buf_size%entry_size) == 0 );
 
 		auto cur_buf = buffer.get();
+#undef setNext
 #define setNext( v ) cur_buf[buffer_idx++] = v
 
 		for( uint32_t i = 0; i < buf_size; ){
@@ -363,17 +829,13 @@ private:
 };
 
 struct SequenceCompacterReader : public IReadDiskStream{
-	SequenceCompacterReader( IReadDiskStream *disk, const uint16_t &entry_size, uint8_t begin_bits )
-		: disk( disk )
+	SequenceCompacterReader( IReadDiskStream *disk, const uint16_t &entry_size, uint8_t begin_bits, SequenceCompacterWriter * writer = nullptr )
+		: disk( disk ), buffer( Util::NewSafeBuffer(BUF_SIZE) )
 		, entry_size(entry_size), begin_bits_( begin_bits&7 ), begin_bytes( begin_bits>>3 )
 		, mask( 0xff00 >> begin_bits_ )
 	{
-	}
-
-	// this function for support custom buffer growing, defines buffer size to be provided to restore all entries
-	static inline uint32_t getMaxRestoredBufferSize( uint32_t entry_size )
-	{
-		return BUF_SIZE/(entry_size-3)*entry_size + entry_size;
+		if( writer != nullptr )
+			bytes_in_buffer = writer->ReleaseBuffer( buffer.get() );
 	}
 
 	uint32_t Read( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) override{
@@ -382,31 +844,6 @@ struct SequenceCompacterReader : public IReadDiskStream{
 
 	inline bool atEnd() const override { return bytes_in_buffer <= processed_of_buffer && disk->atEnd(); }
 	void Close() override { if(disk){ disk->Close(); disk.reset(); }buffer.reset(); }
-
-	// Returns growed buffer size
-	uint32_t GrowCustomBuffer( const uint8_t * compacted_buf, uint32_t compacted_buf_size, uint8_t * restore_buf, uint32_t restore_buf_size ) const {
-
-		uint32_t i = 0, processed_of_buffer = 0;
-		uint64_t last_value = 0;
-
-		assert( compacted_buf_size <= BUF_SIZE );
-		assert( restore_buf_size >= getMaxRestoredBufferSize( entry_size ) );
-
-		if( compacted_buf_size >= BUF_SIZE  ) // in reality it could be equal or less
-			compacted_buf_size = compacted_buf_size - entry_size; // it can be new entry started after this point
-		restore_buf_size = restore_buf_size/entry_size*entry_size; // align restore buffer to entry size?
-
-
-		while( i < restore_buf_size && processed_of_buffer < compacted_buf_size ){
-
-			processed_of_buffer += RecreateEntry( last_value, compacted_buf + processed_of_buffer, restore_buf + i );
-			i += entry_size;
-		}
-
-		assert( processed_of_buffer >= compacted_buf_size ); // check whole buffer is recreated
-
-		return i;
-	}
 
 	~SequenceCompacterReader(){if(disk) disk->Close();}
 private:
@@ -429,7 +866,6 @@ private:
 
 			if( ( processed_of_buffer + entry_size + 1 ) > bytes_in_buffer && !disk->atEnd() ){
 				// current buffer finished or first hasn't started yet => need to read next
-				if( !buffer ) buffer.reset( new uint8_t[BUF_SIZE] ); // create buffer if not exists
 				bytes_in_buffer = disk->Read( buffer, BUF_SIZE ); // read the stream
 
 				assert( bytes_in_buffer == BUF_SIZE || disk->atEnd() );
@@ -591,24 +1027,25 @@ private:
 
 
 struct BufferedWriter : IWriteDiskStream{
-	BufferedWriter( IWriteDiskStream* disk, const uint32_t &entry_size )
-		: disk(disk), allocated_size( BUF_SIZE/entry_size*entry_size )
-	{}
+	// all written out buffer except last would be in size of block_size, but amount of real data inside could be less
+	BufferedWriter( IWriteDiskStream* disk, const uint32_t block_size = BUF_SIZE, const uint8_t entry_size = 1 )
+		: disk(disk), allocated_size( block_size ), write_size( block_size/entry_size*entry_size )
+	{	}
 
 	void Write( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ){
 		Write( buf.get(), buf_size );
 	};
 
-	inline void Write( const uint8_t * buf, const uint32_t &buf_size ){
+	inline void Write( const uint8_t * buf, const uint32_t &buf_size ) {
 		if( !buffer ) buffer.reset( new uint8_t[allocated_size] ); // late buffer allocation.
 
 		for( uint32_t processed = 0; processed < buf_size; ){
-			uint32_t to_process = std::min( allocated_size - buffer_used, buf_size - processed );
+			uint32_t to_process = std::min( write_size - buffer_used, buf_size - processed );
 			memcpy( buffer.get() + buffer_used, buf + processed, to_process );
 			processed += to_process;
 			buffer_used += to_process;
-			if( buffer_used == allocated_size ){
-				disk->Write( buffer, buffer_used );
+			if( buffer_used == write_size ){
+				disk->Write( buffer, allocated_size );
 				buffer_used = 0;
 			}
 		}
@@ -635,7 +1072,55 @@ struct BufferedWriter : IWriteDiskStream{
 private:
 	std::unique_ptr<IWriteDiskStream> disk;
 	const uint32_t allocated_size;
+	const uint32_t write_size;
 	uint32_t buffer_used = 0;
+	std::unique_ptr<uint8_t[]> buffer;
+
+	friend struct BufferedReadStream;
+};
+
+struct BufferedReadStream : IReadDiskStream {
+
+	BufferedReadStream( IReadDiskStream * disk, BufferedWriter &writer )
+		:disk(disk), block_size(writer.allocated_size), read_size(writer.write_size)
+		, buffer_size( writer.buffer_used )
+		, buffer( buffer_size == 0 ? Util::NewSafeBuffer( block_size ) : writer.buffer.release() )
+	{
+		writer.buffer_used = 0;
+	}
+
+	BufferedReadStream( IReadDiskStream * disk, const uint32_t block_size = BUF_SIZE, const uint8_t entry_size = 1 )
+		: disk(disk), block_size(block_size), read_size( block_size/entry_size*entry_size )
+		, buffer( Util::NewSafeBuffer(block_size) )
+	{	}
+
+	uint32_t Read( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) override{
+		uint32_t res = 0;
+
+		while( res < buf_size ){
+			if( buffer_position >= buffer_size ){
+				buffer_size = std::min( read_size, disk->Read( buffer, block_size ) ); // hope that read is OK and amount allinged to entry size
+				buffer_position = 0;
+			}
+			if( buffer_size == 0 ) return res;
+
+			uint32_t to_read = std::min( buffer_size-buffer_position, buf_size - res );
+			memcpy( buf.get() + res, buffer.get() + buffer_position, to_read );
+			buffer_position += to_read;
+			res+=to_read;
+		}
+
+		return res;
+	}
+	bool atEnd() const override { return  disk->atEnd(); }
+	void Close() override { disk->Close(); };
+
+private:
+	std::unique_ptr<IReadDiskStream> disk;
+	const uint32_t block_size;
+	const uint32_t read_size;
+	uint32_t buffer_size = 0;
+	uint32_t buffer_position = 0;
 	std::unique_ptr<uint8_t[]> buffer;
 };
 
@@ -651,6 +1136,33 @@ struct NotFreeingWriteStream: IWriteDiskStream{
 		IWriteDiskStream * wstream;
 };
 
+struct NotFreeingReadStream: IReadDiskStream{
+	NotFreeingReadStream( IReadDiskStream * read_stream ) :rstream(read_stream){}
+
+	uint32_t Read( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) override{
+		return rstream->Read( buf, buf_size );
+	}
+	void Close() override{ }
+	virtual bool atEnd() const override { return rstream->atEnd(); }
+
+	private:
+		IReadDiskStream * rstream;
+};
+
+struct ThreadSafeReadStream : IReadDiskStream{
+	ThreadSafeReadStream( IReadDiskStream *read_stream ) : rstream(read_stream) {}
+
+	uint32_t Read( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) override{
+		std::lock_guard<std::mutex> lk(sync_mutex);
+		return rstream->Read( buf, buf_size );
+	}
+	bool atEnd() const override { return rstream->atEnd();};
+	void Close() override{ rstream->Close(); }; // do we need sync on close?
+
+private:
+	std::unique_ptr<IReadDiskStream> rstream;
+	std::mutex sync_mutex;
+};
 
 /* CachedFileStream class stores in cache as many data as possible before wrtting it to file
 	Warning! CachedFileStream class is not thread safe i.e. IO from more than one thread leads to unpredictable.
@@ -901,130 +1413,133 @@ struct BucketStream{
 	BucketStream( std::string fileName, MemoryManager &memory_manager, uint16_t bucket_no, uint8_t log_num_buckets,
 								uint16_t entry_size, uint16_t begin_bits, bool compact = true, int8_t sequence_start_bit = -1 )
 		: fileName(fileName)
-		, memory_manager( memory_manager )
+//		, memory_manager( memory_manager )
 		, bucket_no_( bucket_no )
 		, log_num_buckets_( log_num_buckets )
 		, entry_size_(entry_size)
 		, begin_bits_(begin_bits)
 		, sequence_start_bit(sequence_start_bit)
 		, compact( compact&(log_num_buckets_>7) )
-		, size_to_read( this->compact?(sequence_start_bit>=0?
-																		 BUF_SIZE // sequenct compacter read by this value
-																	 :(BUF_SIZE/(entry_size-1)*(entry_size-1))) // if just bucket_no removed than read amount should be alligned to entry_size-1
-																:(BUF_SIZE/entry_size*entry_size) ) // without compaction read amount should be allinged to entry size
-		, buffer_size(
-				this->compact ? ( (sequence_start_bit>=0 ? SequenceCompacterReader::getMaxRestoredBufferSize(entry_size-1) : size_to_read )/(entry_size-1)*entry_size + entry_size )
-											: size_to_read
-				)
 	{	}
 
-	uint32_t MaxBufferSize() const { return buffer_size; }
 	const std::string getFileName() const {return fileName;}
 
 
-	void Write( const uint8_t * buf, const uint32_t &buf_size ){
-		assert( (buf_size % entry_size_) == 0 );
-		if( buf_size == 0 ) return; // nothing to write
+	// The write is NOT thread save and should be synced from outside!!!!
+	inline void Write( StreamBuffer & buf ){
+		assert( (buf.size() % entry_size_) == 0 );
+		if( buf.size() == 0 ) return; // nothing to write
 
 		// std::lock_guard<std::mutex> lk( sync_mutex );
 		if( !disk_output ){
-			bucket_file.reset( CreateFileStream( fileName, memory_manager, size_to_read ) );
-			disk_output.reset( new NotFreeingWriteStream( bucket_file.get() ) );
+//			bucket_file.reset( CreateFileStream( fileName, memory_manager, BUF_SIZE ) );
+//			disk_output.reset( new NotFreeingWriteStream( bucket_file.get() ) );
+//			if( compact ){
+//				if( sequence_start_bit >= 0 )
+//					disk_output.reset( compacter = new SequenceCompacterWriter( disk_output.release(), entry_size_-1,
+//																sequence_start_bit - (sequence_start_bit > begin_bits_ ? 8 : 0 ) ) );
+//				else
+//					disk_output.reset( buf_writer = new BufferedWriter( disk_output.release(), BUF_SIZE,
+//														memory_manager.CacheEnabled ? (entry_size_-1) : 1 ) );
+
+
+//				disk_output.reset( new ByteCutterStream( disk_output.release(),
+//																	entry_size_, begin_bits_ - log_num_buckets_ ) );
+//			}
+//			else {
+//				if( memory_manager.CacheEnabled )
+//					disk_output.reset( buf_writer = new BufferedWriter( disk_output.release(), BUF_SIZE, entry_size_ ) ); // block writer
+//				else
+//					disk_output.reset( buf_writer = new BufferedWriter( disk_output.release(), BUF_SIZE/entry_size_*entry_size_ ) );
+//			}
+
+			uint32_t read_block_size = BUF_SIZE/entry_size_*entry_size_;
+			if( compact )
+				read_block_size = sequence_start_bit >= 0 ? BUF_SIZE : (BUF_SIZE/entry_size_*(entry_size_-1));
+
+			bucket_file.reset( new BlockedFileStream( fileName, read_block_size  ) );
+			disk_output.reset( new BlockNotFreeingWriter( bucket_file.get() ) );
 			if( compact ){
 				if( sequence_start_bit >= 0 )
-					disk_output.reset( compacter = new SequenceCompacterWriter( disk_output.release(), entry_size_-1,
-																sequence_start_bit - (sequence_start_bit > begin_bits_ ? 8 : 0 ) ) );
+					disk_output.reset( new BlockSequenceCompacterWriter( disk_output.release(), entry_size_ - 1
+																, sequence_start_bit - (sequence_start_bit > begin_bits_ ? 8 : 0 ) ) );
 
-				disk_output.reset( new ByteCutterStream( disk_output.release(),
-																	entry_size_, begin_bits_ - log_num_buckets_ ) );
+				disk_output.reset( new BlockByteCutter( disk_output.release(), entry_size_, begin_bits_ - log_num_buckets_ ) );
 			}
-
-			disk_output.reset( new BufferedWriter( disk_output.release(), entry_size_ ) );
 		}
 
-		((BufferedWriter*)(disk_output.get()))->Write( buf, buf_size );
-	}
-
-	// The write is NOT thread save and should be synced from outside!!!!
-	void Write( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ){
-		Write( buf.get(), buf_size );
+		disk_output->Write( buf );
 	}
 
 
-	// this should be NEVER called when object used in threads!!!
+	// This is NOT thread safe
 	void FlusToDisk(){
-		// std::lock_guard<std::mutex> lk( sync_mutex );
 		if( disk_output ) {
 			disk_output->Close();
 			disk_output.reset();
 		}
 	}
 
-	// This can be called from thread safly without additional syncs.
-	uint32_t Read( std::unique_ptr<uint8_t[]> &buf ){
-		{
-			if( !bucket_file && !disk_input ) return 0;// nothing has been written
-			uint32_t read_size = 0;
-
-			{ // reading file part is locked by mutex
-				std::lock_guard<std::mutex> lk( sync_mutex );
-
-				if( disk_output ){ // output not flushed to disk or released
-					std::unique_ptr<uint8_t[]> obuf;
-					auto buf_size = ((BufferedWriter*)disk_output.get())->ReleaseBuffer( obuf );
-					if( buf_size ) {
-						memcpy( buf.get(), obuf.get(), buf_size );
-						return buf_size;
-					}
-				}
-
-				if( !disk_input ){
-					if( sequence_start_bit >= 0 ){
-						// create compacter without input stream to grow custom buffer.
-						restorer.reset( new SequenceCompacterReader( nullptr, entry_size_-1,
-																		sequence_start_bit - (sequence_start_bit > begin_bits_ ? 8 : 0 ) ) );
-					}
-
-					inserter.reset( new ByteInserterStream( nullptr,
-																		entry_size_, begin_bits_ - log_num_buckets_,
-																		bucket_no_ >> (log_num_buckets_-8) ) );
-
-
-					if( compacter && disk_output ){ // output not flushed to disk
-						// we can get last compacted buffer without writting it to disk
-						read_size = compacter->ReleaseBuffer( buf.get() );
-						compacter = nullptr;
-					}
-
-					if( disk_output )
-						disk_output.reset(); // close output stream
-
-					disk_input.reset( (IReadDiskStream*)bucket_file.release() );
-				}
-
-
-				if( read_size == 0 )
-					read_size = disk_input->Read( buf, size_to_read );
-			}
-
-			// this part is not locked and can be done in many threads in parallel
-			if( compact ){
-				if( sequence_start_bit >= 0 ){
-					std::unique_ptr<uint8_t[]> restore_buffer = std::make_unique<uint8_t[]>( buffer_size );
-					read_size = restorer->GrowCustomBuffer( buf.get(), read_size, restore_buffer.get(), buffer_size );
-					buf.swap( restore_buffer );
-				}
-
-				assert( read_size%(entry_size_-1) == 0 ); // is read size aligned
-				assert( (read_size/(entry_size_-1)*entry_size_ ) <= buffer_size ); // is buffer has enough space
-
-				read_size = inserter->GrowBuffer( buf.get(), read_size );
-			}
-
-			assert( read_size <= buffer_size );
-
-			return read_size;
+	// This is thread safe
+	IBlockReader * CreateReader( bool isThreadSafe = true ){
+		std::lock_guard<std::mutex> lk( sync_mutex );
+		if( !bucket_file ) return nullptr; // nothing to create...
+		if( disk_output ) {
+			disk_output->Close();
+			disk_output.reset();
 		}
+
+		IBlockReader* fin = bucket_file.get();
+		if( isThreadSafe )
+			fin = new BlockThreadSafeReader( fin, sync_mutex );
+		else
+			fin = new BlockNotFreeingReader( fin );
+
+		if( compact ){
+			if( sequence_start_bit >= 0 ){
+				fin = new BlockSequenceCompacterReader( fin, entry_size_ - 1,
+											sequence_start_bit - (sequence_start_bit > begin_bits_ ? 8 : 0 ) );
+			}
+
+			fin = new BlockByteInserter( fin, entry_size_,
+										begin_bits_ - log_num_buckets_, bucket_no_ >> (log_num_buckets_-8) );
+		}
+
+		return fin;
+//		IReadDiskStream * res = new NotFreeingReadStream( bucket_file.get() );
+
+//		if( isThreadSafe )
+//			res = new ThreadSafeReadStream( res );
+
+//		if( compact ){
+//			if( sequence_start_bit >= 0 ){
+//				// create compacter without input stream to grow custom buffer.
+//				res = new SequenceCompacterReader( res, entry_size_-1,
+//										sequence_start_bit - (sequence_start_bit > begin_bits_ ? 8 : 0 ), compacter );
+//				compacter = nullptr;
+//			} else {
+//				assert( buf_writer != nullptr );
+//				res = new BufferedReadStream( res, *buf_writer );
+//			}
+
+//			res = new ByteInserterStream( res,
+//																entry_size_, begin_bits_ - log_num_buckets_,
+//																bucket_no_ >> (log_num_buckets_-8) );
+//		} else if( buf_writer != nullptr ){
+//			res = new BufferedReadStream( res, *buf_writer );
+//			buf_writer = nullptr;
+//		}
+
+
+//		disk_output.reset(); // free resources of disk_output
+
+//		return res;
+	}
+
+	// This is NOT thread safe
+	uint32_t Read( StreamBuffer &buf ){
+		if( !disk_input ) disk_input.reset( CreateReader( false ) );
+		return disk_input->Read( buf );
 	}
 
 	// It can be called if full reading not finished yet to close and remove resources
@@ -1042,10 +1557,10 @@ struct BucketStream{
 
 private:
 	const std::string fileName;
-	MemoryManager &memory_manager;
-	std::unique_ptr<IReadWriteStream> bucket_file;
-	std::unique_ptr<IWriteDiskStream> disk_output;
-	std::unique_ptr<IReadDiskStream> disk_input;
+//	MemoryManager &memory_manager;
+	std::unique_ptr<IBlockWriterReader> bucket_file;
+	std::unique_ptr<IBlockWriter> disk_output;
+	std::unique_ptr<IBlockReader> disk_input;
 	const uint16_t bucket_no_;
 	const uint8_t log_num_buckets_;
 	std::unique_ptr<std::thread> disk_io_thread;
@@ -1055,13 +1570,9 @@ private:
 	std::mutex sync_mutex;
 
 	const bool compact;
-	const uint32_t size_to_read;
-	const uint32_t buffer_size;
 
-	SequenceCompacterWriter * compacter = nullptr;
-	std::unique_ptr<SequenceCompacterReader> restorer;
-	std::unique_ptr<ByteInserterStream> inserter;
-
+//	SequenceCompacterWriter * compacter = nullptr;
+//	BufferedWriter * buf_writer = nullptr;
 };
 
 struct LastTableRewrited : IReadDiskStream {

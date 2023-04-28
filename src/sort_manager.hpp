@@ -34,29 +34,28 @@ const uint32_t CacheBucketSize = 256; // mesured in number of entries
 // Small bucket used in thread writings
 struct CacheBucket{
 	explicit CacheBucket( SortingBucket &cacheFor )
-		: entries( Util::NewSafeBuffer( CacheBucketSize*cacheFor.EntrySize() ) )
+		: entries( CacheBucketSize*cacheFor.EntrySize() )
 		, entry_size( cacheFor.EntrySize() )
 		, parent( cacheFor )
 	{	}
 
 	inline void Add( const uint8_t *entry, const uint32_t &stats ){
-		if( count >= CacheBucketSize ) Flush();
-		memcpy( entries.get() + ((uint64_t)count)*entry_size , entry, entry_size );
-		statistics[count++] = stats;
+		if( entries.isFull() ) Flush();
+		statistics[entries.used()/entry_size] = stats;
+		entries.add( entry, entry_size );
 	}
 
 	inline void Flush(){
-		if( count > 0 ){
-			parent.AddBulkTS( entries.get(), statistics, count );
-			count = 0;
+		if( entries.used() > 0 ){
+			parent.AddBulkTS( entries, statistics );
+			entries.setUsed( 0 );
 		}
 	}
 
 	~CacheBucket(){Flush();}
 private:
 	uint32_t statistics[CacheBucketSize];
-	std::unique_ptr<uint8_t[]> entries;
-	uint16_t count = 0;
+	StreamBuffer entries;
 	const uint16_t entry_size;
 	SortingBucket &parent;
 };
@@ -156,47 +155,6 @@ public:
 		}; // end of ThreadWriter
 
 
-		// used for single thread async writing ( in phase 3 - 1st part )
-		struct AsyncAdder {
-			explicit AsyncAdder( SortManager &parent )
-				: parent_(parent), buf_size(BUF_SIZE/parent.entry_size_*parent.entry_size_)
-				, buf( Util::NewSafeBuffer( buf_size ) ) // 7 bytes head-room for SliceInt64FromBytes()
-				, write_buf( Util::NewSafeBuffer( buf_size ) ) // 7 bytes head-room for SliceInt64FromBytes()
-			{
-
-			}
-			inline void AddToCache( const Bits &entry )
-			{
-				entry.ToBytes( buf.get() + bytes_in_buffer );
-				bytes_in_buffer += parent_.entry_size_;
-				if( bytes_in_buffer >= buf_size ) Flush();
-			}
-
-			inline void Flush(){
-				if( write_thread ) write_thread->join();
-				buf.swap(write_buf);
-				write_thread.reset( new std::thread( [this](uint32_t size){
-															for( uint32_t i = 0; i < size; i += this->parent_.entry_size_ )
-																this->parent_.AddToCache( write_buf.get() + i );
-														}, bytes_in_buffer ) );
-				bytes_in_buffer = 0;
-			}
-
-			~AsyncAdder(){
-				if( bytes_in_buffer ){
-					Flush();
-					write_thread->join();
-				}
-			}
-		private:
-			SortManager &parent_;
-			const uint32_t buf_size;
-			std::unique_ptr<uint8_t[]>buf;
-			std::unique_ptr<uint8_t[]>write_buf;
-			uint32_t bytes_in_buffer = 0;
-			std::unique_ptr<std::thread> write_thread;
-		};
-
 		inline uint64_t Count() const {
 			uint64_t res = 0;
 			for( auto &b : buckets_ )
@@ -204,20 +162,14 @@ public:
 			return res;
 		}
 
-		inline void AddToCache(const Bits &entry)
-    {
-				// 7 bytes head-room for SliceInt64FromBytes()
-				uint8_t buf[entry_size_+7];
-				entry.ToBytes(buf);
-				AddToCache(buf);
-    }
 
-		inline void AddToCache(const uint8_t *entry)
+		inline void AddToCache( StreamBuffer &entry )
     {
         uint64_t const bucket_index =
-						Util::ExtractNum64(entry, begin_bits_, log_num_buckets_ + subbucket_bits );
+						Util::ExtractNum64( entry.get(), begin_bits_, log_num_buckets_ + subbucket_bits );
 				buckets_[bucket_index>>subbucket_bits].AddEntry( entry, bucket_index & stats_mask );
 		}
+
 
 		uint8_t const* Read(uint64_t begin, uint64_t length) override
     {
