@@ -61,13 +61,13 @@ struct SortingBucket{
 
 		auto count = entries.used() / entry_size_;
 
-		disk->Write( entries );
-
 		// Adding to statistics
 		for( uint32_t i = 0; i < count; i++ )	{
 			assert( Util::ExtractNum( entries.get() + i*entry_size_, entry_size_, begin_bits_, bucket_bits_count_ ) == stats[i] );
 			statistics[stats[i]]++;
 		}
+
+		disk->Write( entries );
 		entries_count += count;
 	}
 
