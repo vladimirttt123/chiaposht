@@ -51,6 +51,41 @@ static uint128_t to_uint128(uint64_t hi, uint64_t lo) { return (uint128_t)hi << 
 
 TEST_CASE( "DISK_STREAMS" ){
 
+	SECTION("BlockBufferedWriter"){
+		const uint16_t entry_size = 7;
+		const uint32_t iterations = 242857;
+		const uint32_t batch_size = 256;
+
+		auto file = std::make_unique<BlockedFileStream >( "blocked.file.tmp", BUF_SIZE/entry_size*entry_size );
+		auto file_not_free = std::make_unique<BlockNotFreeingWriter>( file.get() );
+		auto buf_writer = std::make_unique<BlockBufferedWriter>( file_not_free.release(), entry_size, BUF_SIZE/entry_size*entry_size );
+		StreamBuffer buf( batch_size * entry_size );
+		uint8_t entry[entry_size];
+
+		for( uint32_t i = 0; i < iterations; i++ ){
+			memset( entry, i&0xff, entry_size );
+			buf.add( entry, entry_size );
+			if( buf.isFull() ){
+				buf_writer->Write( buf );
+				buf.setUsed( 0 );
+			}
+		}
+
+		if( buf.used() > 0 )
+			buf_writer->Write( buf );
+
+		buf_writer->Close();
+
+		uint32_t i = 0;
+		while( file->Read( buf ) > 0 ){
+			for( uint32_t j = 0; j < buf.used(); j += entry_size ){
+				memset( entry, i&0xff, entry_size );
+				REQUIRE( memcmp( entry, buf.get()+j, entry_size) == 0 );
+				i++;
+			}
+		}
+		REQUIRE( i == iterations );
+	}
 //	SECTION( "SortingBucket" ){
 //		const int entry_size = 10;
 //		const uint64_t iteration = 1024*1024*1024/entry_size;
@@ -85,14 +120,14 @@ TEST_CASE( "DISK_STREAMS" ){
 //		const uint32_t number_of_files = 16;
 
 //		MemoryManager mem_mngr(mem_size);
-//		CachedFileStream *cfile[number_of_files];
+//		BlockCachedFile *cfile[number_of_files];
 //		for( uint32_t i = 0; i < number_of_files; i++ )
-//			cfile[i] = new CachedFileStream( "cached.stream" + std::to_string(i) + ".tmp", mem_mngr, buf_size );
+//			cfile[i] = new BlockCachedFile( "cached.stream" + std::to_string(i) + ".tmp", mem_mngr, buf_size );
 
 //		for( uint32_t i = 0; i < buffers_to_write; i++ ){
-//			std::unique_ptr<uint8_t[]> buf( new uint8_t[buf_size] );
+//			StreamBuffer buf( buf_size );
 //			memset( buf.get(), i, buf_size );
-//			cfile[i%number_of_files]->Write( buf, buf_size );
+//			cfile[i%number_of_files]->Write( buf.setUsed(buf_size) );
 //		}
 
 //		std::cout << "request half of the ram: " << mem_mngr.request( mem_size/2, true ) << std::endl;
@@ -101,8 +136,8 @@ TEST_CASE( "DISK_STREAMS" ){
 //			auto buf = std::make_unique<uint8_t[]>(buf_size);
 //			memset( buf.get(), i, buf_size );
 
-//			auto read_buf = std::make_unique<uint8_t[]>(buf_size);
-//			REQUIRE( cfile[i%number_of_files]->Read( read_buf, buf_size ) == buf_size );
+//			StreamBuffer read_buf( buf_size );
+//			REQUIRE( cfile[i%number_of_files]->Read( read_buf ) == buf_size );
 
 //			REQUIRE( memcmp( buf.get(), read_buf.get(), buf_size ) == 0 );
 //		}
@@ -174,7 +209,8 @@ TEST_CASE( "DISK_STREAMS" ){
 		const uint64_t iteration = 6000;
 		const uint16_t bucket_no = 0xaaaa;
 		const int16_t tests[][6] = { //[num_buckets, entry_size, bits_begins, is_compact, sequence_start_bit, flush_after_write]
-																	{ 256, 8, 32, 1, -1, 0}, { 256, 8, 32, 1, -1, 1}
+																	{16, 7, 4, 0, -1, 0 }
+																	, { 256, 8, 32, 1, -1, 0}, { 256, 8, 32, 1, -1, 1}
 																	, { 256, 13, 32, 1, -1, 0}, { 256, 13, 32, 1, -1, 1}
 																	, { 128, 8, 32, 0, 0, 0}, { 128, 8, 0, 0, 32, 0 }
 																	, { 256, 8, 32, 0, 0, 0}, { 256, 8, 0, 0, 32, 0 }
@@ -977,7 +1013,7 @@ TEST_CASE("PlottingOne")
 	SECTION("Disk plot k22 small buffer in dual-thread")
 	{
 			PlotAndTestProofOfSpace("cpp-test-plot.dat", 5000, 22, plot_id_3, 18 , 4932,
-															65536, 2, 16, ENABLE_BITFIELD | NO_COMPACTION );
+															65536, 1, 16, ENABLE_BITFIELD | NO_COMPACTION  );
 	}
 }
 TEST_CASE("Plotting")

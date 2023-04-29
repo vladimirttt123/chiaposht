@@ -17,86 +17,8 @@
 #include "disk.hpp"
 #include "pos_constants.hpp"
 #include "util.hpp"
+#include "stream_buffer.hpp"
 
-
-struct StreamBuffer{
-
-	StreamBuffer( const StreamBuffer & other ) = delete;
-
-	StreamBuffer( uint32_t size = BUF_SIZE ) : size_(size){	}
-
-	uint8_t* get(){
-		return buffer == nullptr ?
-			( buffer = Util::NewSafeBuffer( size_ ) ) : buffer;
-	}
-
-	inline StreamBuffer & add( const uint8_t* data, uint32_t data_size) {
-		assert( used_size + data_size <= size_ );
-		memcpy( get() + used_size, data, data_size );
-		used_size += data_size;
-		return *this;
-	}
-
-	inline StreamBuffer & setUsed( uint32_t new_used ) {
-		assert( new_used <= size_ );
-		used_size = new_used;
-		return *this;
-	}
-
-
-	inline uint32_t used() const { return used_size; }
-	inline uint32_t size() const { return size_; }
-	inline bool isFull() const { return used_size >= size_; }
-
-	inline operator bool() const { return buffer != nullptr; }
-
-
-	inline StreamBuffer & ensureSize( uint32_t minSize, bool withClean = true ){
-		if( minSize > size_ ){
-			if( buffer != nullptr ){
-				if( used_size > 0 && !withClean ){
-					auto new_buf = Util::NewSafeBuffer( minSize );
-					memcpy( new_buf, buffer, used_size );
-					delete [] buffer;
-					buffer = new_buf;
-				} else {
-					delete [] buffer;
-					buffer = nullptr;
-				}
-
-			}
-			size_ = minSize;
-		}
-		if(withClean) used_size = 0;
-		return *this;
-	}
-
-	void swap( StreamBuffer & other ){
-		auto s = other.size_;
-		other.size_ = size_;
-		size_ = s;
-
-		auto buf = other.buffer;
-		other.buffer = buffer;
-		buffer = buf;
-	}
-
-	inline void reset(){
-		if( buffer != nullptr ){
-			delete[]buffer;
-			buffer = nullptr;
-		}
-	}
-
-	~StreamBuffer(){
-		if( buffer != nullptr ) delete[]buffer;
-	}
-
-private:
-	uint8_t * buffer = nullptr;
-	uint32_t size_;
-	uint32_t used_size = 0;
-};
 
 struct IBlockWriter{
 	virtual void Write( StreamBuffer & block ) = 0;
@@ -116,7 +38,7 @@ struct IBlockWriterReader : public IBlockWriter, IBlockReader {
 	virtual void Remove() = 0;
 };
 
-
+// ============== File ========================
 struct BlockedFileStream : public IBlockWriterReader {
 	const int32_t read_block_size;
 	BlockedFileStream( const std::string &fileName, uint32_t read_block_size = 0 )
@@ -158,6 +80,238 @@ private:
 	uint64_t write_position = 0;
 	uint64_t read_position = 0;
 };
+
+
+// ============== Buffer ========================
+struct BlockBufferedWriter : public IBlockWriter{
+	BlockBufferedWriter( IBlockWriter* disk, uint16_t entry_size = 1, uint32_t block_size = BUF_SIZE )
+		: buffer(block_size),disk(disk),write_size(block_size/entry_size*entry_size ), block_size(block_size){}
+
+	inline void Write( StreamBuffer & block ) override {
+		assert( buffer.used() < write_size );
+		for( uint32_t processed = 0; processed < block.used(); ){
+			uint32_t to_process = std::min( write_size - buffer.used(), block.used() - processed );
+			buffer.add( block.get() + processed, to_process );
+			processed += to_process;
+
+			assert( buffer.used() <= write_size );
+
+			if( buffer.used() == write_size ){
+				disk->Write( buffer.setUsed( block_size ) );
+				buffer.ensureSize( block_size );
+			}
+		}
+	};
+
+	void Close() override {
+		if( disk ){
+			if( buffer.used() > 0 )
+				disk->Write( buffer );
+
+			disk->Close();
+			disk.reset();
+			buffer.reset(); // clear ram
+		}
+	};
+	~BlockBufferedWriter(){ Close(); }
+
+	StreamBuffer buffer;
+private:
+	std::unique_ptr<IBlockWriter> disk;
+	const uint32_t write_size;
+	const uint32_t block_size;
+};
+
+// ============== Cache ========================
+
+
+/* CachedFileStream class stores in cache as many data as possible before wrtting it to file
+	Warning! CachedFileStream class is not thread safe i.e. IO from more than one thread leads to unpredictable.
+	Warning! Writing after start to read can lead to unperdictable.
+*/
+struct BlockCachedFile: IBlockWriterReader, ICacheConsumer {
+
+	// @max_buf_size - is a size of buffer supposed to be full. if such side provided it is not copied but replaced
+	BlockCachedFile( const fs::path &fileName, MemoryManager &memory_manager, uint32_t base_buf_size )
+		: memory_manager(memory_manager), cache(base_buf_size)
+	{
+		consumer_idx = memory_manager.registerConsumer( this );
+		file_name = fileName;
+	}
+
+	void Write( StreamBuffer & block ) override{
+		assert( read_position == 0 ); // cannot read and write same time
+
+		if( consumer_idx >= 0 // we are caching
+				&& cache_sync.try_lock() ) // and we can lock the cache
+		{
+			auto buf_size = block.used();
+			if( consumer_idx >= 0 // we are still caching - have to check because now it is safe to check
+					&& memory_manager.consumerRequest( buf_size ) ) {// there is ram to store
+				if( buf_size == cache.buf_size &&  block.size() == buf_size ){
+					// buffer is allinged write by getting it
+					cache.add( block.release(), write_position, buf_size );
+				}
+				else
+				{ // buffer is not alligned write by copy
+					assert( (write_position%cache.buf_size) == 0);
+					uint8_t * new_buf = Util::NewSafeBuffer( buf_size );
+					memcpy( new_buf, block.get(), buf_size );
+					cache.add( new_buf, write_position, buf_size );
+				}
+
+				cache_sync.unlock();
+
+				// TODO fill block with buffer from memory manager.
+
+				write_position += buf_size;
+				return;
+			}
+			cache_sync.unlock();
+		}
+
+		DiskWrite( write_position, block.get(), block.used() );
+		write_position += block.used();
+	}
+
+	// warning this is not thread safe function
+	uint32_t Read( StreamBuffer & block ) override{
+
+		// first read we need to lock
+		if( read_position == 0 ) cache_sync.lock();
+
+		if( consumer_idx >= 0  ){
+			// in order prevent locks on read we unregister started to read stream
+			memory_manager.unregisterConsumer( this, consumer_idx );
+			consumer_idx = -1;
+		}
+
+		uint32_t to_read = cache.buf_size;
+
+		if( !cache.isEmpty() ) { // we have cached buffers
+			if( read_position == cache.startPosition() ){
+				// simplest case
+				auto buf_size = cache.bufSize();
+				// TODO return previous buffer to memory manager
+				block.reset( cache.buffer(), buf_size, buf_size );
+				memory_manager.release( buf_size, true, true );
+				cache.moveNext( false ); // clear without deletion
+				if( read_position == 0 ) cache_sync.unlock(); // do we need unlock?
+				read_position += buf_size;
+				return buf_size;
+			}
+
+			to_read = std::min( (uint64_t)to_read, cache.startPosition() - read_position ); // read up to cache start
+		} else
+			to_read = std::min( (uint64_t)to_read, write_position - read_position );
+
+		// TODO return previous buffer to memory manager.
+
+		disk->Read( read_position, block.ensureSize( to_read ).setUsed( to_read ).get(), to_read );
+		if( read_position == 0 ) cache_sync.unlock(); // do we need unlock?
+
+		read_position += to_read;
+		return to_read;
+	};
+
+
+	bool atEnd() const override { return read_position >= write_position; };
+
+	uint64_t getUsedCache() const override { return cache.size();	}
+
+	void DetachFromCache() override { consumer_idx = -1; }
+	void FreeCache() override{
+		consumer_idx = -1; // this call clears from consumers
+
+		// we try to sync to prevent dead locks because it can be
+		// in read mode or currently in writting than we do not clean
+		if( cache_sync.try_lock() ){
+			if( !cache.isEmpty() ){
+				auto release_size = cache.size();
+				for( ; !cache.isEmpty(); cache.moveNext() )
+					DiskWrite( cache.startPosition(), cache.buffer(), cache.bufSize() );
+				disk->Flush();
+				memory_manager.release( release_size, true );
+				cache.reset(); // reset start counter.
+			}
+			cache_sync.unlock();
+		}
+	}
+
+	void Close() override{ if( disk ) disk->Close(); }
+
+	void Remove() override { if(disk){ disk->Remove( true ); disk.reset(); } }
+
+	~BlockCachedFile(){
+		if( consumer_idx >= 0 ){
+			memory_manager.unregisterConsumer( this, consumer_idx );
+			memory_manager.release( getUsedCache(), true, true );
+		}
+		Remove();
+	}
+private:
+	struct CacheStorage {
+		const uint32_t buf_size;
+		uint32_t last_buf_size;
+		std::vector<uint8_t*> bufs;
+		std::vector<uint64_t> positions;
+		uint32_t start_idx = 0;
+
+		CacheStorage( uint32_t buf_size ) : buf_size(buf_size), last_buf_size(buf_size){}
+
+		inline bool isEmpty() const { return start_idx >= bufs.size(); }
+		inline uint64_t startPosition() const { return positions[start_idx]; }
+		// current buffer
+		inline uint8_t* buffer() const { return bufs[start_idx]; }
+		// the size of current buffer
+		inline uint32_t bufSize() const { return (start_idx+1) == bufs.size() ? last_buf_size : buf_size; }
+		inline uint64_t size() const { return (bufs.size() - start_idx)*buf_size - buf_size + last_buf_size; }
+		inline uint64_t bufLeftSize( uint64_t pos ) const { return startPosition() - pos + bufSize(); }
+		inline const uint8_t* bufLeft( uint64_t pos ) const { return buffer() + (pos - startPosition()); }
+
+		inline void reset() { start_idx = 0; bufs.clear(); positions.clear(); }
+
+		inline void add( uint8_t* buf, uint64_t position, uint32_t size ){
+			assert( last_buf_size == buf_size ); // last only buffer can be other size
+
+			last_buf_size = size;
+			bufs.push_back( buf );
+			positions.push_back( position );
+		}
+
+		void moveNext( bool withDelete = true ){
+			if( withDelete && start_idx < bufs.size() )
+				delete[]bufs[start_idx];
+			start_idx++;
+		}
+
+		~CacheStorage(){
+			for( uint32_t i = start_idx; i < bufs.size(); i++ )
+				delete [] bufs[i]; // this mem is released from memory manager in descrutor of Stream
+		}
+	};
+
+	fs::path file_name;
+	MemoryManager &memory_manager;
+	int32_t consumer_idx;
+	std::unique_ptr<FileDisk> disk;
+	uint64_t write_position = 0;
+	uint64_t read_position = 0;
+	std::mutex cache_sync;
+	std::mutex file_sync;
+	CacheStorage cache;
+
+
+	inline void DiskWrite( uint64_t pos, uint8_t * buf, uint32_t buf_size ){
+		std::lock_guard<std::mutex> lk( file_sync );
+		if( !disk ) {
+			disk.reset( new FileDisk(file_name) );
+			file_name.clear();
+		}
+
+		disk->Write( pos, buf, buf_size );
+	}
+};  // end of CachedFileStream
 
 
 // ============== Sequenc Compacter ========================
@@ -257,6 +411,9 @@ private:
 
 		buffer.setUsed( buffer_idx );
 	}
+
+	friend struct BlockSequenceCompacterReader;
+
 };
 
 // <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
@@ -265,6 +422,14 @@ struct BlockSequenceCompacterReader : public IBlockReader {
 		: disk( disk ), entry_size(entry_size), begin_bits_( begin_bits&7 ), begin_bytes( begin_bits>>3 )
 		, mask( 0xff00 >> begin_bits_ )
 	{	}
+
+	BlockSequenceCompacterReader(  IBlockReader *disk, BlockSequenceCompacterWriter &writer )
+		: disk(disk), entry_size(writer.entry_size), begin_bits_( writer.begin_bits_ ), begin_bytes( writer.begin_bytes )
+		, mask( writer.mask )
+	{
+		buffer.swap( writer.buffer );
+		writer.last_write_value = 0; // it is not necceesary because writer shouldn't be writted after this.
+	}
 
 	uint32_t Read( StreamBuffer & block ) override{
 		block.setUsed( 0 );
@@ -465,7 +630,7 @@ private:
 
 
 
-// ============== Manager Streams =============================
+// ============== Not Freeing =============================
 struct BlockNotFreeingWriter: IBlockWriter{
 	BlockNotFreeingWriter( IBlockWriter * wstream ) :wstream(wstream){}
 
@@ -479,6 +644,7 @@ struct BlockNotFreeingWriter: IBlockWriter{
 		IBlockWriter * wstream;
 };
 
+// <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 struct BlockNotFreeingReader : IBlockReader {
 	BlockNotFreeingReader( IBlockReader * reader ) : rstream(reader) {}
 
@@ -489,6 +655,7 @@ private:
 	IBlockReader * rstream;
 };
 
+// ============== Manager Streams =============================
 struct BlockThreadSafeReader : IBlockReader{
 	// Thread safe means more than one thread reads from underlying stream
 	// It means not delete and no close for underlying stream
@@ -507,6 +674,25 @@ private:
 	std::mutex &sync_mutex;
 };
 
+struct BlockOneBuffer : IBlockReader {
+	BlockOneBuffer( IBlockReader *disk, StreamBuffer &buf )
+		: disk(disk), one_buf(buf.size()) { one_buf.swap(buf); };
+
+	uint32_t Read( StreamBuffer & block ) override {
+		if( one_buf.used() > 0 ){
+			block.swap( one_buf );
+			one_buf.reset();
+			return block.size();
+		}
+		return disk->Read( block );
+	}
+	bool atEnd() const override { return disk->atEnd();};
+	void Close() override{};
+
+private:
+	std::unique_ptr<IBlockReader> disk;
+	StreamBuffer one_buf;
+};
 
 
 // ==================================================================================
@@ -927,105 +1113,6 @@ private:
 };
 
 
-struct ByteCutterStream : public IWriteDiskStream{
-	ByteCutterStream( IWriteDiskStream *disk, uint16_t entry_size, uint16_t begin_bits )
-		: disk( disk ), entry_size(entry_size)
-		, bytes_begin(begin_bits>>3), mask( 0xff00 >> (begin_bits&7) )
-	{	}
-
-	void Write( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) override{
-		disk->Write( buf, CompactBuffer(buf.get(), buf_size) );
-	}
-
-	void Close() override { if( disk ) { disk->Close(); disk.reset(); } }
-
-	~ByteCutterStream(){ if(disk) disk->Close(); }
-private:
-	std::unique_ptr<IWriteDiskStream> disk;
-	const uint16_t entry_size;
-	const uint8_t bytes_begin;
-	const uint8_t mask;
-
-	inline uint32_t CompactBuffer( uint8_t *buf, uint32_t buf_size ){
-		assert( (buf_size%entry_size) == 0 );
-
-		// extract current bucket
-		if( mask ){
-			for( uint32_t i = bytes_begin + 1; i < buf_size; i += entry_size ){
-				buf[i] = (buf[i-1]&mask) | (buf[i]&(~mask));
-			}
-		}
-
-		// remove current bucket
-		uint32_t i = bytes_begin + 1, j = bytes_begin;
-		for( ;i < (buf_size - entry_size); i += entry_size, j += entry_size - 1 )
-			memmove( buf + j, buf + i, entry_size - 1 );
-		// last tail
-		memmove( buf + j, buf + i, entry_size - 1 - bytes_begin );
-
-		return buf_size/entry_size * (entry_size-1);
-	}
-};
-
-struct ByteInserterStream : public IReadDiskStream{
-	ByteInserterStream( IReadDiskStream *disk, uint16_t entry_size, uint16_t begin_bits, uint8_t removed_byte )
-		: disk( disk ), entry_size(entry_size), begin_bits(begin_bits&7), bytes_begin(begin_bits>>3)
-		, removed_byte( removed_byte ), mask( 0xff00 >> (begin_bits&7) )
-	{	}
-
-	uint32_t Read( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) override{
-		uint32_t read = disk->Read( buf, buf_size/entry_size*(entry_size-1) );
-		assert( read%(entry_size-1) == 0 );
-
-		return GrowBuffer(buf.get(), read);
-	}
-
-	bool atEnd() const override { return disk->atEnd(); }
-
-	void Close() override { if(disk){ disk->Close(); disk.reset(); } }
-
-
-	uint32_t GrowBuffer( uint8_t * buf, uint32_t buf_size ){
-		if(buf_size == 0 ) return 0;
-		uint32_t full_buf_size = buf_size/(entry_size-1)*entry_size;
-
-		// copy last entry
-		uint64_t tail_idx = full_buf_size - entry_size + bytes_begin + 1;
-		int64_t compacted_idx = buf_size - entry_size + bytes_begin + 1;
-		memmove( buf + tail_idx, buf + compacted_idx, entry_size - bytes_begin - 1 );
-		for( tail_idx -= entry_size, compacted_idx -= entry_size - 1;
-				 compacted_idx >= 0;
-				 tail_idx -= entry_size, compacted_idx -= entry_size - 1 )
-			memmove( buf + tail_idx, buf + compacted_idx, entry_size - 1 );
-
-		// Now insert bucket
-		if( mask ){
-			const uint8_t shift = begin_bits&7;
-			const uint8_t insert_hi = (removed_byte)>>shift;
-			const uint8_t insert_lo = (removed_byte)<<(8-shift);
-			for( uint32_t i = bytes_begin; i < full_buf_size; i += entry_size ){
-				buf[i] = (buf[i+1]&mask) | insert_hi;
-				buf[i+1] = (buf[i+1]&~mask) | insert_lo;
-			}
-		}else{
-			for( uint32_t i = bytes_begin; i < full_buf_size; i += entry_size )
-				buf[i] = removed_byte;
-		}
-
-		return full_buf_size;
-	}
-
-	~ByteInserterStream(){ if(disk) disk->Close();}
-private:
-	std::unique_ptr<IReadDiskStream> disk;
-	const uint16_t entry_size;
-	const uint16_t begin_bits;
-	const uint8_t bytes_begin;
-	const uint8_t removed_byte;
-	const uint8_t mask;
-};// end of ByteInserterStream
-
-
 struct BufferedWriter : IWriteDiskStream{
 	// all written out buffer except last would be in size of block_size, but amount of real data inside could be less
 	BufferedWriter( IWriteDiskStream* disk, const uint32_t block_size = BUF_SIZE, const uint8_t entry_size = 1 )
@@ -1124,45 +1211,6 @@ private:
 	std::unique_ptr<uint8_t[]> buffer;
 };
 
-struct NotFreeingWriteStream: IWriteDiskStream{
-	NotFreeingWriteStream( IWriteDiskStream * wstream ) :wstream(wstream){}
-
-	void Write( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) override{
-		wstream->Write( buf, buf_size );
-	}
-	void Close() override{ }
-
-	private:
-		IWriteDiskStream * wstream;
-};
-
-struct NotFreeingReadStream: IReadDiskStream{
-	NotFreeingReadStream( IReadDiskStream * read_stream ) :rstream(read_stream){}
-
-	uint32_t Read( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) override{
-		return rstream->Read( buf, buf_size );
-	}
-	void Close() override{ }
-	virtual bool atEnd() const override { return rstream->atEnd(); }
-
-	private:
-		IReadDiskStream * rstream;
-};
-
-struct ThreadSafeReadStream : IReadDiskStream{
-	ThreadSafeReadStream( IReadDiskStream *read_stream ) : rstream(read_stream) {}
-
-	uint32_t Read( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) override{
-		std::lock_guard<std::mutex> lk(sync_mutex);
-		return rstream->Read( buf, buf_size );
-	}
-	bool atEnd() const override { return rstream->atEnd();};
-	void Close() override{ rstream->Close(); }; // do we need sync on close?
-
-private:
-	std::unique_ptr<IReadDiskStream> rstream;
-	std::mutex sync_mutex;
-};
 
 /* CachedFileStream class stores in cache as many data as possible before wrtting it to file
 	Warning! CachedFileStream class is not thread safe i.e. IO from more than one thread leads to unpredictable.
@@ -1413,7 +1461,7 @@ struct BucketStream{
 	BucketStream( std::string fileName, MemoryManager &memory_manager, uint16_t bucket_no, uint8_t log_num_buckets,
 								uint16_t entry_size, uint16_t begin_bits, bool compact = true, int8_t sequence_start_bit = -1 )
 		: fileName(fileName)
-//		, memory_manager( memory_manager )
+		, memory_manager( memory_manager )
 		, bucket_no_( bucket_no )
 		, log_num_buckets_( log_num_buckets )
 		, entry_size_(entry_size)
@@ -1457,15 +1505,20 @@ struct BucketStream{
 			if( compact )
 				read_block_size = sequence_start_bit >= 0 ? BUF_SIZE : (BUF_SIZE/entry_size_*(entry_size_-1));
 
-			bucket_file.reset( new BlockedFileStream( fileName, read_block_size  ) );
+			bucket_file.reset( memory_manager.CacheEnabled  ? (IBlockWriterReader*)
+													 new BlockCachedFile( fileName, memory_manager, read_block_size )
+												 : new BlockedFileStream( fileName, read_block_size  ) );
 			disk_output.reset( new BlockNotFreeingWriter( bucket_file.get() ) );
 			if( compact ){
 				if( sequence_start_bit >= 0 )
-					disk_output.reset( new BlockSequenceCompacterWriter( disk_output.release(), entry_size_ - 1
+					disk_output.reset( compacter = new BlockSequenceCompacterWriter( disk_output.release(), entry_size_ - 1
 																, sequence_start_bit - (sequence_start_bit > begin_bits_ ? 8 : 0 ) ) );
+				else if( memory_manager.CacheEnabled )
+					disk_output.reset( buf_writer = new BlockBufferedWriter( disk_output.release(), 1, read_block_size ) );
 
 				disk_output.reset( new BlockByteCutter( disk_output.release(), entry_size_, begin_bits_ - log_num_buckets_ ) );
-			}
+			} else if( memory_manager.CacheEnabled )
+				disk_output.reset( buf_writer = new BlockBufferedWriter( disk_output.release(), 1, read_block_size ) );
 		}
 
 		disk_output->Write( buf );
@@ -1478,16 +1531,16 @@ struct BucketStream{
 			disk_output->Close();
 			disk_output.reset();
 		}
+		compacter = nullptr;
+		buf_writer = nullptr;
 	}
 
 	// This is thread safe
 	IBlockReader * CreateReader( bool isThreadSafe = true ){
 		std::lock_guard<std::mutex> lk( sync_mutex );
 		if( !bucket_file ) return nullptr; // nothing to create...
-		if( disk_output ) {
-			disk_output->Close();
-			disk_output.reset();
-		}
+
+		FlusToDisk();
 
 		IBlockReader* fin = bucket_file.get();
 		if( isThreadSafe )
@@ -1497,13 +1550,23 @@ struct BucketStream{
 
 		if( compact ){
 			if( sequence_start_bit >= 0 ){
-				fin = new BlockSequenceCompacterReader( fin, entry_size_ - 1,
+				fin = (disk_output&&compacter) ? new BlockSequenceCompacterReader( fin, *compacter )
+						: new BlockSequenceCompacterReader( fin, entry_size_ - 1,
 											sequence_start_bit - (sequence_start_bit > begin_bits_ ? 8 : 0 ) );
+				compacter = nullptr;
+			} else if( buf_writer ){
+				fin = new BlockOneBuffer( fin, buf_writer->buffer );
+				buf_writer = nullptr;
 			}
 
 			fin = new BlockByteInserter( fin, entry_size_,
 										begin_bits_ - log_num_buckets_, bucket_no_ >> (log_num_buckets_-8) );
+		} else if( buf_writer ){
+			fin = new BlockOneBuffer( fin, buf_writer->buffer );
+			buf_writer = nullptr;
 		}
+
+		disk_output.reset();
 
 		return fin;
 //		IReadDiskStream * res = new NotFreeingReadStream( bucket_file.get() );
@@ -1557,7 +1620,7 @@ struct BucketStream{
 
 private:
 	const std::string fileName;
-//	MemoryManager &memory_manager;
+	MemoryManager &memory_manager;
 	std::unique_ptr<IBlockWriterReader> bucket_file;
 	std::unique_ptr<IBlockWriter> disk_output;
 	std::unique_ptr<IBlockReader> disk_input;
@@ -1571,8 +1634,8 @@ private:
 
 	const bool compact;
 
-//	SequenceCompacterWriter * compacter = nullptr;
-//	BufferedWriter * buf_writer = nullptr;
+	BlockSequenceCompacterWriter * compacter = nullptr;
+	BlockBufferedWriter * buf_writer = nullptr;
 };
 
 struct LastTableRewrited : IReadDiskStream {
