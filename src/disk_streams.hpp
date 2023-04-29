@@ -589,7 +589,7 @@ struct BlockByteInserter : public IBlockReader{
 		if(buf_size == 0 ) return 0;
 		uint32_t full_buf_size = buf_size/(entry_size-1)*entry_size;
 
-		auto buf = block.ensureSize( full_buf_size ).get();
+		auto buf = block.ensureSize( full_buf_size, false ).get();
 
 		// copy last entry
 		uint64_t tail_idx = full_buf_size - entry_size + bytes_begin + 1;
@@ -682,7 +682,7 @@ struct BlockOneBuffer : IBlockReader {
 		if( one_buf.used() > 0 ){
 			block.swap( one_buf );
 			one_buf.reset();
-			return block.size();
+			return block.used();
 		}
 		return disk->Read( block );
 	}
@@ -1505,7 +1505,7 @@ struct BucketStream{
 			if( compact )
 				read_block_size = sequence_start_bit >= 0 ? BUF_SIZE : (BUF_SIZE/entry_size_*(entry_size_-1));
 
-			bucket_file.reset( memory_manager.CacheEnabled  ? (IBlockWriterReader*)
+			bucket_file.reset( (false && memory_manager.CacheEnabled ) ? (IBlockWriterReader*)
 													 new BlockCachedFile( fileName, memory_manager, read_block_size )
 												 : new BlockedFileStream( fileName, read_block_size  ) );
 			disk_output.reset( new BlockNotFreeingWriter( bucket_file.get() ) );
@@ -1539,8 +1539,6 @@ struct BucketStream{
 	IBlockReader * CreateReader( bool isThreadSafe = true ){
 		std::lock_guard<std::mutex> lk( sync_mutex );
 		if( !bucket_file ) return nullptr; // nothing to create...
-
-		FlusToDisk();
 
 		IBlockReader* fin = bucket_file.get();
 		if( isThreadSafe )
