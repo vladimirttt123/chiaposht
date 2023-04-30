@@ -206,8 +206,10 @@ struct BlockCachedFile: IBlockWriterReader, ICacheConsumer {
 			to_read = std::min( (uint64_t)to_read, write_position - read_position );
 
 		// TODO return previous buffer to memory manager.
+		block.ensureSize( to_read ).setUsed( to_read );
+		if( to_read > 0 )
+			disk->Read( read_position, block.get(), to_read );
 
-		disk->Read( read_position, block.ensureSize( to_read ).setUsed( to_read ).get(), to_read );
 		if( read_position == 0 ) cache_sync.unlock(); // do we need unlock?
 
 		read_position += to_read;
@@ -572,6 +574,7 @@ struct BlockByteInserter : public IBlockReader{
 	{	}
 
 	uint32_t Read( StreamBuffer & block ) override{
+		assert( disk );
 		disk->Read( block );
 		assert( block.used()%(entry_size-1) == 0 );
 
@@ -1504,7 +1507,7 @@ struct BucketStream{
 			if( compact )
 				read_block_size = sequence_start_bit >= 0 ? BUF_SIZE : (BUF_SIZE/entry_size_*(entry_size_-1));
 
-			bucket_file.reset( (false && memory_manager.CacheEnabled ) ? (IBlockWriterReader*)
+			bucket_file.reset( memory_manager.CacheEnabled ? (IBlockWriterReader*)
 													 new BlockCachedFile( fileName, memory_manager, read_block_size )
 												 : new BlockedFileStream( fileName, read_block_size  ) );
 			disk_output.reset( new BlockNotFreeingWriter( bucket_file.get() ) );
