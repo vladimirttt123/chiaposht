@@ -427,7 +427,7 @@ struct BlockSequenceCompacterReader : public IBlockReader {
 		: disk(disk), entry_size(writer.entry_size), begin_bits_( writer.begin_bits_ ), begin_bytes( writer.begin_bytes )
 		, mask( writer.mask )
 	{
-		buffer.swap( writer.buffer );
+		read_buffer.swap( writer.buffer );
 		writer.last_write_value = 0; // it is not necceesary because writer shouldn't be writted after this.
 	}
 
@@ -441,13 +441,12 @@ struct BlockSequenceCompacterReader : public IBlockReader {
 	}
 
 	inline bool atEnd() const override { return read_buffer.used() == 0 && disk->atEnd(); }
-	void Close() override { if(disk){ disk->Close(); disk.reset(); }buffer.reset(); }
+	void Close() override { if(disk){ disk->Close(); disk.reset(); }read_buffer.reset(); }
 
 	~BlockSequenceCompacterReader(){ if( disk ) disk->Close(); }
 private:
 	std::unique_ptr<IBlockReader> disk;
 	StreamBuffer read_buffer;
-	StreamBuffer buffer;
 	const uint16_t entry_size;
 	const uint8_t begin_bits_;
 	const uint8_t begin_bytes;
@@ -456,7 +455,7 @@ private:
 	// Returns growed buffer size
 	uint32_t GrowBuffer( StreamBuffer &from, StreamBuffer &to ){
 
-		to.setUsed(0).ensureSize( from.used()/(entry_size-3)*entry_size ); // if all entries are compacted this is the max buffer size
+		to.ensureSize( from.used()/(entry_size-3)*entry_size ); // if all entries are compacted this is the max buffer size
 
 		uint32_t j = 0;
 		auto src = from.get();

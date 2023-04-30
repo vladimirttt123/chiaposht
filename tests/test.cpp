@@ -1013,7 +1013,7 @@ TEST_CASE("PlottingOne")
 	SECTION("Disk plot k22 small buffer in dual-thread")
 	{
 			PlotAndTestProofOfSpace("cpp-test-plot.dat", 5000, 22, plot_id_3, 18 , 4932,
-															65536, 1, 16, ENABLE_BITFIELD | NO_COMPACTION  );
+															65536, 2, 16, ENABLE_BITFIELD | NO_COMPACTION  );
 	}
 }
 TEST_CASE("Plotting")

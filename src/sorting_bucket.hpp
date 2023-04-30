@@ -172,10 +172,10 @@ struct SortingBucket{
 				StreamBuffer buf( BUF_SIZE/entry_size_*entry_size_ );
 				std::unique_ptr<IBlockReader> reader( disk->CreateReader() );
 
-				auto buckets_bits_cache = std::make_unique<uint32_t[]>( buf.size()/entry_size_ + 1 );
 				while(  reader->Read( buf ) > 0 ){
+					uint32_t bucket_bits[buf.size()/entry_size_ + 1];
+
 					// Extract all bucket_bits
-					uint32_t* bucket_bits = buckets_bits_cache.get();
 					for( uint64_t buf_ptr = 0; buf_ptr < buf.used(); buf_ptr += entry_size_ )
 						bucket_bits[buf_ptr/entry_size_] = (uint32_t)Util::ExtractNum64( buf.get() + buf_ptr, begin_bits_, bucket_bits_count_ );
 
