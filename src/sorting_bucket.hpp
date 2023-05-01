@@ -82,9 +82,9 @@ struct SortingBucket{
 				// Save statistics to file
 				statistics_file.reset( CreateFileStream( disk->getFileName() + ".statistics.tmp",
 																								 memory_manager, sizeof(uint32_t)<<bucket_bits_count_ ) );
-				std::unique_ptr<uint8_t[]> buf( (uint8_t*)statistics.release() );
-				statistics_file->Write( buf, sizeof(uint32_t)<<bucket_bits_count_ );
-				((IWriteDiskStream*)statistics_file.get())->Close();
+				StreamBuffer buf(  (uint8_t*)statistics.release(), sizeof(uint32_t)<<bucket_bits_count_, sizeof(uint32_t)<<bucket_bits_count_ );
+				statistics_file->Write( buf );
+				((IBlockWriter*)statistics_file.get())->Close();
 			}
 			statistics.reset();
 		}
@@ -118,8 +118,8 @@ struct SortingBucket{
 		if( !statistics ) {
 			assert( statistics_file );
 			// Read statistics from file
-			auto buf = std::make_unique<uint8_t[]>( sizeof(uint32_t)<<bucket_bits_count_ );
-			statistics_file->Read( buf, sizeof(uint32_t)<<bucket_bits_count_ );
+			StreamBuffer buf( sizeof(uint32_t)<<bucket_bits_count_ );
+			statistics_file->Read( buf );
 			statistics_file->Remove();
 			statistics_file.reset();
 
@@ -265,7 +265,7 @@ private:
 	const uint16_t begin_bits_;
 	// this is the number of entries for each subbucket
 	std::unique_ptr<uint32_t[]> statistics;
-	std::unique_ptr<IReadWriteStream> statistics_file;
+	std::unique_ptr<IBlockWriterReader> statistics_file;
 	uint64_t entries_count = 0;
 	std::unique_ptr<uint8_t[]> memory_;
 	MemoryManager &memory_manager;

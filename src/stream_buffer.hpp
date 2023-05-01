@@ -19,7 +19,10 @@ struct StreamBuffer{
 
 	StreamBuffer( const StreamBuffer & other ) = delete;
 
-	StreamBuffer( uint32_t size = BUF_SIZE ) : size_(size){	}
+	explicit StreamBuffer( uint32_t size = BUF_SIZE ) : size_(size){	}
+
+	StreamBuffer( uint8_t* buf, uint32_t size, uint32_t used = 0 )
+		: buffer( buf ), size_(size), used_size( used )	{	}
 
 	uint8_t* get(){
 		return buffer == nullptr ?
