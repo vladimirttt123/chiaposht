@@ -240,7 +240,7 @@ struct BlockCachedFile: IBlockWriterReader, ICacheConsumer {
 		}
 	}
 
-	void Close() override{ if( disk ) disk->Flush(); }
+	void Close() override{ if( disk ) disk->Close(); }
 
 	void Remove() override { if(disk){ disk->Remove( true ); disk.reset(); } }
 
