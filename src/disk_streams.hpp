@@ -40,9 +40,11 @@ struct IBlockWriterReader : public IBlockWriter, IBlockReader {
 
 // ============== File ========================
 struct BlockedFileStream : public IBlockWriterReader {
-	const int32_t read_block_size;
-	BlockedFileStream( const std::string &fileName, uint32_t read_block_size = 0 )
-		: read_block_size(read_block_size), file_name(fileName)	{	}
+	const int32_t read_align_size;
+	BlockedFileStream( const std::string &fileName, uint32_t read_align_size = 1 )
+		: read_align_size(read_align_size), file_name(fileName)	{
+		assert( read_align_size > 0 );
+	}
 
 	void Write( StreamBuffer & block ) override {
 		assert( read_position == 0 ); // do not read and write same time
@@ -55,7 +57,7 @@ struct BlockedFileStream : public IBlockWriterReader {
 	}
 
 	uint32_t Read( StreamBuffer & block ) override {
-		uint32_t to_read = std::min( (uint64_t)(read_block_size>0? read_block_size: block.size())
+		uint32_t to_read = std::min( BUF_SIZE/read_align_size*read_align_size
 																 , write_position - read_position );
 		block.ensureSize( to_read ).setUsed( to_read );
 		if( to_read > 0 ){
@@ -84,8 +86,8 @@ private:
 
 // ============== Buffer ========================
 struct BlockBufferedWriter : public IBlockWriter{
-	BlockBufferedWriter( IBlockWriter* disk, uint16_t entry_size = 1, uint32_t block_size = BUF_SIZE )
-		: buffer(block_size),disk(disk),write_size(block_size/entry_size*entry_size ), block_size(block_size){}
+	BlockBufferedWriter( IBlockWriter* disk, uint16_t entry_size = 1 )
+		: disk(disk),write_size(BUF_SIZE/entry_size*entry_size ){}
 
 	inline void Write( StreamBuffer & block ) override {
 		assert( buffer.used() < write_size );
@@ -97,8 +99,8 @@ struct BlockBufferedWriter : public IBlockWriter{
 			assert( buffer.used() <= write_size );
 
 			if( buffer.used() == write_size ){
-				disk->Write( buffer.setUsed( block_size ) );
-				buffer.ensureSize( block_size );
+				disk->Write( buffer );
+				buffer.ensureSize( BUF_SIZE );
 			}
 		}
 	};
@@ -119,7 +121,6 @@ struct BlockBufferedWriter : public IBlockWriter{
 private:
 	std::unique_ptr<IBlockWriter> disk;
 	const uint32_t write_size;
-	const uint32_t block_size;
 };
 
 // ============== Cache ========================
@@ -132,46 +133,59 @@ private:
 struct BlockCachedFile: IBlockWriterReader, ICacheConsumer {
 
 	// @max_buf_size - is a size of buffer supposed to be full. if such side provided it is not copied but replaced
-	BlockCachedFile( const fs::path &fileName, MemoryManager &memory_manager, uint32_t base_buf_size )
-		: memory_manager(memory_manager), cache(base_buf_size)
+	BlockCachedFile( const fs::path &fileName, MemoryManager &memory_manager, uint32_t read_align = 1 )
+		: memory_manager(memory_manager), cache( BUF_SIZE/read_align*read_align), read_align(read_align)
 	{
-		consumer_idx = memory_manager.registerConsumer( this );
+		consumer_idx = memory_manager.registerConsumer( (ICacheConsumer*)this );
 		file_name = fileName;
 	}
 
 	void Write( StreamBuffer & block ) override{
 		assert( read_position == 0 ); // cannot read and write same time
+		uint32_t block_idx = 0;
 
 		if( consumer_idx >= 0 // we are caching
-				&& cache_sync.try_lock() ) // and we can lock the cache
+				&& cache_sync.try_lock() // and we can lock the cache
+				&& consumer_idx >= 0 ) // and after lock we still caching :)
 		{
-			auto buf_size = block.used();
-			if( consumer_idx >= 0 // we are still caching - have to check because now it is safe to check
-					&& memory_manager.consumerRequest( buf_size ) ) {// there is ram to store
-				if( buf_size == cache.buf_size &&  block.size() == buf_size ){
-					// buffer is allinged write by getting it
-					cache.add( block.release(), write_position, buf_size );
+			auto block_used = block.used();
+			assert( (block_used%read_align) == 0 ); // check new data alligned
+
+			// check we can add to current cache
+			block_idx = std::min( cache.bufSize() - cache.buf_size, block_used );
+			if( block_idx > 0 ){ // we really can fill last buffer of current cache
+				memcpy( cache.buffer() + cache.bufSize(), block.get(), block_idx );
+				write_position += block_idx;
+				if( block_idx == block_used ) return; // all data stored in the cache
+			}
+
+			auto buf = memory_manager.consumerRequest(); // request next buffer for cache
+			if( buf != nullptr ){ // the buffer was provided
+				if( block_idx == 0 && block.size() == BUF_SIZE ){ // simples case - just replace the buffer
+					cache.add( block.release(buf), write_position, block_used );
+					write_position += block_used;
+					cache_sync.unlock();
+					return;
+				} else { // need to copy from current block to cache
+					do{
+						uint32_t to_copy = std::min( (uint32_t)BUF_SIZE, block_used - block_idx );
+						memcpy( buf, block.get() + block_idx, to_copy );
+						cache.add( buf, write_position, to_copy ); // add next buffer to cache
+						write_position += to_copy;
+						block_idx += to_copy;
+						buf = block_idx >= block_used ? nullptr : memory_manager.consumerRequest(); // request next buffer
+					}while( buf != nullptr ); // contuinue up to no next buffer or no need in next buffer
+					cache_sync.unlock();
+					if( block_idx < block_used ){ // not all block was stored in cache
+						write_position += DiskWrite( write_position, block.get()+block_idx, block_used - block_idx );
+					}
+					return;
 				}
-				else
-				{ // buffer is not alligned write by copy
-					assert( (write_position%cache.buf_size) == 0);
-					uint8_t * new_buf = Util::NewSafeBuffer( buf_size );
-					memcpy( new_buf, block.get(), buf_size );
-					cache.add( new_buf, write_position, buf_size );
-				}
-
-				cache_sync.unlock();
-
-				// TODO fill block with buffer from memory manager.
-
-				write_position += buf_size;
-				return;
 			}
 			cache_sync.unlock();
 		}
 
-		DiskWrite( write_position, block.get(), block.used() );
-		write_position += block.used();
+		write_position += DiskWrite( write_position, block.get() + block_idx, block.used() - block_idx );
 	}
 
 	// warning this is not thread safe function
@@ -189,13 +203,20 @@ struct BlockCachedFile: IBlockWriterReader, ICacheConsumer {
 		uint32_t to_read = cache.buf_size;
 
 		if( !cache.isEmpty() ) { // we have cached buffers
+			assert( read_position <= cache.startPosition() );
+
 			if( read_position == cache.startPosition() ){
 				// simplest case
 				auto buf_size = cache.bufSize();
-				// TODO return previous buffer to memory manager
-				block.reset( cache.buffer(), buf_size, buf_size );
-				memory_manager.release( buf_size, true, true );
-				cache.moveNext( false ); // clear without deletion
+
+				if( block.size() == BUF_SIZE && block.get() != nullptr ){// return previous buffer to memory manager
+					memory_manager.consumerRelease( block.release( cache.buffer() ), buf_size );
+					block.setUsed( buf_size );
+				}else{
+					block.reset( cache.buffer(), BUF_SIZE, buf_size );
+					memory_manager.consumerRelease( nullptr, buf_size );
+				}
+				cache.moveNext(); // clear without deletion
 				if( read_position == 0 ) cache_sync.unlock(); // do we need unlock?
 				read_position += buf_size;
 				return buf_size;
@@ -219,37 +240,40 @@ struct BlockCachedFile: IBlockWriterReader, ICacheConsumer {
 
 	bool atEnd() const override { return read_position >= write_position; };
 
-	uint64_t getUsedCache() const override { return cache.size();	}
+	bool FreeCache( int64_t size_to_free ) override{
 
-	void DetachFromCache() override { consumer_idx = -1; }
-	void FreeCache() override{
-
-		consumer_idx = -1; // this call clears from consumers
+		consumer_idx = -1; // after this call no more caching for this file
 
 		// we try to sync to prevent dead locks because it can be
 		// in read mode or currently in writting than we do not clean
 		if( cache_sync.try_lock() ){
 			if( !cache.isEmpty() ){
-				auto release_size = cache.size();
-				for( ; !cache.isEmpty(); cache.moveNext() )
+				bool close = wasClosed || !disk;
+				for( ; size_to_free > 0 && !cache.isEmpty(); cache.moveNext(), size_to_free -= BUF_SIZE ){
 					DiskWrite( cache.startPosition(), cache.buffer(), cache.bufSize() );
-				memory_manager.release( release_size, true );
+					memory_manager.consumerRelease( cache.buffer(), 0 );
+				}
 				cache.reset(); // reset start counter.
+				if( close ) disk->Close();
 			}
 			cache_sync.unlock();
 		}
+
+		return cache.isEmpty();
 	}
 
-	void Close() override{ if( disk ) disk->Close(); }
+	void Close() override{ if( disk ) { disk->Close(); wasClosed = true; } }
 
-	void Remove() override { if(disk){ disk->Remove( true ); disk.reset(); } }
+	void Remove() override { if( disk ){ disk->Remove( true ); disk.reset(); } }
 
 	~BlockCachedFile(){
 		if( consumer_idx >= 0 ){
 			memory_manager.unregisterConsumer( this, consumer_idx );
-			memory_manager.release( getUsedCache(), true, true );
+			for( ; !cache.isEmpty(); cache.moveNext() ){
+				memory_manager.consumerRelease( cache.buffer(), cache.bufSize() );
+			}
 		}
-		Remove();
+		Remove(); // remove not used anymore file
 	}
 private:
 	struct CacheStorage {
@@ -268,9 +292,8 @@ private:
 		// the size of current buffer
 		inline uint32_t bufSize() const { return (start_idx+1) == bufs.size() ? last_buf_size : buf_size; }
 		inline uint64_t size() const { return (bufs.size() - start_idx)*buf_size - buf_size + last_buf_size; }
-		inline uint64_t bufLeftSize( uint64_t pos ) const { return startPosition() - pos + bufSize(); }
-		inline const uint8_t* bufLeft( uint64_t pos ) const { return buffer() + (pos - startPosition()); }
-
+		inline void addToLastBuffer( uint32_t size ) { last_buf_size += size;
+																								 assert( last_buf_size <= buf_size ); }
 		inline void reset() { start_idx = 0; bufs.clear(); positions.clear(); }
 
 		inline void add( uint8_t* buf, uint64_t position, uint32_t size ){
@@ -281,11 +304,7 @@ private:
 			positions.push_back( position );
 		}
 
-		void moveNext( bool withDelete = true ){
-			if( withDelete && start_idx < bufs.size() )
-				delete[]bufs[start_idx];
-			start_idx++;
-		}
+		void moveNext(){ start_idx++;	}
 
 		~CacheStorage(){
 			for( uint32_t i = start_idx; i < bufs.size(); i++ )
@@ -297,14 +316,16 @@ private:
 	MemoryManager &memory_manager;
 	int32_t consumer_idx;
 	std::unique_ptr<FileDisk> disk;
+	bool wasClosed = false;
 	uint64_t write_position = 0;
 	uint64_t read_position = 0;
 	std::mutex cache_sync;
 	std::mutex file_sync;
 	CacheStorage cache;
+	const uint32_t read_align;
 
 
-	inline void DiskWrite( uint64_t pos, uint8_t * buf, uint32_t buf_size ){
+	inline uint32_t DiskWrite( uint64_t pos, uint8_t * buf, uint32_t buf_size ){
 		std::lock_guard<std::mutex> lk( file_sync );
 		if( !disk ) {
 			disk.reset( new FileDisk(file_name) );
@@ -312,6 +333,7 @@ private:
 		}
 
 		disk->Write( pos, buf, buf_size );
+		return buf_size;
 	}
 };  // end of CachedFileStream
 
@@ -1216,10 +1238,10 @@ private:
 
 
 // creates or cached or simple file stream depends of settings of memory manager
-IBlockWriterReader * CreateFileStream( const fs::path &fileName, MemoryManager &memory_manager, uint32_t base_buf_size ){
+IBlockWriterReader * CreateFileStream( const fs::path &fileName, MemoryManager &memory_manager, uint32_t read_align_bytes = 1 ){
 	return memory_manager.CacheEnabled ?
-				((IBlockWriterReader*)(new BlockCachedFile( fileName, memory_manager, base_buf_size )))
-			: new BlockedFileStream( fileName );
+				((IBlockWriterReader*)(new BlockCachedFile( fileName, memory_manager, read_align_bytes )))
+			: new BlockedFileStream( fileName, read_align_bytes );
 }
 
 // =======================================================
@@ -1247,22 +1269,22 @@ struct BucketStream{
 
 		// std::lock_guard<std::mutex> lk( sync_mutex );
 		if( !disk_output ){
-			uint32_t read_block_size = BUF_SIZE/entry_size_*entry_size_;
+			uint32_t read_align_size = entry_size_;
 			if( compact )
-				read_block_size = sequence_start_bit >= 0 ? BUF_SIZE : (BUF_SIZE/entry_size_*(entry_size_-1));
+				read_align_size = sequence_start_bit >= 0 ? 1 : (entry_size_-1);
 
-			bucket_file.reset( CreateFileStream(fileName, memory_manager, read_block_size ) );
+			bucket_file.reset( CreateFileStream( fileName, memory_manager, read_align_size ) );
 			disk_output.reset( new BlockNotFreeingWriter( bucket_file.get() ) );
 			if( compact ){
 				if( sequence_start_bit >= 0 )
 					disk_output.reset( compacter = new BlockSequenceCompacterWriter( disk_output.release(), entry_size_ - 1
 																, sequence_start_bit - (sequence_start_bit > begin_bits_ ? 8 : 0 ) ) );
-				else if( memory_manager.CacheEnabled )
-					disk_output.reset( buf_writer = new BlockBufferedWriter( disk_output.release(), 1, read_block_size ) );
+				else
+					disk_output.reset( buf_writer = new BlockBufferedWriter( disk_output.release(), read_align_size ) );
 
 				disk_output.reset( new BlockByteCutter( disk_output.release(), entry_size_, begin_bits_ - log_num_buckets_ ) );
-			} else if( memory_manager.CacheEnabled )
-				disk_output.reset( buf_writer = new BlockBufferedWriter( disk_output.release(), 1, read_block_size ) );
+			} else
+				disk_output.reset( buf_writer = new BlockBufferedWriter( disk_output.release(), read_align_size ) );
 		}
 
 		disk_output->Write( buf );

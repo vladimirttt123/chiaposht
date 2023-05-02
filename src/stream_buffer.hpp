@@ -105,9 +105,10 @@ struct StreamBuffer{
 		}
 	}
 
-	inline uint8_t* release(){
+	// Warning replacement should be same size as inner buffer!!!
+	inline uint8_t* release( uint8_t * replacement = nullptr){
 		auto res = buffer;
-		buffer = nullptr;
+		buffer = replacement;
 		used_size = 0;
 		return res;
 	}

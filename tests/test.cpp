@@ -56,9 +56,9 @@ TEST_CASE( "DISK_STREAMS" ){
 		const uint32_t iterations = 242857;
 		const uint32_t batch_size = 256;
 
-		auto file = std::make_unique<BlockedFileStream >( "blocked.file.tmp", BUF_SIZE/entry_size*entry_size );
+		auto file = std::make_unique<BlockedFileStream >( "blocked.file.tmp", entry_size );
 		auto file_not_free = std::make_unique<BlockNotFreeingWriter>( file.get() );
-		auto buf_writer = std::make_unique<BlockBufferedWriter>( file_not_free.release(), entry_size, BUF_SIZE/entry_size*entry_size );
+		auto buf_writer = std::make_unique<BlockBufferedWriter>( file_not_free.release(), entry_size );
 		StreamBuffer buf( batch_size * entry_size );
 		uint8_t entry[entry_size];
 

@@ -80,8 +80,7 @@ struct SortingBucket{
 
 			if( entries_count > 0 ){
 				// Save statistics to file
-				statistics_file.reset( CreateFileStream( disk->getFileName() + ".statistics.tmp",
-																								 memory_manager, sizeof(uint32_t)<<bucket_bits_count_ ) );
+				statistics_file.reset( CreateFileStream( disk->getFileName() + ".statistics.tmp", memory_manager ) );
 				StreamBuffer buf(  (uint8_t*)statistics.release(), sizeof(uint32_t)<<bucket_bits_count_, sizeof(uint32_t)<<bucket_bits_count_ );
 				statistics_file->Write( buf );
 				((IBlockWriter*)statistics_file.get())->Close();
@@ -118,12 +117,14 @@ struct SortingBucket{
 		if( !statistics ) {
 			assert( statistics_file );
 			// Read statistics from file
-			StreamBuffer buf( sizeof(uint32_t)<<bucket_bits_count_ );
-			statistics_file->Read( buf );
+			StreamBuffer buf;
+			statistics.reset( new uint32_t[1<<bucket_bits_count_] );// allocate ram for statistics
+			for( uint64_t read = 0; read < sizeof(uint32_t)<<bucket_bits_count_; read += buf.used() ){
+				statistics_file->Read( buf );
+				memcpy( statistics.get() + read, buf.get(), buf.used() );
+			}
 			statistics_file->Remove();
 			statistics_file.reset();
-
-			statistics.reset( (uint32_t*)buf.release() );
 		}
 
 		// Init memory to sort into
