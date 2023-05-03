@@ -248,13 +248,16 @@ struct BlockCachedFile: IBlockWriterReader, ICacheConsumer {
 		// in read mode or currently in writting than we do not clean
 		if( cache_sync.try_lock() ){
 			if( !cache.isEmpty() ){
-				bool close = wasClosed || !disk;
 				for( ; size_to_free > 0 && !cache.isEmpty(); cache.moveNext(), size_to_free -= BUF_SIZE ){
 					DiskWrite( cache.startPosition(), cache.buffer(), cache.bufSize() );
 					memory_manager.consumerRelease( cache.buffer(), 0 );
 				}
 				cache.reset(); // reset start counter.
-				if( close ) disk->Close();
+
+				if( wasClosed ){
+					std::lock_guard<std::mutex> lk( file_sync );
+					disk->Close();
+				}
 			}
 			cache_sync.unlock();
 		}
@@ -262,9 +265,9 @@ struct BlockCachedFile: IBlockWriterReader, ICacheConsumer {
 		return cache.isEmpty();
 	}
 
-	void Close() override{ if( disk ) { disk->Close(); wasClosed = true; } }
+	void Close() override{ if( disk ) { std::lock_guard<std::mutex> lk( file_sync ); disk->Close(); wasClosed = true; } }
 
-	void Remove() override { if( disk ){ disk->Remove( true ); disk.reset(); } }
+	void Remove() override { if( disk ){ std::lock_guard<std::mutex> lk( file_sync ); disk->Remove( true ); disk.reset(); } }
 
 	~BlockCachedFile(){
 		if( consumer_idx >= 0 ){
