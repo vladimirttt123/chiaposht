@@ -72,7 +72,7 @@ struct MemoryManager{
 		if(getFreeRam() >= (int64_t)size
 			 || ( ( forced || isForcedClean ) && CleanCache( size )) ){
 			{
-				std::scoped_lock lk (sync_size);
+				std::lock_guard lk (sync_size);
 				used_ram += size;
 			}
 			FreeBuffers( maxStoredBuffers() );
@@ -84,12 +84,12 @@ struct MemoryManager{
 
 	inline void requier( const uint64_t & size ){
 		CleanCache( size );
-		std::scoped_lock lk(sync_size);
+		std::lock_guard lk(sync_size);
 		used_ram += size;
 	}
 
 	inline void release( const uint32_t &size ){
-		std::scoped_lock lk(sync_size);
+		std::lock_guard lk(sync_size);
 
 		assert( (int64_t)size <= used_ram );
 		used_ram -= size;
@@ -97,7 +97,7 @@ struct MemoryManager{
 
 	inline int32_t registerConsumer( ICacheConsumer * consumer ){
 		if( !CacheEnabled ) return -1; // disabled caching
-		std::scoped_lock lk ( sync_consumers );
+		std::lock_guard lk ( sync_consumers );
 //	REUSING of old indexes is problematic...
 //		if( min_consumer_idx > 0 ){
 //			consumers[--min_consumer_idx] = consumer;
@@ -109,7 +109,7 @@ struct MemoryManager{
 
 	inline void unregisterConsumer( ICacheConsumer * consumer, uint32_t idx ){
 		if( idx >= consumers.size() || consumers[idx] != consumer ) return; // check before lock to prevent deadlocks
-		std::scoped_lock lk ( sync_consumers );
+		std::lock_guard lk ( sync_consumers );
 		if( idx >= min_consumer_idx && idx < consumers.size() && consumers[idx] == consumer ){
 			consumers[idx] = nullptr;
 			if( idx == min_consumer_idx ) min_consumer_idx++;
@@ -138,7 +138,7 @@ struct MemoryManager{
 		}
 
 		if( res != nullptr ){
-			std::scoped_lock lk (sync_size);
+			std::lock_guard lk (sync_size);
 			used_ram += BUF_SIZE;
 			cleanable_ram += BUF_SIZE;
 		}
@@ -148,7 +148,7 @@ struct MemoryManager{
 
 	inline void consumerRelease( uint8_t* buffer, uint32_t cache_hit_size_size = 0 ){
 		{
-			std::scoped_lock lk (sync_size);
+			std::lock_guard lk (sync_size);
 			used_ram -= BUF_SIZE;
 			cleanable_ram -= BUF_SIZE;
 			not_written += cache_hit_size_size;

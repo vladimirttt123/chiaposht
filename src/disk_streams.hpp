@@ -142,42 +142,42 @@ struct BlockCachedFile: IBlockWriterReader, ICacheConsumer {
 
 	void Write( StreamBuffer & block ) override{
 		assert( read_position == 0 ); // cannot read and write same time
-		uint32_t block_idx = 0;
+		uint32_t block_position = 0;
+		uint32_t block_used = block.used();
 
 		if( consumer_idx >= 0 // we are caching
 				&& cache_sync.try_lock() // and we can lock the cache
 				&& consumer_idx >= 0 ) // and after lock we still caching :)
 		{
-			auto block_used = block.used();
 			assert( (block_used%read_align) == 0 ); // check new data alligned
 
 			// check we can add to current cache
-			block_idx = std::min( cache.bufSize() - cache.buf_size, block_used );
-			if( block_idx > 0 ){ // we really can fill last buffer of current cache
-				memcpy( cache.buffer() + cache.bufSize(), block.get(), block_idx );
-				write_position += block_idx;
-				if( block_idx == block_used ) return; // all data stored in the cache
+			block_position = std::min( cache.bufSize() - cache.buf_size, block_used );
+			if( block_position > 0 ){ // we really can fill last buffer of current cache
+				memcpy( cache.buffer() + cache.bufSize(), block.get(), block_position );
+				write_position += block_position;
+				if( block_position == block_used ) return; // all data stored in the cache
 			}
 
 			auto buf = memory_manager.consumerRequest(); // request next buffer for cache
 			if( buf != nullptr ){ // the buffer was provided
-				if( block_idx == 0 && block.size() == BUF_SIZE ){ // simples case - just replace the buffer
+				if( block_position == 0 && block.size() == BUF_SIZE ){ // simplest case - just replace the buffer
 					cache.add( block.release(buf), write_position, block_used );
 					write_position += block_used;
 					cache_sync.unlock();
 					return;
 				} else { // need to copy from current block to cache
 					do{
-						uint32_t to_copy = std::min( (uint32_t)BUF_SIZE, block_used - block_idx );
-						memcpy( buf, block.get() + block_idx, to_copy );
+						uint32_t to_copy = std::min( (uint32_t)BUF_SIZE, block_used - block_position );
+						memcpy( buf, block.get() + block_position, to_copy );
 						cache.add( buf, write_position, to_copy ); // add next buffer to cache
 						write_position += to_copy;
-						block_idx += to_copy;
-						buf = block_idx >= block_used ? nullptr : memory_manager.consumerRequest(); // request next buffer
+						block_position += to_copy;
+						buf = block_position >= block_used ? nullptr : memory_manager.consumerRequest(); // request next buffer
 					}while( buf != nullptr ); // contuinue up to no next buffer or no need in next buffer
 					cache_sync.unlock();
-					if( block_idx < block_used ){ // not all block was stored in cache
-						write_position += DiskWrite( write_position, block.get()+block_idx, block_used - block_idx );
+					if( block_position < block_used ){ // not all block was stored in cache
+						write_position += DiskWrite( write_position, block.get()+block_position, block_used - block_position );
 					}
 					return;
 				}
@@ -185,7 +185,7 @@ struct BlockCachedFile: IBlockWriterReader, ICacheConsumer {
 			cache_sync.unlock();
 		}
 
-		write_position += DiskWrite( write_position, block.get() + block_idx, block.used() - block_idx );
+		write_position += DiskWrite( write_position, block.get() + block_position, block_used - block_position );
 	}
 
 	// warning this is not thread safe function
@@ -1307,8 +1307,10 @@ struct BucketStream{
 			disk_output->Close();
 			disk_output.reset();
 		}
-		compacter = nullptr;
-		buf_writer = nullptr;
+		compacter = nullptr; // this cleared by resetting disk_output
+		buf_writer = nullptr; // this cleared by resetting disk_output
+		if( bucket_file )
+			((IBlockWriter*)bucket_file.get())->Close();
 	}
 
 	// This is thread safe
