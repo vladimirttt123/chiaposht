@@ -151,12 +151,12 @@ struct MemoryManager{
 		return res;
 	}
 
-	inline void consumerRelease( uint8_t* buffer, uint32_t not_written = 0 ){
+	inline void consumerRelease( uint8_t* buffer, uint32_t cache_hit_size_size = 0 ){
 		{
 			std::scoped_lock lk (sync_size);
 			used_ram -= BUF_SIZE;
 			cleanable_ram -= BUF_SIZE;
-			not_written += not_written;
+			not_written += cache_hit_size_size;
 		}
 		if( buffer != nullptr )
 		{
