@@ -89,7 +89,9 @@ struct SortingBucket{
 		}
 	}
 
-	void FreeMemory(){ memory_.reset(); }
+	void FreeMemory(){
+	//	statistics.reset();
+	}
 
 	/* Like destructor totaly removes the bucket including underlying file */
 	void Remove(){
@@ -103,15 +105,11 @@ struct SortingBucket{
 		statistics.reset();
 	}
 
-	const inline uint8_t* get() const{
-		assert(memory_);
-		return memory_.get();
-	}
 
-	void SortToMemory( uint32_t num_threads = 2 ){
+	void SortToMemory( uint8_t * memory, uint32_t num_threads = 2 ){
 		assert( disk );
 
-		if( memory_ || entries_count == 0 ) return; // already sorted or nothing to sort
+		if( entries_count == 0 ) return; // nothing to sort
 
 		auto start_time = std::chrono::high_resolution_clock::now();
 		if( !statistics ) {
@@ -126,10 +124,6 @@ struct SortingBucket{
 			statistics_file->Remove();
 			statistics_file.reset();
 		}
-
-		// Init memory to sort into
-		memory_.reset( Util::NewSafeBuffer(Size()) );
-		uint8_t* memory = memory_.get();
 
 		uint32_t buckets_count = 1<<bucket_bits_count_;
 		auto bucket_positions = std::make_unique<uint64_t[]>( buckets_count );
@@ -215,7 +209,7 @@ struct SortingBucket{
 #endif
 			// Clean underling resources
 			disk->EndToRead();
-
+			disk.reset();
 
 			// Fix bucket_positions for sorting step in such way that bucket_positions[i] reprsents end position of subbucket.
 			bucket_positions[0] = statistics[0]*entry_size_;
@@ -268,7 +262,6 @@ private:
 	std::unique_ptr<uint32_t[]> statistics;
 	std::unique_ptr<IBlockWriterReader> statistics_file;
 	uint64_t entries_count = 0;
-	std::unique_ptr<uint8_t[]> memory_;
 	MemoryManager &memory_manager;
 
 

@@ -216,7 +216,7 @@ struct BlockCachedFile: IBlockWriterReader, ICacheConsumer {
 					block.reset( cache.buffer(), BUF_SIZE, buf_size );
 					memory_manager.consumerRelease( nullptr, buf_size );
 				}
-				cache.moveNext(); // clear without deletion
+				cache.moveNext();
 				if( read_position == 0 ) cache_sync.unlock(); // do we need unlock?
 				read_position += buf_size;
 				return buf_size;
@@ -240,9 +240,11 @@ struct BlockCachedFile: IBlockWriterReader, ICacheConsumer {
 
 	bool atEnd() const override { return read_position >= write_position; };
 
-	bool FreeCache( int64_t size_to_free ) override{
+	cache_free_status FreeCache( int64_t size_to_free ) override{
 
-		consumer_idx = -1; // after this call no more caching for this file
+		if( read_position > 0 ) // no cache operations when read is started.
+			return cache.isEmpty() ? FULL_CLEAN : NO_CLEAN;
+
 
 		// we try to sync to prevent dead locks because it can be
 		// in read mode or currently in writting than we do not clean
@@ -252,7 +254,11 @@ struct BlockCachedFile: IBlockWriterReader, ICacheConsumer {
 					DiskWrite( cache.startPosition(), cache.buffer(), cache.bufSize() );
 					memory_manager.consumerRelease( cache.buffer(), 0 );
 				}
-				cache.reset(); // reset start counter.
+
+				if( cache.isEmpty() ){
+					consumer_idx = -1; // if cache is empty the consumer is unregistered.
+					cache.reset(); // reset start counter.
+				}
 
 				if( wasClosed ){
 					std::lock_guard<std::mutex> lk( file_sync );
@@ -260,9 +266,10 @@ struct BlockCachedFile: IBlockWriterReader, ICacheConsumer {
 				}
 			}
 			cache_sync.unlock();
+			return cache.isEmpty()? FULL_CLEAN : PARTIAL_CLEAN;
 		}
 
-		return cache.isEmpty();
+		return cache.isEmpty()?FULL_CLEAN : NO_CLEAN;
 	}
 
 	void Close() override{ if( disk ) { std::lock_guard<std::mutex> lk( file_sync ); disk->Close(); wasClosed = true; } }
@@ -307,7 +314,7 @@ private:
 			positions.push_back( position );
 		}
 
-		void moveNext(){ start_idx++;	}
+		void moveNext(){ start_idx++; }
 
 		~CacheStorage(){
 			for( uint32_t i = start_idx; i < bufs.size(); i++ )

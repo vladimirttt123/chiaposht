@@ -24,9 +24,15 @@ extern uint64_t BUF_SIZE;
 
 using namespace std::chrono_literals; // for operator""ms;
 
+enum cache_free_status : uint8_t{
+	NO_CLEAN = 0,
+	PARTIAL_CLEAN = 1,
+	FULL_CLEAN = 2
+};
+
 struct ICacheConsumer{
 	// this function should return true if everithing is freed
-	virtual bool FreeCache( int64_t size_to_free ) = 0;
+	virtual cache_free_status FreeCache( int64_t size_to_free ) = 0;
 };
 
 struct MemoryManager{
@@ -58,32 +64,13 @@ struct MemoryManager{
 
 	void SetMode( bool isForceClean, bool isFIFO ){
 		this->isFIFO = isFIFO;
-		if( isForceClean != isBackgroundClean ){
-
-			if( background_cleaner ){
-				isBackgroundClean = false;
-				background_cleaner->join(); // wait for previous thread to finish
-				background_cleaner.reset();
-			}
-
-			isBackgroundClean = isForceClean;
-
-			if( CacheEnabled && isBackgroundClean ){
-				// start background cleaner thread
-				background_cleaner.reset( new std::thread( [this]{
-					while( this->isBackgroundClean ){
-						std::this_thread::sleep_for( 100ms );
-						if( isNeedClean )
-							isNeedClean = !CleanOne();
-					}
-				}) );
-			}
-		}
+		this->isForcedClean = isForceClean;
 	}
 
 	inline bool request( const uint64_t &size, bool forced = false ){
 
-		if(getFreeRam() >= (int64_t)size || (forced && CleanCache( size )) ){
+		if(getFreeRam() >= (int64_t)size
+			 || ( ( forced || isForcedClean ) && CleanCache( size )) ){
 			{
 				std::scoped_lock lk (sync_size);
 				used_ram += size;
@@ -91,7 +78,6 @@ struct MemoryManager{
 			FreeBuffers( maxStoredBuffers() );
 			return true;
 		}
-		if( isBackgroundClean ) isNeedClean = true;
 
 		return false;
 	}
@@ -112,10 +98,11 @@ struct MemoryManager{
 	inline int32_t registerConsumer( ICacheConsumer * consumer ){
 		if( !CacheEnabled ) return -1; // disabled caching
 		std::scoped_lock lk ( sync_consumers );
-		if( min_consumer_idx > 0 ){
-			consumers[--min_consumer_idx] = consumer;
-			return min_consumer_idx;
-		}
+//	REUSING of old indexes is problematic...
+//		if( min_consumer_idx > 0 ){
+//			consumers[--min_consumer_idx] = consumer;
+//			return min_consumer_idx;
+//		}
 		consumers.push_back( consumer );
 		return consumers.size()-1;
 	}
@@ -142,11 +129,19 @@ struct MemoryManager{
 		if( res == nullptr && getFreeRam() >= (int64_t)BUF_SIZE )
 			res = Util::NewSafeBuffer( BUF_SIZE );
 
+		if( res == nullptr && isForcedClean && CleanCache( BUF_SIZE ) ){
+			std::lock_guard<std::mutex> lk(sync_buffers);
+			if( regular_buffers.size() > 0 ){
+				res = regular_buffers[regular_buffers.size()-1];
+				regular_buffers.pop_back();
+			}
+		}
+
 		if( res != nullptr ){
 			std::scoped_lock lk (sync_size);
 			used_ram += BUF_SIZE;
 			cleanable_ram += BUF_SIZE;
-		} else	if( isBackgroundClean ) isNeedClean = true;
+		}
 
 		return res;
 	}
@@ -168,23 +163,15 @@ struct MemoryManager{
 	}
 
 
-	~MemoryManager(){
-		if( background_cleaner ){
-			isBackgroundClean = false;
-			background_cleaner->join();
-		}
-		FreeBuffers( 0 );
-	}
+	~MemoryManager(){ FreeBuffers( 0 );	}
 private:
 
 	int64_t used_ram = 0, cleanable_ram = 0, not_written = 0;
 	std::mutex sync_size, sync_consumers, sync_buffers;
 	std::vector<ICacheConsumer*> consumers;
 	uint32_t min_consumer_idx = 0;
-	bool isBackgroundClean = false;
 	bool isFIFO = false;
-	bool isNeedClean = false;
-	std::unique_ptr<std::thread> background_cleaner;
+	bool isForcedClean = false;
 
 	std::vector<uint8_t*> regular_buffers;
 
@@ -200,13 +187,13 @@ private:
 
 	inline bool CleanCache( int64_t need_size ){
 
-		while( CleanOne() && getFreeRam() < need_size )
+		while( CleanOne( need_size - getFreeRam() ) && getFreeRam() < need_size )
 			;
 
 		return getFreeRam() >= need_size;
 	}
 
-	inline bool CleanOne(){
+	inline bool CleanOne( int64_t size_to_clean ){
 		ICacheConsumer * cur = nullptr;
 		uint32_t idx;
 
@@ -225,8 +212,20 @@ private:
 				}
 			}
 		}
+
 		if( cur != nullptr ) {
-			cur->FreeCache( total_size );
+			auto clean_res = cur->FreeCache( size_to_clean );
+			if( clean_res == NO_CLEAN )
+				CleanOne( size_to_clean ); // clean another one
+
+			if( clean_res != FULL_CLEAN ){ // not fully cleaned need to return the consumer back
+				std::lock_guard<std::mutex> lk(sync_consumers);
+				if( consumers[idx] == nullptr ){
+					consumers[idx] = cur;
+					if( idx < min_consumer_idx ) min_consumer_idx = idx;
+				}// TODO else here!
+			}
+
 			return true;
 		}
 

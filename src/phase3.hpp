@@ -544,13 +544,16 @@ Phase3Results RunPhase3(
 					};
 
 				// Start threads
-				std::unique_ptr<std::thread> threads[num_threads];
-				for( uint32_t t = 0; t < num_threads; t++ )
-					threads[t].reset( new std::thread(parking_thread) );
+				if( num_threads <= 1 )
+					parking_thread();
+				else {
+					std::unique_ptr<std::thread> threads[num_threads];
+					for( uint32_t t = 0; t < num_threads; t++ )
+						threads[t].reset( new std::thread(parking_thread) );
 
-				for( uint32_t t = 0; t < num_threads; t++ )
-					threads[t]->join();
-
+					for( uint32_t t = 0; t < num_threads; t++ )
+						threads[t]->join();
+				}
 
 				R_sort_manager.reset();
 				L_sort_manager->FlushCache();

@@ -72,9 +72,7 @@ public:
         const std::string &filename,
 				uint32_t const begin_bits,
         uint64_t const stripe_size,
-				uint8_t k,
-				uint8_t phase,
-				uint8_t table_index,
+				uint8_t k, uint8_t phase, uint8_t table_index,
 				uint32_t num_threads = 2,
 				bool enable_compaction = true )
 
@@ -102,7 +100,7 @@ public:
                 fs::path(tmp_dirname) /
                 fs::path(filename + ".sort_bucket_" + bucket_number_padded.str() + ".tmp");
 						uint16_t sequence_start = -1;
-						if( k >= 32 ){ // should be 32
+						if( k >= 32 ){ // for k < 32 sqeunce compaction not working. it need long enough entry size
 							switch (phase) {
 								case 1: sequence_start = table_index == 1 ? k : (k+kExtraBits); break;
 								case 2: sequence_start = 0; break;
@@ -154,7 +152,7 @@ public:
 			const uint8_t bits_shift;
 		}; // end of ThreadWriter
 
-
+		// returned number of entries
 		inline uint64_t Count() const {
 			uint64_t res = 0;
 			for( auto &b : buckets_ )
@@ -295,26 +293,26 @@ public:
     }
 
 		void FlushCache( bool isFull = false )
-    {
-        for (auto& b : buckets_) {
-						if( isFull ) b.Flush( true );
-						// b.CloseFile();
-						b.FreeMemory();
-				}
-        final_position_end = 0;
+		{
+			if( isFull ){
+				for (auto& b : buckets_)
+					 b.Flush( true );
+			}
+
+			final_position_end = 0;
     }
 
     ~SortManager()
     {
-				if( next_bucket_sorting_thread )
-					next_bucket_sorting_thread->join();
+			if( next_bucket_sorting_thread ) // all threads should be joined
+				next_bucket_sorting_thread->join();
 
-				if( reserved_buffer_size > 0 )
-					memory_manager.release( reserved_buffer_size ); // release last bucket
+			if( reserved_buffer_size > 0 )
+				memory_manager.release( (sorted_next_bucket ? 2 : 1) * reserved_buffer_size ); // release current and next bucket's memory
 
-        // Close and delete files in case we exit without doing the sort
-				for (auto& b : buckets_)
-					b.Remove( );
+			// Close and delete files in case we exit without doing the sort
+			for (auto& b : buckets_)
+				b.Remove( );
     }
 
 private:
@@ -333,6 +331,9 @@ private:
 		const uint64_t prev_bucket_buf_size;
     std::unique_ptr<uint8_t[]> prev_bucket_buf_;
     uint64_t prev_bucket_position_start = 0;
+		std::unique_ptr<uint8_t[]> sorted_current_bucket;
+		std::unique_ptr<uint8_t[]> sorted_next_bucket;
+
 
     uint64_t final_position_start = 0;
     uint64_t final_position_end = 0;
@@ -348,13 +349,13 @@ private:
 		uint64_t stream_read_position = 0;
 		uint64_t reserved_buffer_size = 0;
 
-		const inline uint8_t* memory_start() const {return buckets_[next_bucket_to_sort-1].get();}
+		const inline uint8_t* memory_start() const {return sorted_current_bucket.get();}
 
 		void SortBucket()
     {
-				if( next_bucket_to_sort >= buckets_.size() ) {
-            throw InvalidValueException("Trying to sort bucket which does not exist.");
-        }
+				if( next_bucket_to_sort >= buckets_.size() )
+					throw InvalidValueException( "Trying to sort bucket which does not exist." );
+
 
 				uint64_t const bucket_i = this->next_bucket_to_sort;
 				if( bucket_i == 0 ){
@@ -373,10 +374,17 @@ private:
 //										std::to_string(b.Size() / (1024.0 * 1024.0 * 1024.0)) +
 //										"GiB");
 					}
-				} else {
-					buckets_[bucket_i-1].FreeMemory();
-					// do not release in memory manager because other thread can request it for background sorting that we do not want.
+
+					sorted_current_bucket.reset( new uint8_t[reserved_buffer_size] );
+					if( num_threads > 1 ){
+						if( memory_manager.request( reserved_buffer_size, true ) )
+							sorted_next_bucket.reset( new uint8_t[reserved_buffer_size] ); // reserve for background sorting
+						else
+							std::cout << "Warning buffer is too small to allow background sorting, the performance may be slower." << std::endl
+												<< "It is possible to increase buffer or to add number of buckets to improve multithreaded performance." << std::endl;
+					}
 				}
+
 				SortingBucket& b = buckets_[bucket_i];
 
 
@@ -403,16 +411,17 @@ private:
 					next_bucket_sorting_thread->join();
 					auto end_time = std::chrono::high_resolution_clock::now();
 					next_bucket_sorting_thread.reset();
-					memory_manager.release( b.Size() ); // release extra that was requested for background sorting.
 
 					wait_time = (end_time - start_time)/std::chrono::milliseconds(1);
 					time_total_wait += wait_time;
 					// if we are waiting for sorts than we can add threads to it
 					if( wait_time > 10 && num_background_treads < num_threads )
 						num_background_treads++;
+
+					sorted_current_bucket.swap( sorted_next_bucket ); // put sorted result in action
 				}
 				else{
-					b.SortToMemory( num_threads );
+					b.SortToMemory( sorted_current_bucket.get(), num_threads );
 				}
 
 				if( b.Size() > 0 )
@@ -424,9 +433,8 @@ private:
 				this->next_bucket_to_sort += 1;
 
 				if( this->next_bucket_to_sort >= buckets_.size()
-						|| ( buckets_[this->next_bucket_to_sort].Size() == 0
-								 && b.Size() > 0 ) ){
-					// final bucket - show some stats
+						|| ( buckets_[this->next_bucket_to_sort].Size() == 0 && b.Size() > 0 ) ){
+					// the final bucket - show some stats
 					uint64_t read_time = 0, sort_time = 0;
 					for(uint32_t i = 0; i < next_bucket_to_sort; i++ ){
 						read_time += buckets_[i].read_time;
@@ -438,11 +446,15 @@ private:
 										<< sort_time/1000.0/next_bucket_to_sort << "s )" << std::endl;
 				}
 
-				if( num_threads > 1 && this->next_bucket_to_sort < buckets_.size() &&
-						memory_manager.request( buckets_[this->next_bucket_to_sort].Size(), true ) ){
-					// we have memory to sort next bucket
-					next_bucket_sorting_thread.reset(
-								new std::thread( [this](){ buckets_[this->next_bucket_to_sort].SortToMemory( num_background_treads );} ) );
+				if( sorted_next_bucket ){ // reserved sort for next bucket in case it is threaded
+					if( this->next_bucket_to_sort < buckets_.size() )
+						next_bucket_sorting_thread.reset(
+									new std::thread( [this](){ buckets_[this->next_bucket_to_sort].SortToMemory(
+																						sorted_next_bucket.get(), num_background_treads );} ) );
+					else { // no next sort -> we can release the next sort buffer
+						sorted_next_bucket.reset();
+						memory_manager.release( reserved_buffer_size );
+					}
 				}
 
 				// Deletes the bucket file
