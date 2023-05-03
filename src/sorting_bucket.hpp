@@ -57,7 +57,7 @@ struct SortingBucket{
 
 	inline void AddBulkTS( StreamBuffer & entries, const uint32_t * stats ){
 
-		std::lock_guard<std::mutex> lk( addMutex );
+		std::lock_guard<std::mutex> lk( *addMutex.get() );
 
 		auto count = entries.used() / entry_size_;
 
@@ -250,7 +250,7 @@ struct SortingBucket{
 	}
 
 private:
-	std::mutex addMutex;
+	std::unique_ptr<std::mutex> addMutex = std::make_unique<std::mutex>();
 	std::unique_ptr<BucketStream> disk;
 #ifndef NDEBUG
 	const uint16_t bucket_no_;
