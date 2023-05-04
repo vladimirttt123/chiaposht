@@ -127,7 +127,7 @@ struct ParkWriterTS{
 		, park_buffer_size( EntrySizes::CalculateLinePointSize(k)
 												+ EntrySizes::CalculateStubsSize(k) + 2
 												+ EntrySizes::CalculateMaxDeltasSize(k, 1) )
-		, park_buffer(new uint8_t[park_buffer_size] )
+		, park_buffer( new uint8_t[park_buffer_size] )
 		, table_start(table_start)
 		, table_index(table_index)
 		, park_size_bytes(park_size_bytes )

@@ -205,7 +205,7 @@ struct BlockCachedFile: IBlockWriterReader, ICacheConsumer {
 		if( !cache.isEmpty() ) { // we have cached buffers
 			assert( read_position <= cache.startPosition() );
 
-			if( read_position == cache.startPosition() ){
+				if( read_position == cache.startPosition() ){
 				// simplest case
 				auto buf_size = cache.bufSize();
 
@@ -607,10 +607,10 @@ struct BlockByteInserter : public IBlockReader{
 
 	uint32_t Read( StreamBuffer & block ) override{
 		assert( disk );
-		disk->Read( block );
-		assert( block.used()%(entry_size-1) == 0 );
+		disk->Read( read_block );
+		assert( read_block.used()%(entry_size-1) == 0 );
 
-		return GrowBuffer( block );
+		return GrowBuffer( read_block, block );
 	}
 
 	bool atEnd() const override { return disk->atEnd(); }
@@ -618,21 +618,48 @@ struct BlockByteInserter : public IBlockReader{
 	void Close() override { if(disk){ disk->Close(); disk.reset(); } }
 
 
-	uint32_t GrowBuffer( StreamBuffer & block ){
-		auto buf_size = block.used();
-		if(buf_size == 0 ) return 0;
+	uint32_t GrowBuffer( StreamBuffer & from, StreamBuffer & block ){
+		auto buf_size = from.used();
+		if(buf_size == 0 ) {
+			block.setUsed( 0 );
+			return 0;
+		}
 		uint32_t full_buf_size = buf_size/(entry_size-1)*entry_size;
 
-		auto buf = block.ensureSize( full_buf_size, false ).get();
+		auto buf = block.ensureSize( full_buf_size ).setUsed( full_buf_size ).get();
+		auto src = from.get();
+
+		if( !mask ){
+			for( uint64_t src_idx = 0, dst_idx = 0, insert_idx = bytes_begin; src_idx < buf_size; ){
+				// WARNING this writes after buffer size, and should be used just with safe buffers!!!
+				((uint64_t*)(buf+dst_idx))[0] = ((uint64_t*)(src+src_idx))[0];
+				dst_idx += 8;
+				src_idx += 8;
+				if( dst_idx > insert_idx ){
+					src_idx -= dst_idx - insert_idx;
+					buf[insert_idx] = removed_byte;
+					dst_idx = insert_idx + 1;
+					insert_idx += entry_size;
+				}
+			}
+
+			return full_buf_size;
+		}
+
+		// The restore works from end to start by historical reason
+		// once it was copy inside same buffer.
+		// may be it worth it to rewrite to be from begin to end
 
 		// copy last entry
 		uint64_t tail_idx = full_buf_size - entry_size + bytes_begin + 1;
 		int64_t compacted_idx = buf_size - entry_size + bytes_begin + 1;
-		memmove( buf + tail_idx, buf + compacted_idx, entry_size - bytes_begin - 1 );
+		memcpy( buf + tail_idx, src + compacted_idx, entry_size - bytes_begin - 1 );
 		for( tail_idx -= entry_size, compacted_idx -= entry_size - 1;
 				 compacted_idx >= 0;
 				 tail_idx -= entry_size, compacted_idx -= entry_size - 1 )
-			memmove( buf + tail_idx, buf + compacted_idx, entry_size - 1 );
+			memcpy( buf + tail_idx, src + compacted_idx, entry_size - 1 );
+
+		memcpy( buf, src, bytes_begin ); // the begining
 
 		// Now insert bucket
 		if( mask ){
@@ -648,7 +675,6 @@ struct BlockByteInserter : public IBlockReader{
 				buf[i] = removed_byte;
 		}
 
-		block.setUsed( full_buf_size );
 		return full_buf_size;
 	}
 
@@ -660,6 +686,9 @@ private:
 	const uint8_t bytes_begin;
 	const uint8_t removed_byte;
 	const uint8_t mask;
+	// this one need to improve problem of heap fragmentation
+	// in case of cahce it allow less memory heap operations
+	StreamBuffer read_block;
 };// end of ByteInserterStream
 
 
