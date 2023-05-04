@@ -118,7 +118,8 @@ struct MemoryManager{
 
 	inline uint8_t* consumerRequest(){
 		uint8_t* res = nullptr;
-		{
+
+		if( regular_buffers.size() > 0 ) {
 			std::lock_guard<std::mutex> lk(sync_buffers);
 			if( regular_buffers.size() > 0 ){
 				res = regular_buffers[regular_buffers.size()-1];
@@ -197,19 +198,19 @@ private:
 		ICacheConsumer * cur = nullptr;
 		uint32_t idx;
 
-		{	// find consumer to clean
+			// find consumer to clean
+		if( isFIFO ){ // first in first out -> remove oldest
 			std::lock_guard<std::mutex> lk(sync_consumers);
-			if( isFIFO ){ // first in first out -> remove oldest
-				while( cur == nullptr && min_consumer_idx < consumers.size() ){
-					cur = consumers[ idx = min_consumer_idx];
-					consumers[min_consumer_idx++] = nullptr;
-				}
+			while( cur == nullptr && min_consumer_idx < consumers.size() ){
+				cur = consumers[ idx = min_consumer_idx];
+				consumers[min_consumer_idx++] = nullptr;
 			}
-			else{
-				for( int32_t i = consumers.size()-1; cur == nullptr && i >= (int32_t)min_consumer_idx; i-- ){
-					cur = consumers[ idx = i ];
-					consumers[i] = nullptr;
-				}
+		}
+		else{
+			std::lock_guard<std::mutex> lk(sync_consumers);
+			for( int32_t i = consumers.size()-1; cur == nullptr && i >= (int32_t)min_consumer_idx; i-- ){
+				cur = consumers[ idx = i ];
+				consumers[i] = nullptr;
 			}
 		}
 
@@ -219,11 +220,12 @@ private:
 				CleanOne( size_to_clean ); // clean another one
 
 			if( clean_res != FULL_CLEAN ){ // not fully cleaned need to return the consumer back
-				std::lock_guard<std::mutex> lk(sync_consumers);
-				if( consumers[idx] == nullptr ){
-					consumers[idx] = cur;
+				// no need of lock because there is no consumer index reuse
+				consumers[idx] = cur;
+				if( idx < min_consumer_idx ){
+					std::lock_guard<std::mutex> lk(sync_consumers);
 					if( idx < min_consumer_idx ) min_consumer_idx = idx;
-				}// TODO else here!
+				}
 			}
 
 			return true;

@@ -134,7 +134,8 @@ struct BlockCachedFile: IBlockWriterReader, ICacheConsumer {
 
 	// @max_buf_size - is a size of buffer supposed to be full. if such side provided it is not copied but replaced
 	BlockCachedFile( const fs::path &fileName, MemoryManager &memory_manager, uint32_t read_align = 1 )
-		: memory_manager(memory_manager), cache( BUF_SIZE/read_align*read_align), read_align(read_align)
+		: memory_manager(memory_manager), isCaching(memory_manager.CacheEnabled)
+		, cache( BUF_SIZE/read_align*read_align), read_align(read_align)
 	{
 		consumer_idx = memory_manager.registerConsumer( (ICacheConsumer*)this );
 		file_name = fileName;
@@ -145,7 +146,7 @@ struct BlockCachedFile: IBlockWriterReader, ICacheConsumer {
 		uint32_t block_position = 0;
 		uint32_t block_used = block.used();
 
-		if( consumer_idx >= 0 // we are caching
+		if( isCaching // we are caching
 				&& cache_sync.try_lock() // and we can lock the cache
 				&& consumer_idx >= 0 ) // and after lock we still caching :)
 		{
@@ -198,6 +199,7 @@ struct BlockCachedFile: IBlockWriterReader, ICacheConsumer {
 			// in order prevent locks on read we unregister started to read stream
 			memory_manager.unregisterConsumer( this, consumer_idx );
 			consumer_idx = -1;
+			isCaching = false;
 		}
 
 		uint32_t to_read = cache.buf_size;
@@ -245,6 +247,7 @@ struct BlockCachedFile: IBlockWriterReader, ICacheConsumer {
 		if( read_position > 0 ) // no cache operations when read is started.
 			return cache.isEmpty() ? FULL_CLEAN : NO_CLEAN;
 
+		isCaching = false; // stop caching after free request
 
 		// we try to sync to prevent dead locks because it can be
 		// in read mode or currently in writting than we do not clean
@@ -325,6 +328,7 @@ private:
 	fs::path file_name;
 	MemoryManager &memory_manager;
 	int32_t consumer_idx;
+	bool isCaching;
 	std::unique_ptr<FileDisk> disk;
 	bool wasClosed = false;
 	uint64_t write_position = 0;
