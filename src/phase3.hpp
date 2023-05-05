@@ -178,7 +178,7 @@ struct EntryAsynRewriter{
 	EntryAsynRewriter( uint8_t k, SortManager *R_sort_manager, uint32_t num_treads, const uint32_t right_entry_size_bytes,
 										 uint64_t (&left_new_pos)[kCachedPositionsSize], uint64_t (&old_sort_keys)[kReadMinusWrite][kMaxMatchesSingleEntry],
 										 uint16_t (&old_counters)[kReadMinusWrite], uint64_t (&old_offsets)[kReadMinusWrite][kMaxMatchesSingleEntry] )
-		: sm(R_sort_manager), k(k), num_threads( std::max( 1U, num_treads ) ), POSITION_LIMIT((uint64_t)1 << k), line_point_size(2 * k - 1)
+		: sm(R_sort_manager), k(k), num_threads( std::min( 2U, std::max( 1U, num_treads ) ) ), POSITION_LIMIT((uint64_t)1 << k), line_point_size(2 * k - 1)
 		, right_sort_key_size(k), right_entry_size_bytes(right_entry_size_bytes)
 		, QUEUE_SIZE( this->num_threads*QUEUE_SIZE_PER_THREAD ), queue( new BatchData[QUEUE_SIZE] )
 		, sort_writer(*R_sort_manager), left_new_pos(left_new_pos), old_sort_keys(old_sort_keys)
@@ -198,16 +198,15 @@ struct EntryAsynRewriter{
 					uint32_t size;
 
 					while( !finished ){
+						while( queue_size == 0 && !finished )
+							std::this_thread::sleep_for( this->num_threads * 5us );
+
 						{
 							std::unique_lock<std::mutex> lk(queue_sync);
-							if( queue_size == 0 )
-								cv.wait( lk, [this]{ return queue_size > 0 || finished; });
-							if( finished ) return;
 							size = queue_size;
 							tqueue.swap( queue );
 							queue_size = 0;
 						}
-						cv.notify_all();
 
 						for( uint32_t i = 0; i < size; i ++ )
 							tqueue[i].process( twriter, this->k, POSITION_LIMIT, line_point_size, right_sort_key_size, this->right_entry_size_bytes );
@@ -228,16 +227,17 @@ struct EntryAsynRewriter{
 				queue[0].process( sort_writer, this->k, POSITION_LIMIT, line_point_size, right_sort_key_size, this->right_entry_size_bytes );
 			}
 			else{
+				for( bool updated = false; !updated; )
 				{
+					while( queue_size == QUEUE_SIZE )
+						std::this_thread::sleep_for( 1us );
 					std::unique_lock<std::mutex> lk(queue_sync);
-//					if( queue_size > QUEUE_SIZE/10*9 )
-//						std::cout << "QUEUE is busy " << queue_size << std::endl;
-					if( queue_size >= QUEUE_SIZE )
-						cv.wait( lk, [this]{return queue_size < QUEUE_SIZE; });
-					queue[queue_size++].update( current_pos, old_counters[write_pointer_pos_rm_div], left_new_pos_1, left_new_pos,
-							 old_offsets[write_pointer_pos_rm_div], old_sort_keys[write_pointer_pos_rm_div] );
+					if( queue_size < QUEUE_SIZE ){
+						queue[queue_size++].update( current_pos, old_counters[write_pointer_pos_rm_div], left_new_pos_1, left_new_pos,
+								 old_offsets[write_pointer_pos_rm_div], old_sort_keys[write_pointer_pos_rm_div] );
+						updated = true;
+					}
 				}
-				cv.notify_all();
 			}
 		}
 	}
@@ -248,7 +248,6 @@ struct EntryAsynRewriter{
 				std::unique_lock<std::mutex> lk(queue_sync);
 				finished = true;
 			}
-			cv.notify_all();
 			for( uint32_t i = 0; i < num_threads; i++ )
 				processing_thread[i].join();
 		}
@@ -331,7 +330,6 @@ private:
 
 	SortManager::ThreadWriter sort_writer;
 	std::mutex queue_sync;
-	std::condition_variable cv;
 	std::unique_ptr<std::thread[]> processing_thread;
 	bool finished = false;
 
