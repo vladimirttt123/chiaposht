@@ -117,8 +117,8 @@ public:
 		struct ThreadWriter{
 			explicit ThreadWriter( SortManager &parent ) : parent_(parent)
 						, buckets_cache(new std::unique_ptr<CacheBucket>[parent.buckets_.size()])
-						, begin_bytes( parent.begin_bits_/8 ), begin_bits( parent.begin_bits_&7 )
-						, bits_shift( 32 - parent.log_num_buckets_ - parent.subbucket_bits )
+//						, begin_bytes( parent.begin_bits_/8 ), begin_bits( parent.begin_bits_&7 )
+//						, bits_shift( 32 - parent.log_num_buckets_ - parent.subbucket_bits )
 			{
 				for( uint32_t i = 0; i < parent.buckets_.size(); i++ )
 					buckets_cache[i].reset( new CacheBucket( parent.buckets_[i] ) );
@@ -147,9 +147,9 @@ public:
 		private:
 			SortManager &parent_;
 			std::unique_ptr<std::unique_ptr<CacheBucket>[]> buckets_cache;
-			const uint8_t begin_bytes;
-			const uint8_t begin_bits;
-			const uint8_t bits_shift;
+//			const uint8_t begin_bytes;
+//			const uint8_t begin_bits;
+//			const uint8_t bits_shift;
 		}; // end of ThreadWriter
 
 		// returned number of entries
