@@ -172,34 +172,48 @@ private:
 	const uint32_t park_size_bytes;
 };
 
-const uint32_t QUEUE_SIZE = 1000;
+const uint32_t QUEUE_SIZE_PER_THREAD = 100;
 
 struct EntryAsynRewriter{
-	EntryAsynRewriter( uint8_t k, SortManager *R_sort_manager, const uint32_t right_entry_size_bytes,
+	EntryAsynRewriter( uint8_t k, SortManager *R_sort_manager, uint32_t num_treads, const uint32_t right_entry_size_bytes,
 										 uint64_t (&left_new_pos)[kCachedPositionsSize], uint64_t (&old_sort_keys)[kReadMinusWrite][kMaxMatchesSingleEntry],
 										 uint16_t (&old_counters)[kReadMinusWrite], uint64_t (&old_offsets)[kReadMinusWrite][kMaxMatchesSingleEntry] )
-		: sm(R_sort_manager), k(k), POSITION_LIMIT((uint64_t)1 << k), line_point_size(2 * k - 1)
+		: sm(R_sort_manager), k(k), num_threads( std::max( 1U, num_treads ) ), POSITION_LIMIT((uint64_t)1 << k), line_point_size(2 * k - 1)
 		, right_sort_key_size(k), right_entry_size_bytes(right_entry_size_bytes)
-		, entry(right_entry_size_bytes), left_new_pos(left_new_pos)
-		, old_sort_keys(old_sort_keys), old_counters(old_counters), old_offsets(old_offsets) {
+		, QUEUE_SIZE( this->num_threads*QUEUE_SIZE_PER_THREAD ), queue( new BatchData[QUEUE_SIZE] )
+		, sort_writer(*R_sort_manager), left_new_pos(left_new_pos), old_sort_keys(old_sort_keys)
+		, old_counters(old_counters), old_offsets(old_offsets){
 
-		for( uint32_t i = 0; i < QUEUE_SIZE; i++ )
-			queue[i].reset( new BatchData() );
 
-		processing_thread.reset( new std::thread( [this](){
-			std::unique_ptr<BatchData> cur( new BatchData() );
-			while( !finished ){
-				{
-					std::unique_lock<std::mutex> lk(queue_sync);
-					cv.wait( lk, [this]{return queue_size > 0 || finished; });
-					if( finished ) return;
-					cur.swap( queue[--queue_size] );
-				}
-				cv.notify_one();
+		if( num_treads > 1 ){
 
-				cur->process( sm, entry, this->k, POSITION_LIMIT, line_point_size, right_sort_key_size, this->right_entry_size_bytes );
-			}
-		} ) );
+			processing_thread.reset( new std::thread[num_treads] );
+			for( uint32_t i = 0; i < num_treads; i++ )
+				processing_thread[i] = std::thread( [this](){
+
+					SortManager::ThreadWriter twriter = SortManager::ThreadWriter( *sm );
+					std::unique_ptr<BatchData> cur( new BatchData() );
+					StreamBuffer entr(this->right_entry_size_bytes);
+					std::unique_ptr<BatchData[]> tqueue ( new BatchData[QUEUE_SIZE] );
+					uint32_t size;
+
+					while( !finished ){
+						{
+							std::unique_lock<std::mutex> lk(queue_sync);
+							if( queue_size == 0 )
+								cv.wait( lk, [this]{ return queue_size > 0 || finished; });
+							if( finished ) return;
+							size = queue_size;
+							tqueue.swap( queue );
+							queue_size = 0;
+						}
+						cv.notify_all();
+
+						for( uint32_t i = 0; i < size; i ++ )
+							tqueue[i].process( twriter, this->k, POSITION_LIMIT, line_point_size, right_sort_key_size, this->right_entry_size_bytes );
+					}
+				} );
+		}
 	}
 
 	void next( const uint64_t current_pos ){
@@ -208,38 +222,50 @@ struct EntryAsynRewriter{
 			uint64_t left_new_pos_1 = left_new_pos[write_pointer_pos % kCachedPositionsSize];
 			uint64_t const write_pointer_pos_rm_div = write_pointer_pos % kReadMinusWrite;
 
-			{
-				std::unique_lock<std::mutex> lk(queue_sync);
-//				if( queue_size >= QUEUE_SIZE/10*9 )
-//					std::cout << "queue is busy " << queue_size << std::endl ;
-				cv.wait( lk, [this]{return queue_size < QUEUE_SIZE; });
-				queue[queue_size++]->update( current_pos, old_counters[write_pointer_pos_rm_div], left_new_pos_1, left_new_pos,
+			if( num_threads <= 1 ){
+				queue[0].update( current_pos, old_counters[write_pointer_pos_rm_div], left_new_pos_1, left_new_pos,
 						 old_offsets[write_pointer_pos_rm_div], old_sort_keys[write_pointer_pos_rm_div] );
+				queue[0].process( sort_writer, this->k, POSITION_LIMIT, line_point_size, right_sort_key_size, this->right_entry_size_bytes );
 			}
-			cv.notify_one();
+			else{
+				{
+					std::unique_lock<std::mutex> lk(queue_sync);
+//					if( queue_size > QUEUE_SIZE/10*9 )
+//						std::cout << "QUEUE is busy " << queue_size << std::endl;
+					if( queue_size >= QUEUE_SIZE )
+						cv.wait( lk, [this]{return queue_size < QUEUE_SIZE; });
+					queue[queue_size++].update( current_pos, old_counters[write_pointer_pos_rm_div], left_new_pos_1, left_new_pos,
+							 old_offsets[write_pointer_pos_rm_div], old_sort_keys[write_pointer_pos_rm_div] );
+				}
+				cv.notify_all();
+			}
 		}
 	}
 
 	~EntryAsynRewriter(){
-		{
-			std::unique_lock<std::mutex> lk(queue_sync);
-			finished = true;
+		if( num_threads > 1 ){
+			{
+				std::unique_lock<std::mutex> lk(queue_sync);
+				finished = true;
+			}
+			cv.notify_all();
+			for( uint32_t i = 0; i < num_threads; i++ )
+				processing_thread[i].join();
 		}
-		cv.notify_all();
-		processing_thread->join();
+
 		while( queue_size > 0 )
-			queue[--queue_size]->process( sm, entry, k, POSITION_LIMIT, line_point_size, right_sort_key_size, right_entry_size_bytes );
+			queue[--queue_size].process( sort_writer, k, POSITION_LIMIT, line_point_size, right_sort_key_size, right_entry_size_bytes );
 	}
 private:
 	SortManager * sm;
 
 	const uint8_t k;
+	const uint32_t num_threads;
 	const uint64_t POSITION_LIMIT;
 	const uint8_t  line_point_size;
 	const uint32_t right_sort_key_size;
 	const uint32_t right_entry_size_bytes;
 
-	StreamBuffer entry;
 
 	struct BatchData{
 		uint64_t current_pos;
@@ -263,13 +289,14 @@ private:
 		}
 
 		inline void process(
-				SortManager * sm, StreamBuffer &entry,
+				SortManager::ThreadWriter &writer,
 				const uint8_t k,
 				const uint64_t POSITION_LIMIT,
 				const uint8_t  line_point_size,
 				const uint32_t right_sort_key_size,
 				const uint32_t right_entry_size_bytes
 		){
+			uint8_t entry[right_entry_size_bytes+8];
 
 			for (uint32_t counter = 0; counter < count; counter++) {
 				uint64_t left_new_pos_2 = left_new_poses_2[counter];
@@ -291,19 +318,21 @@ private:
 
 				Bits to_write = Bits(line_point, line_point_size);
 				to_write.AppendValue( old_sort_keys[counter], right_sort_key_size );
-				to_write.ToBytes( entry.ensureSize( right_entry_size_bytes ).get() );
+				to_write.ToBytes( entry );
 
-				sm->AddToCache( entry.setUsed( right_entry_size_bytes ) ); // Single thread writing -> no locks
+				writer.Add( entry ); // Single thread writing -> no locks
 			}
 		}
 	}; // end of struct Batch
 
-	std::unique_ptr<BatchData> queue[QUEUE_SIZE];
+	const uint32_t QUEUE_SIZE;
+	std::unique_ptr<BatchData[]> queue;
 	uint32_t queue_size = 0;
 
+	SortManager::ThreadWriter sort_writer;
 	std::mutex queue_sync;
 	std::condition_variable cv;
-	std::unique_ptr<std::thread> processing_thread;
+	std::unique_ptr<std::thread[]> processing_thread;
 	bool finished = false;
 
 	uint64_t (&left_new_pos)[kCachedPositionsSize];
@@ -432,7 +461,7 @@ Phase3Results RunPhase3(
 
 				const uint64_t POSITION_LIMIT = ((uint64_t)1 << k);
 				{ // scope for async rewriter
-					EntryAsynRewriter rewriter( k, R_sort_manager.get(), right_entry_size_bytes, left_new_pos, old_sort_keys, old_counters, old_offsets );
+					EntryAsynRewriter rewriter( k, R_sort_manager.get(), num_threads, right_entry_size_bytes, left_new_pos, old_sort_keys, old_counters, old_offsets );
 
 					// Similar algorithm as Backprop, to read both L and R tables simultaneously
 					while( !end_of_right_table || (current_pos - end_of_table_pos <= kReadMinusWrite) ) {
