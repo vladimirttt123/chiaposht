@@ -156,9 +156,10 @@ struct MemoryManager{
 		}
 		if( buffer != nullptr )
 		{
-			std::lock_guard<std::mutex> lk(sync_buffers);
-			if( regular_buffers.size() < maxStoredBuffers() )
+			if( regular_buffers.size() < maxStoredBuffers() ){
+				std::lock_guard<std::mutex> lk(sync_buffers);
 				regular_buffers.push_back( buffer );
+			}
 			else delete[] buffer;
 		}
 	}
