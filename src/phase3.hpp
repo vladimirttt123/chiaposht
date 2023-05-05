@@ -175,20 +175,20 @@ private:
 const uint32_t QUEUE_SIZE_PER_THREAD = 100;
 
 struct EntryAsynRewriter{
-	EntryAsynRewriter( uint8_t k, SortManager *R_sort_manager, uint32_t num_treads, const uint32_t right_entry_size_bytes,
+	EntryAsynRewriter( uint8_t k, SortManager *R_sort_manager, uint32_t num_threads, const uint32_t right_entry_size_bytes,
 										 uint64_t (&left_new_pos)[kCachedPositionsSize], uint64_t (&old_sort_keys)[kReadMinusWrite][kMaxMatchesSingleEntry],
 										 uint16_t (&old_counters)[kReadMinusWrite], uint64_t (&old_offsets)[kReadMinusWrite][kMaxMatchesSingleEntry] )
-		: sm(R_sort_manager), k(k), num_threads( std::min( 2U, std::max( 1U, num_treads ) ) ), POSITION_LIMIT((uint64_t)1 << k), line_point_size(2 * k - 1)
+		: sm(R_sort_manager), k(k), num_threads( std::max( 1U, num_threads ) ), POSITION_LIMIT((uint64_t)1 << k), line_point_size(2 * k - 1)
 		, right_sort_key_size(k), right_entry_size_bytes(right_entry_size_bytes)
 		, QUEUE_SIZE( this->num_threads*QUEUE_SIZE_PER_THREAD ), queue( new BatchData[QUEUE_SIZE] )
 		, sort_writer(*R_sort_manager), left_new_pos(left_new_pos), old_sort_keys(old_sort_keys)
 		, old_counters(old_counters), old_offsets(old_offsets){
 
 
-		if( num_treads > 1 ){
+		if( this->num_threads > 1 ){
 
-			processing_thread.reset( new std::thread[num_treads] );
-			for( uint32_t i = 0; i < num_treads; i++ )
+			processing_thread.reset( new std::thread[this->num_threads] );
+			for( uint32_t i = 0; i < this->num_threads; i++ )
 				processing_thread[i] = std::thread( [this](){
 
 					SortManager::ThreadWriter twriter = SortManager::ThreadWriter( *sm );
