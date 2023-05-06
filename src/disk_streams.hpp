@@ -134,11 +134,9 @@ struct BlockCachedFile: IBlockWriterReader, ICacheConsumer {
 
 	// @max_buf_size - is a size of buffer supposed to be full. if such side provided it is not copied but replaced
 	BlockCachedFile( const fs::path &fileName, MemoryManager &memory_manager, uint32_t read_align = 1 )
-		: memory_manager(memory_manager), isCaching(memory_manager.CacheEnabled)
-		, cache( BUF_SIZE/read_align*read_align), read_align(read_align)
+		: file_name(fileName), memory_manager(memory_manager), isCaching(memory_manager.CacheEnabled),
+			cache( BUF_SIZE/read_align*read_align), read_align(read_align)
 	{
-		consumer_idx = memory_manager.registerConsumer( (ICacheConsumer*)this );
-		file_name = fileName;
 	}
 
 	void Write( StreamBuffer & block ) override{
@@ -146,10 +144,7 @@ struct BlockCachedFile: IBlockWriterReader, ICacheConsumer {
 		uint32_t block_position = 0;
 		uint32_t block_used = block.used();
 
-		if( isCaching // we are caching
-				&& cache_sync.try_lock() // and we can lock the cache
-				&& consumer_idx >= 0 ) // and after lock we still caching :)
-		{
+		if( isCaching ) { // we are caching
 			assert( (block_used%read_align) == 0 ); // check new data alligned
 
 			// check we can add to current cache
@@ -165,7 +160,6 @@ struct BlockCachedFile: IBlockWriterReader, ICacheConsumer {
 				if( block_position == 0 && block.size() == BUF_SIZE ){ // simplest case - just replace the buffer
 					cache.add( block.release(buf), write_position, block_used );
 					write_position += block_used;
-					cache_sync.unlock();
 					return;
 				} else { // need to copy from current block to cache
 					do{
@@ -174,27 +168,21 @@ struct BlockCachedFile: IBlockWriterReader, ICacheConsumer {
 						cache.add( buf, write_position, to_copy ); // add next buffer to cache
 						write_position += to_copy;
 						block_position += to_copy;
-						buf = block_position >= block_used ? nullptr : memory_manager.consumerRequest(); // request next buffer
-					}while( buf != nullptr ); // contuinue up to no next buffer or no need in next buffer
-					cache_sync.unlock();
-					if( block_position < block_used ){ // not all block was stored in cache
-						write_position += DiskWrite( write_position, block.get()+block_position, block_used - block_position );
-					}
-					return;
+						if( block_position >= block_used ) return; // all done!
+						buf = memory_manager.consumerRequest(); // request next buffer
+					} while( buf != nullptr ); // contuinue up to no next buffer or no need in next buffer
 				}
 			}
-			cache_sync.unlock();
-		}
+		} // end of caching
 
 		write_position += DiskWrite( write_position, block.get() + block_position, block_used - block_position );
 	}
 
 	// warning this is not thread safe function
-	uint32_t Read( StreamBuffer & block ) override{
+	uint32_t Read( StreamBuffer & block ) override {
 
-		// first read we need to lock
-		if( read_position == 0 ) cache_sync.lock();
-
+		// in general here we need sync with freecache but
+		// it is impossible calling read and freecache same time
 		if( consumer_idx >= 0  ){
 			// in order prevent locks on read we unregister started to read stream
 			memory_manager.unregisterConsumer( this, consumer_idx );
@@ -219,7 +207,6 @@ struct BlockCachedFile: IBlockWriterReader, ICacheConsumer {
 					memory_manager.consumerRelease( nullptr, buf_size );
 				}
 				cache.moveNext();
-				if( read_position == 0 ) cache_sync.unlock(); // do we need unlock?
 				read_position += buf_size;
 				return buf_size;
 			}
@@ -233,8 +220,6 @@ struct BlockCachedFile: IBlockWriterReader, ICacheConsumer {
 		if( to_read > 0 )
 			disk->Read( read_position, block.get(), to_read );
 
-		if( read_position == 0 ) cache_sync.unlock(); // do we need unlock?
-
 		read_position += to_read;
 		return to_read;
 	};
@@ -243,49 +228,44 @@ struct BlockCachedFile: IBlockWriterReader, ICacheConsumer {
 	bool atEnd() const override { return read_position >= write_position; };
 
 	cache_free_status FreeCache( int64_t size_to_free ) override{
+		// no locks because we register to cleans after close only and unregister on start of reading
 
 		if( read_position > 0 ) // no cache operations when read is started.
 			return cache.isEmpty() ? FULL_CLEAN : NO_CLEAN;
 
-		isCaching = false; // stop caching after free request
-
-		// we try to sync to prevent dead locks because it can be
-		// in read mode or currently in writting than we do not clean
-		if( cache_sync.try_lock() ){
-			if( !cache.isEmpty() ){
-				for( ; size_to_free > 0 && !cache.isEmpty(); cache.moveNext(), size_to_free -= BUF_SIZE ){
-					DiskWrite( cache.startPosition(), cache.buffer(), cache.bufSize() );
-					memory_manager.consumerRelease( cache.buffer(), 0 );
-				}
-
-				if( cache.isEmpty() ){
-					consumer_idx = -1; // if cache is empty the consumer is unregistered.
-					cache.reset(); // reset start counter.
-				}
-
-				if( wasClosed ){
-					std::lock_guard<std::mutex> lk( file_sync );
-					disk->Close();
-				}
+		if( !cache.isEmpty() ){
+			for( ; size_to_free > 0 && !cache.isEmpty(); cache.moveNext(), size_to_free -= BUF_SIZE ){
+				DiskWrite( cache.startPosition(), cache.buffer(), cache.bufSize() );
+				memory_manager.consumerRelease( cache.buffer(), 0 );
 			}
-			cache_sync.unlock();
-			return cache.isEmpty()? FULL_CLEAN : PARTIAL_CLEAN;
+
+			if( cache.isEmpty() ){
+				consumer_idx = -1; // if cache is empty the consumer is unregistered.
+				cache.reset(); // reset start counter.
+				disk->Close();
+			}
 		}
 
-		return cache.isEmpty()?FULL_CLEAN : NO_CLEAN;
+		return cache.isEmpty()? FULL_CLEAN : PARTIAL_CLEAN;
 	}
 
-	void Close() override{ if( disk ) { std::lock_guard<std::mutex> lk( file_sync ); disk->Close(); wasClosed = true; } }
+	void Close() override{
+		isCaching = false;
+		if( disk ) disk->Close();
+		if( consumer_idx < 0 )
+			consumer_idx = memory_manager.registerConsumer( (ICacheConsumer*)this );
+	}
 
-	void Remove() override { if( disk ){ std::lock_guard<std::mutex> lk( file_sync ); disk->Remove( true ); disk.reset(); } }
+	void Remove() override { if( disk ){ disk->Remove( true ); disk.reset(); } }
 
 	~BlockCachedFile(){
-		if( consumer_idx >= 0 ){
+		if( consumer_idx >= 0 )
 			memory_manager.unregisterConsumer( this, consumer_idx );
-			for( ; !cache.isEmpty(); cache.moveNext() ){
-				memory_manager.consumerRelease( cache.buffer(), cache.bufSize() );
-			}
+
+		for( ; !cache.isEmpty(); cache.moveNext() ){
+			memory_manager.consumerRelease( cache.buffer(), cache.bufSize() );
 		}
+
 		Remove(); // remove not used anymore file
 	}
 private:
@@ -319,28 +299,21 @@ private:
 
 		void moveNext(){ start_idx++; }
 
-		~CacheStorage(){
-			for( uint32_t i = start_idx; i < bufs.size(); i++ )
-				delete [] bufs[i]; // this mem is released from memory manager in descrutor of Stream
-		}
+		~CacheStorage(){ assert(isEmpty()); }
 	};
 
 	fs::path file_name;
 	MemoryManager &memory_manager;
-	int32_t consumer_idx;
+	int32_t consumer_idx = -1;
 	bool isCaching;
 	std::unique_ptr<FileDisk> disk;
-	bool wasClosed = false;
 	uint64_t write_position = 0;
 	uint64_t read_position = 0;
-	std::mutex cache_sync;
-	std::mutex file_sync;
 	CacheStorage cache;
 	const uint32_t read_align;
 
 
 	inline uint32_t DiskWrite( uint64_t pos, uint8_t * buf, uint32_t buf_size ){
-		std::lock_guard<std::mutex> lk( file_sync );
 		if( !disk ) {
 			disk.reset( new FileDisk(file_name) );
 			file_name.clear();

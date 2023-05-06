@@ -13,6 +13,7 @@
 #ifndef SRC_CPP_CACHE_MANAGER_HPP_
 #define SRC_CPP_CACHE_MANAGER_HPP_
 
+#include <atomic>
 #include <mutex>
 #include <assert.h>
 #include <thread>
@@ -54,13 +55,8 @@ struct MemoryManager{
 		return total_size - used_ram - regular_buffers.size() * BUF_SIZE + BUF_SIZE;
 	}
 
-	inline int64_t getInUseRam() const {
-		return used_ram;
-	}
-
-	inline int64_t getNotWritten() const {
-		return not_written;
-	}
+	inline int64_t getInUseRam() const { return used_ram;	}
+	inline int64_t getNotWritten() const { return not_written; }
 
 	void SetMode( bool isForceClean, bool isFIFO ){
 		this->isFIFO = isFIFO;
@@ -69,12 +65,8 @@ struct MemoryManager{
 
 	inline bool request( const uint64_t &size, bool forced = false ){
 
-		if(getFreeRam() >= (int64_t)size
-			 || ( ( forced || isForcedClean ) && CleanCache( size )) ){
-			{
-				std::lock_guard lk (sync_size);
-				used_ram += size;
-			}
+		if( getFreeRam() >= (int64_t)size || ( ( forced || isForcedClean ) && CleanCache( size )) ){
+			used_ram += size;
 			FreeBuffers( maxStoredBuffers() );
 			return true;
 		}
@@ -84,13 +76,10 @@ struct MemoryManager{
 
 	inline void requier( const uint64_t & size ){
 		CleanCache( size );
-		std::lock_guard lk(sync_size);
 		used_ram += size;
 	}
 
 	inline void release( const uint32_t &size ){
-		std::lock_guard lk(sync_size);
-
 		assert( (int64_t)size <= used_ram );
 		used_ram -= size;
 	}
@@ -139,7 +128,6 @@ struct MemoryManager{
 		}
 
 		if( res != nullptr ){
-			std::lock_guard lk (sync_size);
 			used_ram += BUF_SIZE;
 			cleanable_ram += BUF_SIZE;
 		}
@@ -148,12 +136,11 @@ struct MemoryManager{
 	}
 
 	inline void consumerRelease( uint8_t* buffer, uint32_t cache_hit_size_size = 0 ){
-		{
-			std::lock_guard lk (sync_size);
-			used_ram -= BUF_SIZE;
-			cleanable_ram -= BUF_SIZE;
-			not_written += cache_hit_size_size;
-		}
+
+		used_ram -= BUF_SIZE;
+		cleanable_ram -= BUF_SIZE;
+		not_written += cache_hit_size_size;
+
 		if( buffer != nullptr )
 		{
 			if( regular_buffers.size() < maxStoredBuffers() ){
@@ -168,8 +155,8 @@ struct MemoryManager{
 	~MemoryManager(){ FreeBuffers( 0 );	}
 private:
 
-	int64_t used_ram = 0, cleanable_ram = 0, not_written = 0;
-	std::mutex sync_size, sync_consumers, sync_buffers;
+	std::atomic_ullong used_ram = 0, cleanable_ram = 0, not_written = 0;
+	std::mutex sync_consumers, sync_buffers;
 	std::vector<ICacheConsumer*> consumers;
 	uint32_t min_consumer_idx = 0;
 	bool isFIFO = false;
@@ -178,7 +165,7 @@ private:
 	std::vector<uint8_t*> regular_buffers;
 
 	inline uint32_t maxStoredBuffers() const {
-		return std::max( 1UL, (total_size-used_ram)/BUF_SIZE );
+		return std::max( 1ULL, (total_size-used_ram)/BUF_SIZE );
 	}
 
 	inline void FreeBuffers( uint32_t max_to_leave ){
