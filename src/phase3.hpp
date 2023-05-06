@@ -172,20 +172,34 @@ private:
 	const uint32_t park_size_bytes;
 };
 
-const uint32_t QUEUE_SIZE_PER_THREAD = 100;
+
+
+struct OldData{
+	uint64_t sort_keys[kMaxMatchesSingleEntry];
+	uint64_t offsets[kMaxMatchesSingleEntry];
+	uint16_t count = 0;
+
+	inline void add( uint64_t sort_key, uint64_t offset ){
+		sort_keys[count] = sort_key;
+		offsets[count] = offset;
+		count++;
+	}
+};
+
+
+const uint32_t QUEUE_SIZE_PER_THREAD = 1000;
 
 struct EntryAsynRewriter{
 	EntryAsynRewriter( uint8_t k, SortManager *R_sort_manager, uint32_t num_threads, const uint32_t right_entry_size_bytes,
-										 uint64_t (&left_new_pos)[kCachedPositionsSize], uint64_t (&old_sort_keys)[kReadMinusWrite][kMaxMatchesSingleEntry],
-										 uint16_t (&old_counters)[kReadMinusWrite], uint64_t (&old_offsets)[kReadMinusWrite][kMaxMatchesSingleEntry] )
+										 uint64_t (&left_new_pos)[kCachedPositionsSize], OldData (&old_data)[kReadMinusWrite] )
 		: sm(R_sort_manager), k(k), num_threads( std::max( 1U, num_threads ) ), POSITION_LIMIT((uint64_t)1 << k), line_point_size(2 * k - 1)
 		, right_sort_key_size(k), right_entry_size_bytes(right_entry_size_bytes)
-		, QUEUE_SIZE( this->num_threads*QUEUE_SIZE_PER_THREAD ), queue( new BatchData[QUEUE_SIZE] )
-		, sort_writer(*R_sort_manager), left_new_pos(left_new_pos), old_sort_keys(old_sort_keys)
-		, old_counters(old_counters), old_offsets(old_offsets){
-
+		, QUEUE_SIZE( this->num_threads*QUEUE_SIZE_PER_THREAD )
+		, sort_writer(*R_sort_manager), left_new_pos(left_new_pos), old_data(old_data) {
 
 		if( this->num_threads > 1 ){
+
+			queue.reset( new BatchData[QUEUE_SIZE] );
 
 			processing_thread.reset( new std::thread[this->num_threads] );
 			for( uint32_t i = 0; i < this->num_threads; i++ )
@@ -215,29 +229,19 @@ struct EntryAsynRewriter{
 		}
 	}
 
-	void next( const uint64_t current_pos ){
+	inline void next( const uint64_t &current_pos ){
 		if( current_pos + 1 >= kReadMinusWrite ) {
 			uint64_t const write_pointer_pos = current_pos - kReadMinusWrite + 1;
 			uint64_t left_new_pos_1 = left_new_pos[write_pointer_pos % kCachedPositionsSize];
-			uint64_t const write_pointer_pos_rm_div = write_pointer_pos % kReadMinusWrite;
 
-			if( num_threads <= 1 ){
-				queue[0].update( current_pos, old_counters[write_pointer_pos_rm_div], left_new_pos_1, left_new_pos,
-						 old_offsets[write_pointer_pos_rm_div], old_sort_keys[write_pointer_pos_rm_div] );
-				queue[0].process( sort_writer, this->k, POSITION_LIMIT, line_point_size, right_sort_key_size, this->right_entry_size_bytes );
+			if( num_threads <= 1 || queue_size == QUEUE_SIZE ){
+				single_thread_processor.update( current_pos, old_data[write_pointer_pos % kReadMinusWrite], left_new_pos_1, left_new_pos );
+				single_thread_processor.process( sort_writer, this->k, POSITION_LIMIT, line_point_size, right_sort_key_size, this->right_entry_size_bytes );
 			}
 			else{
-				for( bool updated = false; !updated; )
-				{
-					while( queue_size == QUEUE_SIZE )
-						std::this_thread::sleep_for( 1us );
-					std::unique_lock<std::mutex> lk(queue_sync);
-					if( queue_size < QUEUE_SIZE ){
-						queue[queue_size++].update( current_pos, old_counters[write_pointer_pos_rm_div], left_new_pos_1, left_new_pos,
-								 old_offsets[write_pointer_pos_rm_div], old_sort_keys[write_pointer_pos_rm_div] );
-						updated = true;
-					}
-				}
+				std::unique_lock<std::mutex> lk(queue_sync);
+				assert( queue_size < QUEUE_SIZE ); // since only one thread writes to queue
+				queue[queue_size++].update( current_pos, old_data[write_pointer_pos % kReadMinusWrite], left_new_pos_1, left_new_pos );
 			}
 		}
 	}
@@ -273,17 +277,16 @@ private:
 		uint64_t left_new_poses_2[kMaxMatchesSingleEntry];
 		uint64_t old_sort_keys[kMaxMatchesSingleEntry];
 
-		void update( const uint64_t current_pos, const uint32_t count,
-					 const uint64_t left_new_pos_1, uint64_t (&left_new_pos)[kCachedPositionsSize],
-					 uint64_t (&src_old_offsets)[kMaxMatchesSingleEntry], uint64_t (&src_old_sort_keys)[kMaxMatchesSingleEntry] )
+		inline void update( const uint64_t &current_pos, OldData &old_datum,
+					 const uint64_t &left_new_pos_1, uint64_t (&left_new_pos)[kCachedPositionsSize] )
 		{
 			this->current_pos = current_pos;
-			this->count = count;
+			this->count = old_datum.count;
 			this->left_new_pos_1 = left_new_pos_1;
 			// copy essential data
 			for (uint32_t counter = 0; counter < count; counter++ ){
-				left_new_poses_2[counter] = left_new_pos[src_old_offsets[counter] % kCachedPositionsSize];
-				old_sort_keys[counter] = src_old_sort_keys[counter];
+				left_new_poses_2[counter] = left_new_pos[old_datum.offsets[counter] % kCachedPositionsSize];
+				old_sort_keys[counter] = old_datum.sort_keys[counter];
 			}
 		}
 
@@ -319,7 +322,7 @@ private:
 				to_write.AppendValue( old_sort_keys[counter], right_sort_key_size );
 				to_write.ToBytes( entry );
 
-				writer.Add( entry ); // Single thread writing -> no locks
+				writer.Add( entry ); // local writer -> single thread writing -> no locks
 			}
 		}
 	}; // end of struct Batch
@@ -327,6 +330,7 @@ private:
 	const uint32_t QUEUE_SIZE;
 	std::unique_ptr<BatchData[]> queue;
 	uint32_t queue_size = 0;
+	BatchData single_thread_processor;
 
 	SortManager::ThreadWriter sort_writer;
 	std::mutex queue_sync;
@@ -334,10 +338,11 @@ private:
 	bool finished = false;
 
 	uint64_t (&left_new_pos)[kCachedPositionsSize];
-	uint64_t (&old_sort_keys)[kReadMinusWrite][kMaxMatchesSingleEntry];
-	uint16_t (&old_counters)[kReadMinusWrite];
-	uint64_t (&old_offsets)[kReadMinusWrite][kMaxMatchesSingleEntry];
+	OldData (&old_data)[kReadMinusWrite];
 };
+
+
+
 
 // Compresses the plot file tables into the final file. In order to do this, entries must be
 // reorganized from the (pos, offset) bucket sorting order, to a more free line_point sorting
@@ -407,12 +412,11 @@ Phase3Results RunPhase3(
 				const uint32_t right_sort_key_size = k;
 
 				uint32_t left_entry_size_bytes = EntrySizes::GetMaxEntrySize(k, table_index, false);
-				uint32_t p2_entry_size_bytes = EntrySizes::GetKeyPosOffsetSize(k);
+				const uint32_t p2_entry_size_bytes = EntrySizes::GetKeyPosOffsetSize(k);
 				const uint32_t right_entry_size_bytes = EntrySizes::GetMaxEntrySize(k, table_index + 1, false);
 
 				uint64_t left_reader = 0;
 				uint64_t right_reader = 0;
-				uint64_t left_reader_count = 0;
 				uint64_t right_reader_count = 0;
 
 				if (table_index > 1) {
@@ -440,13 +444,10 @@ Phase3Results RunPhase3(
 				bool should_read_entry = true;
 				uint64_t left_new_pos[kCachedPositionsSize];
 
-				uint64_t old_sort_keys[kReadMinusWrite][kMaxMatchesSingleEntry];
-				uint64_t old_offsets[kReadMinusWrite][kMaxMatchesSingleEntry];
-				uint16_t old_counters[kReadMinusWrite];
-				memset( old_counters, 0, sizeof(uint16_t)*kReadMinusWrite );
+				OldData old_data[kReadMinusWrite];
 
 				bool end_of_right_table = false;
-				uint64_t current_pos = 0;
+
 				uint64_t end_of_table_pos = 0;
 				uint64_t greatest_pos = 0;
 
@@ -457,97 +458,86 @@ Phase3Results RunPhase3(
 				uint64_t cached_entry_pos = 0;
 				uint64_t cached_entry_offset = 0;
 
-				const uint64_t POSITION_LIMIT = ((uint64_t)1 << k);
 				{ // scope for async rewriter
-					EntryAsynRewriter rewriter( k, R_sort_manager.get(), num_threads, right_entry_size_bytes, left_new_pos, old_sort_keys, old_counters, old_offsets );
+					EntryAsynRewriter rewriter( k, R_sort_manager.get(), num_threads, right_entry_size_bytes, left_new_pos, old_data );
 
 					// Similar algorithm as Backprop, to read both L and R tables simultaneously
-					while( !end_of_right_table || (current_pos - end_of_table_pos <= kReadMinusWrite) ) {
+					for( uint64_t current_pos = 0;
+							 !end_of_right_table || (current_pos - end_of_table_pos <= kReadMinusWrite); current_pos++ ) {
 
-						old_counters[current_pos % kReadMinusWrite] = 0;
+						old_data[current_pos % kReadMinusWrite].count = 0;
 
-							if (end_of_right_table || current_pos <= greatest_pos) {
-									while (!end_of_right_table) {
-											if (should_read_entry) {
-													if (right_reader_count == res2.table_sizes[table_index + 1]) {
-															end_of_right_table = true;
-															end_of_table_pos = current_pos;
-															right_disk.FreeMemory();
-															break;
-													}
-													// The right entries are in the format from backprop, (sort_key, pos, offset)
-													uint8_t const* right_entry_buf = right_disk.Read(right_reader, p2_entry_size_bytes);
-													right_reader += p2_entry_size_bytes;
-													right_reader_count++;
+						if (end_of_right_table || current_pos <= greatest_pos) {
+								while (!end_of_right_table) {
+										if (should_read_entry) {
+												if (right_reader_count == res2.table_sizes[table_index + 1]) {
+														end_of_right_table = true;
+														end_of_table_pos = current_pos;
+														right_disk.FreeMemory();
+														break;
+												}
+												// The right entries are in the format from backprop, (sort_key, pos, offset)
+												uint8_t const* right_entry_buf = right_disk.Read(right_reader, p2_entry_size_bytes);
+												right_reader += p2_entry_size_bytes;
+												right_reader_count++;
 
-													entry_sort_key =
-															Util::SliceInt64FromBytes(right_entry_buf, right_sort_key_size);
-													entry_pos = Util::SliceInt64FromBytes(
-															right_entry_buf, right_sort_key_size, pos_size);
-													entry_offset = Util::SliceInt64FromBytes(
-															right_entry_buf, right_sort_key_size + pos_size, kOffsetSize);
-											} else if (cached_entry_pos == current_pos) {
-													entry_sort_key = cached_entry_sort_key;
-													entry_pos = cached_entry_pos;
-													entry_offset = cached_entry_offset;
-											} else {
-													break;
-											}
+												entry_sort_key =
+														Util::SliceInt64FromBytes(right_entry_buf, right_sort_key_size);
+												entry_pos = Util::SliceInt64FromBytes(
+														right_entry_buf, right_sort_key_size, pos_size);
+												entry_offset = Util::SliceInt64FromBytes(
+														right_entry_buf, right_sort_key_size + pos_size, kOffsetSize);
+										} else if (cached_entry_pos == current_pos) {
+												entry_sort_key = cached_entry_sort_key;
+												entry_pos = cached_entry_pos;
+												entry_offset = cached_entry_offset;
+										} else {
+												break;
+										}
 
-											should_read_entry = true;
+										should_read_entry = true;
 
-											if (entry_pos + entry_offset > greatest_pos) {
-													greatest_pos = entry_pos + entry_offset;
-											}
-											if (entry_pos == current_pos) {
-													uint64_t const old_write_pos = entry_pos % kReadMinusWrite;
-													old_sort_keys[old_write_pos][old_counters[old_write_pos]] = entry_sort_key;
-													old_offsets[old_write_pos][old_counters[old_write_pos]] =
-															(entry_pos + entry_offset);
-													++old_counters[old_write_pos];
-											} else {
-													should_read_entry = false;
-													cached_entry_sort_key = entry_sort_key;
-													cached_entry_pos = entry_pos;
-													cached_entry_offset = entry_offset;
-													break;
-											}
-									}
+										if (entry_pos + entry_offset > greatest_pos) {
+												greatest_pos = entry_pos + entry_offset;
+										}
+										if (entry_pos == current_pos) {
+											old_data[entry_pos % kReadMinusWrite].add( entry_sort_key, entry_pos + entry_offset );
+										} else {
+												should_read_entry = false;
+												cached_entry_sort_key = entry_sort_key;
+												cached_entry_pos = entry_pos;
+												cached_entry_offset = entry_offset;
+												break;
+										}
+								}
+						}
 
-									if (left_reader_count < res2.table_sizes[table_index]) {
-											// The left entries are in the new format: (sort_key, new_pos), except for table
-											// 1: (y, x).
+						if( current_pos < res2.table_sizes[table_index] ) {
+							// The left entries are in the new format: (sort_key, new_pos), except for table
+							// 1: (y, x).
 
-											// TODO: unify these cases once SortManager implements
-											// the ReadDisk interface
-											if (table_index == 1) {
-													left_entry_disk_buf = left_disk.Read(left_reader, left_entry_size_bytes);
-													left_reader += left_entry_size_bytes;
-											} else {
-													left_entry_disk_buf = L_sort_manager->ReadEntry(left_reader);
-													left_reader += new_pos_entry_size_bytes;
-											}
-											left_reader_count++;
-									}
+							// We read the "new_pos" from the L table, which for table 1 is just x. For
+							// other tables, the new_pos
+							if (table_index == 1) {
+									left_entry_disk_buf = left_disk.Read(left_reader, left_entry_size_bytes);
+									left_reader += left_entry_size_bytes;
 
-									// We read the "new_pos" from the L table, which for table 1 is just x. For
-									// other tables, the new_pos
-									if (table_index == 1) {
-											// Only k bits, since this is x
-											left_new_pos[current_pos % kCachedPositionsSize] =
-													Util::SliceInt64FromBytes(left_entry_disk_buf, k);
-									} else {
-											// k+1 bits in case it overflows
-											left_new_pos[current_pos % kCachedPositionsSize] =
-													Util::SliceInt64FromBytes(left_entry_disk_buf, right_sort_key_size, k);
-									}
+									// Only k bits, since this is x
+									left_new_pos[current_pos % kCachedPositionsSize] =
+											Util::SliceInt64FromBytes(left_entry_disk_buf, k);
+							} else {
+									left_entry_disk_buf = L_sort_manager->ReadEntry(left_reader);
+									left_reader += new_pos_entry_size_bytes;
+
+									// k+1 bits in case it overflows
+									left_new_pos[current_pos % kCachedPositionsSize] =
+											Util::SliceInt64FromBytes(left_entry_disk_buf, right_sort_key_size, k);
 							}
+						}
 
-
-							// Rewrites each right entry as (line_point, sort_key)
-							rewriter.next( current_pos );
-							current_pos += 1;
-					}
+						// Rewrites each right entry as (line_point, sort_key)
+						rewriter.next( current_pos );
+					} // end of loop of first computation pass
 				}
 
 				// Remove no longer needed file
