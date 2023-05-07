@@ -79,7 +79,7 @@ struct SortingBucket{
 	void Flush( bool free_memory = false ){
 
 		if( free_memory ){
-			disk->FlusToDisk();
+			if( disk ) disk->FlusToDisk();
 
 			if( entries_count > 0 ){
 				// Save statistics to file
@@ -89,7 +89,10 @@ struct SortingBucket{
 				((IBlockWriter*)statistics_file.get())->Close();
 			}
 			statistics.reset();
+		} else {
+			if( disk ) disk->Close(); // in case of cached enabled allow to clean for next buffer.
 		}
+
 	}
 
 	void FreeMemory(){

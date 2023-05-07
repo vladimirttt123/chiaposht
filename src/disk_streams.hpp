@@ -1319,6 +1319,11 @@ struct BucketStream{
 			((IBlockWriter*)bucket_file.get())->Close();
 	}
 
+	void Close(){
+		if( bucket_file )
+			((IBlockWriter*)bucket_file.get())->Close();
+	}
+
 	// This is thread safe
 	IBlockReader * CreateReader( bool isThreadSafe = true ){
 		std::lock_guard<std::mutex> lk( sync_mutex );

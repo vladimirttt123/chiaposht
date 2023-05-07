@@ -294,10 +294,8 @@ public:
 
 		void FlushCache( bool isFull = false )
 		{
-			if( isFull ){
-				for (auto& b : buckets_)
-					 b.Flush( true );
-			}
+			for (auto& b : buckets_)
+				 b.Flush( isFull );
 
 			final_position_end = 0;
     }
@@ -375,10 +373,10 @@ private:
 //										"GiB");
 					}
 
-					sorted_current_bucket.reset( new uint8_t[reserved_buffer_size] );
+					sorted_current_bucket.reset( Util::NewSafeBuffer(reserved_buffer_size) ); // reserve for current bucket
 					if( num_threads > 1 ){
 						if( memory_manager.request( reserved_buffer_size, true ) )
-							sorted_next_bucket.reset( new uint8_t[reserved_buffer_size] ); // reserve for background sorting
+							sorted_next_bucket.reset( Util::NewSafeBuffer(reserved_buffer_size) ); // reserve for background sorting
 						else
 							std::cout << "Warning buffer is too small to allow background sorting, the performance may be slower." << std::endl
 												<< "It is possible to increase buffer or to add number of buckets to improve multithreaded performance." << std::endl;
