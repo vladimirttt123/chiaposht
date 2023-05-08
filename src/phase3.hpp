@@ -187,45 +187,19 @@ struct OldData{
 };
 
 
-const uint32_t QUEUE_SIZE_PER_THREAD = 1000;
-
 struct EntryAsynRewriter{
 	EntryAsynRewriter( uint8_t k, SortManager *R_sort_manager, uint32_t num_threads, const uint32_t right_entry_size_bytes,
 										 uint64_t (&left_new_pos)[kCachedPositionsSize], OldData (&old_data)[kReadMinusWrite] )
-		: sm(R_sort_manager), k(k), num_threads( std::max( 1U, num_threads ) ), POSITION_LIMIT((uint64_t)1 << k), line_point_size(2 * k - 1)
-		, right_sort_key_size(k), right_entry_size_bytes(right_entry_size_bytes)
-		, QUEUE_SIZE( this->num_threads*QUEUE_SIZE_PER_THREAD )
-		, sort_writer(*R_sort_manager), left_new_pos(left_new_pos), old_data(old_data) {
+		: k(k), num_threads( std::max( 1U, num_threads ) ), POSITION_LIMIT((uint64_t)1 << k)
+		, line_point_size(2 * k - 1), right_sort_key_size(k)
+		, right_entry_size_bytes(right_entry_size_bytes), sm(R_sort_manager)
+		, write_entry_buf(right_entry_size_bytes)
+		, QUEUE_SIZE( this->num_threads <= 1 ? 0 : (BUF_SIZE/sizeof(BatchEntry)) )
+		, left_new_pos(left_new_pos), old_data(old_data) {
 
 		if( this->num_threads > 1 ){
-
-			queue.reset( new BatchData[QUEUE_SIZE] );
-
-			processing_thread.reset( new std::thread[this->num_threads] );
-			for( uint32_t i = 0; i < this->num_threads; i++ )
-				processing_thread[i] = std::thread( [this](){
-
-					SortManager::ThreadWriter twriter = SortManager::ThreadWriter( *sm );
-					std::unique_ptr<BatchData> cur( new BatchData() );
-					StreamBuffer entr(this->right_entry_size_bytes);
-					std::unique_ptr<BatchData[]> tqueue ( new BatchData[QUEUE_SIZE] );
-					uint32_t size;
-
-					while( !finished ){
-						while( queue_size == 0 && !finished )
-							std::this_thread::sleep_for( this->num_threads * 5us );
-
-						{
-							std::unique_lock<std::mutex> lk(queue_sync);
-							size = queue_size;
-							tqueue.swap( queue );
-							queue_size = 0;
-						}
-
-						for( uint32_t i = 0; i < size; i ++ )
-							tqueue[i].process( twriter, this->k, POSITION_LIMIT, line_point_size, right_sort_key_size, this->right_entry_size_bytes );
-					}
-				} );
+			queue.reset( new BatchEntry[QUEUE_SIZE] );
+			queue_in_thread.reset( new BatchEntry[QUEUE_SIZE] );
 		}
 	}
 
@@ -233,35 +207,42 @@ struct EntryAsynRewriter{
 		if( current_pos + 1 >= kReadMinusWrite ) {
 			uint64_t const write_pointer_pos = current_pos - kReadMinusWrite + 1;
 			uint64_t left_new_pos_1 = left_new_pos[write_pointer_pos % kCachedPositionsSize];
+			OldData &old_datum = old_data[write_pointer_pos % kReadMinusWrite];
 
-			if( num_threads <= 1 || queue_size == QUEUE_SIZE ){
-				single_thread_processor.update( current_pos, old_data[write_pointer_pos % kReadMinusWrite], left_new_pos_1, left_new_pos );
-				single_thread_processor.process( sort_writer, this->k, POSITION_LIMIT, line_point_size, right_sort_key_size, this->right_entry_size_bytes );
-			}
-			else{
-				std::unique_lock<std::mutex> lk(queue_sync);
-				assert( queue_size < QUEUE_SIZE ); // since only one thread writes to queue
-				queue[queue_size++].update( current_pos, old_data[write_pointer_pos % kReadMinusWrite], left_new_pos_1, left_new_pos );
+			if( num_threads <= 1 ){ // no threads
+				for (uint32_t counter = 0; counter < old_datum.count; counter++ ){
+					writeNext(	left_new_pos_1,
+											left_new_pos[old_datum.offsets[counter] % kCachedPositionsSize],
+											old_datum.sort_keys[counter] );
+				}
+			} else { // processing with thread
+				for (uint32_t counter = 0; counter < old_datum.count; counter++ ){
+					queue[queue_size++].update( left_new_pos_1,
+							left_new_pos[old_datum.offsets[counter] % kCachedPositionsSize],
+							old_datum.sort_keys[counter] );
+
+					if( queue_size >= QUEUE_SIZE ){ // queue is full
+						if( processing_thread ) processing_thread->join();
+						queue_in_thread.swap( queue );
+						queue_size = 0;
+						processing_thread.reset( new std::thread( [this](){
+							for( uint32_t i = 0; i < QUEUE_SIZE; i++ )
+									processBatchEntry( queue_in_thread[i] );
+								}) );
+					}
+				}
 			}
 		}
 	}
 
 	~EntryAsynRewriter(){
 		if( num_threads > 1 ){
-			{
-				std::unique_lock<std::mutex> lk(queue_sync);
-				finished = true;
-			}
-			for( uint32_t i = 0; i < num_threads; i++ )
-				processing_thread[i].join();
+			if( processing_thread ) processing_thread->join();
+			for( uint32_t i = 0; i < queue_size; i++ )
+					processBatchEntry(queue[i]);
 		}
-
-		while( queue_size > 0 )
-			queue[--queue_size].process( sort_writer, k, POSITION_LIMIT, line_point_size, right_sort_key_size, right_entry_size_bytes );
 	}
 private:
-	SortManager * sm;
-
 	const uint8_t k;
 	const uint32_t num_threads;
 	const uint64_t POSITION_LIMIT;
@@ -270,78 +251,58 @@ private:
 	const uint32_t right_entry_size_bytes;
 
 
-	struct BatchData{
-		uint64_t current_pos;
+	struct BatchEntry{
 		uint64_t left_new_pos_1;
-		uint32_t count;
-		uint64_t left_new_poses_2[kMaxMatchesSingleEntry];
-		uint64_t old_sort_keys[kMaxMatchesSingleEntry];
+		uint64_t left_new_pos_2;
+		uint64_t old_sort_key;
 
-		inline void update( const uint64_t &current_pos, OldData &old_datum,
-					 const uint64_t &left_new_pos_1, uint64_t (&left_new_pos)[kCachedPositionsSize] )
-		{
-			this->current_pos = current_pos;
-			this->count = old_datum.count;
-			this->left_new_pos_1 = left_new_pos_1;
-			// copy essential data
-			for (uint32_t counter = 0; counter < count; counter++ ){
-				left_new_poses_2[counter] = left_new_pos[old_datum.offsets[counter] % kCachedPositionsSize];
-				old_sort_keys[counter] = old_datum.sort_keys[counter];
-			}
+		inline void update( uint64_t pos_1, uint64_t pos_2, uint64_t key ){
+			left_new_pos_1 = pos_1;
+			left_new_pos_2 = pos_2;
+			old_sort_key = key;
 		}
+	};
 
-		inline void process(
-				SortManager::ThreadWriter &writer,
-				const uint8_t k,
-				const uint64_t POSITION_LIMIT,
-				const uint8_t  line_point_size,
-				const uint32_t right_sort_key_size,
-				const uint32_t right_entry_size_bytes
-		){
-			uint8_t entry[right_entry_size_bytes+8];
-
-			for (uint32_t counter = 0; counter < count; counter++) {
-				uint64_t left_new_pos_2 = left_new_poses_2[counter];
-
-				// A line point is an encoding of two k bit values into one 2k bit value.
-				uint128_t line_point =
-						Encoding::SquareToLinePoint( left_new_pos_1, left_new_pos_2 );
-
-				if( left_new_pos_1 > POSITION_LIMIT || left_new_pos_2 > POSITION_LIMIT ) {
-						std::cout << "left or right positions too large" << std::endl;
-						std::cout << (line_point > ((uint128_t)1 << (2 * k)));
-						if ((line_point > ((uint128_t)1 << (2 * k)))) {
-								std::cout << "L, R: " << left_new_pos_1 << " " << left_new_pos_2
-													<< std::endl;
-								std::cout << "Line point: " << line_point << std::endl;
-								abort();
-						}
-				}
-
-				Bits to_write = Bits(line_point, line_point_size);
-				to_write.AppendValue( old_sort_keys[counter], right_sort_key_size );
-				to_write.ToBytes( entry );
-
-				writer.Add( entry ); // local writer -> single thread writing -> no locks
-			}
-		}
-	}; // end of struct Batch
-
+	SortManager * sm;
+	StreamBuffer write_entry_buf;
 	const uint32_t QUEUE_SIZE;
-	std::unique_ptr<BatchData[]> queue;
+	std::unique_ptr<BatchEntry[]> queue;
+	std::unique_ptr<BatchEntry[]> queue_in_thread;
 	uint32_t queue_size = 0;
-	BatchData single_thread_processor;
 
-	SortManager::ThreadWriter sort_writer;
-	std::mutex queue_sync;
-	std::unique_ptr<std::thread[]> processing_thread;
-	bool finished = false;
+	std::unique_ptr<std::thread> processing_thread;
 
 	uint64_t (&left_new_pos)[kCachedPositionsSize];
 	OldData (&old_data)[kReadMinusWrite];
+
+	// ================ FUNCS =================
+	inline void writeNext( uint64_t left_new_pos_1,	uint64_t left_new_pos_2, uint64_t old_sort_key ){
+		// A line point is an encoding of two k bit values into one 2k bit value.
+		uint128_t line_point =
+				Encoding::SquareToLinePoint( left_new_pos_1, left_new_pos_2 );
+
+		if( left_new_pos_1 > POSITION_LIMIT || left_new_pos_2 > POSITION_LIMIT ) {
+				std::cout << "left or right positions too large" << std::endl;
+				std::cout << (line_point > ((uint128_t)1 << (2 * k)));
+				if ((line_point > ((uint128_t)1 << (2 * k)))) {
+						std::cout << "L, R: " << left_new_pos_1 << " " << left_new_pos_2
+											<< std::endl;
+						std::cout << "Line point: " << line_point << std::endl;
+						abort();
+				}
+		}
+
+		Bits to_write = Bits(line_point, line_point_size);
+		to_write.AppendValue( old_sort_key, right_sort_key_size );
+		to_write.ToBytes( write_entry_buf.ensureSize(right_entry_size_bytes).get() );
+
+		sm->AddToCache( write_entry_buf.setUsed(right_entry_size_bytes) );
+	}
+	inline void processBatchEntry( BatchEntry &entry ){
+		writeNext( entry.left_new_pos_1, entry.left_new_pos_2, entry.old_sort_key );
+	}
+
 };
-
-
 
 
 // Compresses the plot file tables into the final file. In order to do this, entries must be
@@ -411,7 +372,7 @@ Phase3Results RunPhase3(
 				// exceed 0.865 * 2^k on average.
 				const uint32_t right_sort_key_size = k;
 
-				uint32_t left_entry_size_bytes = EntrySizes::GetMaxEntrySize(k, table_index, false);
+				const uint32_t left_entry_size_bytes = EntrySizes::GetMaxEntrySize(k, table_index, false);
 				const uint32_t p2_entry_size_bytes = EntrySizes::GetKeyPosOffsetSize(k);
 				const uint32_t right_entry_size_bytes = EntrySizes::GetMaxEntrySize(k, table_index + 1, false);
 
