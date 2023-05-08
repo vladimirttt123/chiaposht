@@ -205,6 +205,14 @@ public:
         }
         prev_bucket_buf_.reset();
         final_position_end = 0;
+
+				if( reserved_buffer_size > 0 ){
+					memory_manager.release( (sorted_next_bucket ? 2 : 1) * reserved_buffer_size ); // release current and next bucket's memory
+					reserved_buffer_size = 0;
+					sorted_current_bucket.reset();
+					sorted_next_bucket.reset();
+				}
+
         // TODO: Ideally, bucket files should be deleted as we read them (in the
         // last reading pass over them)
     }
