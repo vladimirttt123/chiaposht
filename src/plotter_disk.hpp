@@ -79,7 +79,7 @@ public:
         }
 
         uint32_t stripe_size, buf_megabytes, num_buckets;
-        uint8_t num_threads;
+				uint16_t num_threads;
         if (stripe_size_input != 0) {
             stripe_size = stripe_size_input;
         } else {
@@ -274,8 +274,9 @@ public:
                 num_buckets,
                 log_num_buckets,
                 stripe_size,
-                num_threads,
-                phases_flags);
+								// decrease number of working threads because sorting and work done in parallel
+								num_threads - (num_threads >> 2),
+								phases_flags );
             p1.PrintElapsed("Time for phase 1 =");
 
             uint64_t finalsize=0;

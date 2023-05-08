@@ -73,7 +73,7 @@ struct GlobalData {
     uint64_t left_writer;
     uint64_t right_writer;
     uint64_t stripe_size;
-    uint8_t num_threads;
+		uint16_t num_threads;
 		IWriteDiskStream *table7;
 };
 
@@ -528,10 +528,7 @@ void* phase1_thread(THREADDATA* ptd)
 						if( table_index < 6 )
 							sort_thread_writer->Add( entrybuf );
         }
-//        if (table_index < 6) {
-//					assert( (right_writer_count>>32) == 0 );
-//					globals.R_sort_manager->AddAllToCache( right_writer_buf.get(), right_writer_count, right_entry_size_bytes );
-//        } else {
+
 				if( table_index >= 6 ) {
             // Writes out the right table for table 7
 						globals.table7->Write( right_writer_buf, right_writer_count * right_entry_size_bytes );
@@ -594,7 +591,7 @@ std::vector<uint64_t> RunPhase1(
     uint32_t const num_buckets,
     uint32_t const log_num_buckets,
     uint32_t const stripe_size,
-    uint8_t const num_threads,
+		uint16_t const num_threads,
 		uint8_t const flags )
 {
     std::cout << "Computing table 1" << std::endl;
@@ -688,6 +685,7 @@ std::vector<uint64_t> RunPhase1(
         globals.right_writer_count = 0;
         globals.right_writer = 0;
         globals.left_writer = 0;
+
 
         globals.R_sort_manager = std::make_unique<SortManager>(
 						memory_manager,

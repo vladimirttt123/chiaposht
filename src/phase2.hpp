@@ -282,7 +282,6 @@ Phase2Results RunPhase2(
 			bitfield_index const index(  *next_bitfield.get() );
 
 			auto sort_manager = std::make_unique<SortManager>(
-//					table_index == 2 ? ( memory_size /*it should be minus size of bitfield of table 1*/): memory_size / 2,
 					memory_manager,
 					num_buckets,
 					log_num_buckets,
