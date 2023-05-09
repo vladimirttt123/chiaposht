@@ -274,8 +274,7 @@ public:
                 num_buckets,
                 log_num_buckets,
                 stripe_size,
-								// decrease number of working threads because sorting and work done in parallel
-								num_threads - (num_threads >> 2),
+								num_threads,
 								phases_flags );
             p1.PrintElapsed("Time for phase 1 =");
 

@@ -1367,6 +1367,10 @@ struct BucketStream{
 	// It can be called if full reading not finished yet to close and remove resources
 	void EndToRead(){
 		std::lock_guard<std::mutex> lk( sync_mutex );
+		// for empty buckets disk_output can be not cleaned
+		// because reading not starting and it holds bucket_file reference
+		if( disk_output ) disk_output.reset();
+
 		if( disk_input ){
 			disk_input->Close();
 			disk_input.reset();
