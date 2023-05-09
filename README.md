@@ -42,8 +42,14 @@ The IO compaction allows less ram to plot on ramdisk.
 By my measures to create k32 it needed around 170GiB space in temp directory 
 when using compaction with 256 (or more) buckets.
 
-I tested ram plotting on amazon R6i.8xlarge instance with ramdisk of 180Gb,
-the creation of k32 plot was taken 52 minutes.
+Free buffer can be used as write caching that allows to write less.
+For my measures for k32 each 1GiB of ram up to 22Gib saves around 
+16GiB of writtings and 25GiB buffers saves ~45% of writtings, 46GiB
+buffer saves ~63% of writtings and 110GiB buffer saves ~93% of writtings
+( all this for 256 bukets and compaction enabled ).
+
+I tested ram plotting on amazon R6i.8xlarge instance that is 256GiB RAM 
+and 30 vcores, the creation of k32 plot was taken 33 minutes.
 
 
 ```
