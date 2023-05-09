@@ -156,52 +156,37 @@ struct SortingBucket{
 			assert( bucket_positions[buckets_count-1]/entry_size_ == Count() ); // check last bucket is full
 		} else { // Read by threads
 			// read in 2 directions one fills from start and second from back.
-			auto back_bucket_positions = std::make_unique<uint64_t[]>( buckets_count );
-			for( uint32_t i = 0; i < buckets_count - 1; i++ )
-				back_bucket_positions[i] = bucket_positions[i+1]-entry_size_;
-			back_bucket_positions[buckets_count-1] = back_bucket_positions[buckets_count-2] + statistics[buckets_count-1] * entry_size_;
+			auto a_bucket_positions = std::make_unique<std::atomic_uint64_t[]>( buckets_count );
+			auto back_bucket_positions = std::make_unique<std::atomic_uint64_t[]>( buckets_count );
+			for( uint32_t i = 0; i < buckets_count - 1; i++ ){
+				a_bucket_positions[i].store( bucket_positions[i], std::memory_order_relaxed );
+				back_bucket_positions[i].store( bucket_positions[i+1]-entry_size_, std::memory_order_relaxed );
+			}
+			a_bucket_positions[buckets_count-1].store( bucket_positions[buckets_count-1], std::memory_order_relaxed );
+			back_bucket_positions[buckets_count-1].store( back_bucket_positions[buckets_count-2] + statistics[buckets_count-1] * entry_size_, std::memory_order_relaxed );
 
 			uint32_t max_threads = std::max( (uint32_t)1, num_threads/2 );
-			const uint32_t num_sub_locks_bits = std::min( 8U, std::min( (uint32_t)bucket_bits_count_, (uint32_t)std::log2(max_threads)+1 ) );
-			const uint32_t num_sub_locks = 1U << num_sub_locks_bits;
-			const uint32_t sub_locks_mask = num_sub_locks - 1;
 
-			auto mutForward = std::make_unique<std::mutex[]>(num_sub_locks);
-			auto mutBackward = std::make_unique<std::mutex[]>(num_sub_locks);
 			// Define thread function
-			auto thread_func = [this, &memory , &num_sub_locks, &sub_locks_mask]( std::mutex *mutWrite,  uint64_t* bucket_positions, const int64_t direction ){
+			auto thread_func = [this, &memory]( std::atomic_uint64_t* bucket_positions, const int64_t direction ){
 				StreamBuffer buf( BUF_SIZE/entry_size_*entry_size_ );
 				std::unique_ptr<IBlockReader> reader( disk->CreateReader() );
 
 				while(  reader->Read( buf ) > 0 ){
-					uint32_t bucket_bits[buf.size()/entry_size_ + 1];
-
-					// Extract all bucket_bits
-					for( uint64_t buf_ptr = 0; buf_ptr < buf.used(); buf_ptr += entry_size_ )
-						bucket_bits[buf_ptr/entry_size_] = (uint32_t)Util::ExtractNum64( buf.get() + buf_ptr, begin_bits_, bucket_bits_count_ );
-
-					for( uint32_t l = 0; l < num_sub_locks; l++ ){
-						std::lock_guard lk( mutWrite[l] );
-						for( uint64_t buf_ptr = 0; buf_ptr < buf.used(); buf_ptr += entry_size_ ){
-							auto b_bits = bucket_bits[buf_ptr/entry_size_];
-							if( (b_bits&sub_locks_mask) == l ){
-								// Put next entry to its bucket
-								memcpy( memory + bucket_positions[b_bits], buf.get() + buf_ptr, entry_size_ );
-								// move pointer inside bucket to next entry position
-								bucket_positions[b_bits] += direction;
-							}
-						}
+					for( auto buf_ptr = buf.get() + buf.used() - entry_size_; buf_ptr >= buf.get(); buf_ptr -= entry_size_ ){
+						auto b_bits = (uint32_t)Util::ExtractNum64( buf_ptr, begin_bits_, bucket_bits_count_ );
+						// Put next entry to its bucket and move pointer inside bucket to next entry position
+						memcpy( memory + bucket_positions[b_bits].fetch_add( direction, std::memory_order_relaxed), buf_ptr, entry_size_ );
 					}
 				}
-
 			};
 
 			// Start threads
 			{
 				std::vector<std::thread> threads;
 				for( uint32_t t = 0; t < max_threads; t++ ){
-					threads.emplace_back( thread_func, mutForward.get(), bucket_positions.get(), entry_size_ ); // thread forward
-					threads.emplace_back( thread_func, mutBackward.get(), back_bucket_positions.get(), -(int64_t)entry_size_ ); // thread backward
+					threads.emplace_back( thread_func, a_bucket_positions.get(), entry_size_ ); // thread forward
+					threads.emplace_back( thread_func, back_bucket_positions.get(), -(int64_t)entry_size_ ); // thread backward
 				}
 
 				for (auto& t : threads)
@@ -211,7 +196,8 @@ struct SortingBucket{
 #ifndef NDEBUG
 			// Chcek everything read as written.
 			for( uint32_t i = 0; i < buckets_count; i++ )
-				assert( (int64_t)bucket_positions[i] == (int64_t)back_bucket_positions[i] + entry_size_ );
+				assert( (int64_t)a_bucket_positions[i].load( std::memory_order_relaxed )
+								== (int64_t)back_bucket_positions[i].load( std::memory_order_relaxed ) + entry_size_ );
 #endif
 			// Clean underling resources
 			disk->EndToRead();
