@@ -247,7 +247,9 @@ public:
         fs::remove(tmp_2_filename);
         fs::remove(final_filename);
 
-				MemoryManager memory_manager = MemoryManager( memory_size, (phases_flags & DISABLE_BUFFER_CACHE)	 == 0 );
+				memory_manager.setTotalSize( memory_size );
+				memory_manager.CacheEnabled = (phases_flags & DISABLE_BUFFER_CACHE)	 == 0;
+
         {
             // Scope for FileDisk
             std::vector<FileDisk> tmp_1_disks;
@@ -481,6 +483,8 @@ public:
     }
 
 private:
+		MemoryManager memory_manager;
+
     // Writes the plot file header to a file
     uint32_t WriteHeader(
         FileDisk& plot_Disk,

@@ -41,7 +41,6 @@ using namespace std::chrono_literals; // for operator""min;
 constexpr uint64_t write_cache = 256 * 1024;
 constexpr uint64_t read_ahead = 256 * 1024;
 uint64_t BUF_SIZE = 256*1024;
-bool LEAVE_FILES = false;
 
 struct Disk {
     virtual uint8_t const* Read(uint64_t begin, uint64_t length) = 0;
@@ -107,13 +106,24 @@ struct FileDisk {
     {
         filename_ = filename;
 
-				if( forWrite ) {
-					Open( writeFlag );
-					SetCouldBeClosed();
-				}
+				if( forWrite ) Open( writeFlag );
+				SetCouldBeClosed();
+
 				std::lock_guard<std::mutex> lk(mutFileManager);
 				all_files.push_back( this );
     }
+
+		FileDisk(FileDisk &&fd)
+		{
+				filename_ = std::move(fd.filename_);
+				f_ = fd.f_;
+				fd.f_ = nullptr;
+				writeMax = fd.writeMax;
+		}
+
+		FileDisk(const FileDisk &) = delete;
+		FileDisk &operator=(const FileDisk &) = delete;
+
 
     void Open(uint8_t flags = 0)
     {
@@ -123,7 +133,6 @@ struct FileDisk {
 
         // Opens the file for reading and writing
         do {
-
 #ifdef _WIN32
 						f_ = ::_wfopen(filename_.c_str(), (flags & writeFlag) ? L"w+b" : L"r+b");
 #else
@@ -149,41 +158,22 @@ struct FileDisk {
         } while (f_ == nullptr);
     }
 
-    FileDisk(FileDisk &&fd)
-    {
-        filename_ = std::move(fd.filename_);
-        f_ = fd.f_;
-        fd.f_ = nullptr;
-				writeMax = fd.writeMax;
-    }
-
-    FileDisk(const FileDisk &) = delete;
-    FileDisk &operator=(const FileDisk &) = delete;
-
 		void Close( bool isForced = false )
     {
-        if (f_ == nullptr) return;
-				if( !isForced )
-					UnsetCouldBeClosed();
-        ::fclose(f_);
-        f_ = nullptr;
-        readPos = 0;
-        writePos = 0;
-				if( !isForced ) {
-					std::lock_guard<std::mutex> lk(mutFileManager);
-					total_bytes_written += bytes_written;
-					bytes_written = 0;
-				}
+			if (f_ == nullptr) return;
+			if( !isForced )
+				UnsetCouldBeClosed();
+			::fclose(f_);
+			f_ = nullptr;
+			readPos = 0;
+			writePos = 0;
     }
 
 		void Remove( bool noWarn = false ){
 			Close();
-			if( LEAVE_FILES )
-				RenameFileToDeleted();
-			else{
-				if( !fs::remove( GetFileName() ) && !noWarn )
-					std::cout << "Warning: Some problem with file removing: " << GetFileName() << std::endl;
-			}
+
+			if( !fs::remove( GetFileName() ) && !noWarn )
+				std::cout << "Warning: Some problem with file removing: " << GetFileName() << std::endl;
 		}
 
 		~FileDisk() {
@@ -282,11 +272,11 @@ struct FileDisk {
                 Close();
                 bReading = false;
                 std::this_thread::sleep_for(5min);
-                Open(writeFlag | retryOpenFlag);
+								Open( (writeMax > 0 ? 0 : writeFlag) | retryOpenFlag);
             }
         } while (amtwritten != length);
 			SetCouldBeClosed();
-			bytes_written += amtwritten;
+			total_bytes_written.fetch_add( amtwritten, std::memory_order_relaxed );
 		}
 
 		std::string GetFileName() const { return filename_.string(); }
@@ -296,10 +286,7 @@ struct FileDisk {
     void Truncate(uint64_t new_size)
     {
 			Close();
-			if( LEAVE_FILES && new_size == 0 )
-				RenameFileToDeleted();
-			else
-				fs::resize_file(filename_, new_size);
+			fs::resize_file(filename_, new_size);
     }
 
 		void Flush() {
@@ -308,13 +295,12 @@ struct FileDisk {
 					std::cout << "Fail: Cannot flush file " << filename_ << std::endl;
 		}
 
-		static uint64_t GetTotalBytesWritten() { return total_bytes_written; }
+		static uint64_t GetTotalBytesWritten() { return total_bytes_written.load( std::memory_order_relaxed ); }
 private:
 
     uint64_t readPos = 0;
     uint64_t writePos = 0;
     uint64_t writeMax = 0;
-		uint64_t bytes_written = 0;
     bool bReading = true;
 
     fs::path filename_;
@@ -323,30 +309,18 @@ private:
     static const uint8_t writeFlag = 0b01;
     static const uint8_t retryOpenFlag = 0b10;
 
-		void RenameFileToDeleted() const {
-			if( !fs::exists(GetFileName() )) return;
-			std::string delname = GetFileName() + ".deleted";
-			for( int i = 0; fs::exists(delname); i++ )
-				delname = GetFileName() + "." + std::to_string(i) + ".deleted";
-			fs::rename( GetFileName(), delname );
-		}
-
-		bool could_be_closed = false;
+		std::atomic_bool could_be_closed;
 		static std::vector<FileDisk*> all_files;
 		static std::mutex mutFileManager;
-		static uint64_t total_bytes_written;
+		static std::atomic_uint64_t total_bytes_written;
 
 		inline void SetCouldBeClosed(){
 			// allow to close can be done without lock because it couldn't be in process of closing with other thread
-			could_be_closed = true;
+			could_be_closed.store( true, std::memory_order_relaxed );
 		}
 
 		inline void UnsetCouldBeClosed(){
-			if( could_be_closed ){
-				// need lock because it can be in process of closing in other thread that called CloseCouldBeClosed
-				std::lock_guard<std::mutex> lk(mutFileManager);
-				could_be_closed = false;
-			}
+			could_be_closed.store( false, std::memory_order_relaxed );
 		}
 
 		inline void RemoveFromAllFiles(){
@@ -360,15 +334,15 @@ private:
 			}
 		}
 		static int CloseCouldBeClosed() {
-			std::lock_guard<std::mutex> lk(mutFileManager);
 			std::cout << " Forced to close files: " << std::flush;
 			int counter = 0;
-			for( auto f : all_files )
-				if( f->could_be_closed ){
+			for( auto f : all_files ){
+				bool could = f->could_be_closed.exchange( false, std::memory_order_relaxed );
+				if( could ) {
 					counter++;
-					f->could_be_closed = false; // to prevent locking
 					f->Close( true );
 				}
+			}
 			std::cout << counter << " files closed." << std::endl;
 			return counter;
 		}
@@ -376,7 +350,7 @@ private:
 
 std::vector<FileDisk*> FileDisk::all_files = std::vector<FileDisk*>();
 std::mutex FileDisk::mutFileManager = std::mutex();
-uint64_t FileDisk::total_bytes_written = 0;
+std::atomic_uint64_t FileDisk::total_bytes_written = std::atomic_uint64_t(0);
 
 uint64_t GetTotalBytesWritten(){ return FileDisk::GetTotalBytesWritten(); }
 

@@ -37,11 +37,16 @@ struct ICacheConsumer{
 };
 
 struct MemoryManager{
-	const bool CacheEnabled;
-	const int64_t total_size;
+	bool CacheEnabled;
 
-	MemoryManager( uint64_t size, bool withCache = true )
+	MemoryManager( uint64_t size = 0, bool withCache = true )
 		: CacheEnabled(withCache), total_size(size) {}
+
+	inline uint64_t getTotalSize() const { return total_size; }
+	inline void setTotalSize( uint64_t size ){
+		total_size = size;
+		FreeBuffers( maxStoredBuffers() );
+	}
 
 	inline uint64_t getAccessibleRam() const {
 		return  total_size - used_ram + cleanable_ram;
@@ -154,6 +159,7 @@ struct MemoryManager{
 
 	~MemoryManager(){ FreeBuffers( 0 );	}
 private:
+	int64_t total_size;
 
 	std::atomic_ullong used_ram = 0, cleanable_ram = 0, not_written = 0;
 	std::mutex sync_consumers, sync_buffers;

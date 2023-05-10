@@ -394,7 +394,7 @@ private:
 				SortingBucket& b = buckets_[bucket_i];
 
 
-				double const total_ram = memory_manager.total_size / (1024.0 * 1024.0 * 1024.0);
+				double const total_ram = memory_manager.getTotalSize() / (1024.0 * 1024.0 * 1024.0);
 				double const cache_ram = memory_manager.getAccessibleRam() / (1024.0 * 1024.0 * 1024.0);
 				double const free_ram = memory_manager.getFreeRam() / (1024.0 * 1024.0 * 1024.0);
 				double const qs_ram = b.Size() / (1024.0 * 1024.0 * 1024.0);
