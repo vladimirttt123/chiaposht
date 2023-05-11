@@ -247,11 +247,10 @@ public:
         fs::remove(tmp_2_filename);
         fs::remove(final_filename);
 
-				memory_manager.setTotalSize( memory_size );
-				memory_manager.CacheEnabled = (phases_flags & DISABLE_BUFFER_CACHE)	 == 0;
 
-        {
-            // Scope for FileDisk
+				{ // Scope for FileDisk and memory manager
+					MemoryManager memory_manager( memory_size, (phases_flags & DISABLE_BUFFER_CACHE) == 0 );
+
             std::vector<FileDisk> tmp_1_disks;
             for (auto const& fname : tmp_1_filenames)
                 tmp_1_disks.emplace_back(fname);
@@ -406,7 +405,7 @@ public:
 											<< "GiB; Total written (without final file): "
 											<< ((FileDisk::GetTotalBytesWritten()-finalsize)/1024.0/1024/1024);
 						if( memory_manager.CacheEnabled )
-							std::cout << "GiB; Cache saved: " <<
+							std::cout << "GiB; Cache hit: " <<
 													 (memory_manager.getNotWritten()/1024.0/1024/1024) ;
 						std::cout<< "GiB" << std::endl;
             all_phases.PrintElapsed("Total time =");
@@ -483,7 +482,6 @@ public:
     }
 
 private:
-		MemoryManager memory_manager;
 
     // Writes the plot file header to a file
     uint32_t WriteHeader(

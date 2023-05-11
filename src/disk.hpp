@@ -230,7 +230,7 @@ struct FileDisk {
 				// writeMax > 0 means the file was already written
 				// than we add to append rather than to write
 				// because opening to write will remove previous content
-				Open( (writeMax > 0 ? 0 : writeFlag) | retryOpenFlag);
+				Open( (writeMax > 0 ? 0 : writeFlag) | retryOpenFlag );
 #if ENABLE_LOGGING
         disk_log(filename_, op_t::write, begin, length);
 #endif
