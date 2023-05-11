@@ -157,7 +157,11 @@ struct MemoryManager{
 	}
 
 
-	~MemoryManager(){ FreeBuffers( 0 );	}
+	~MemoryManager(){
+		CleanCache( total_size );
+		total_size = 0;
+		FreeBuffers( 0 );
+	}
 private:
 	int64_t total_size;
 

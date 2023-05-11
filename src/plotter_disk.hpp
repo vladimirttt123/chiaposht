@@ -219,7 +219,7 @@ public:
 
         // The table0 file will be used for sort on disk spare. tables 1-7 are stored in their own
         // file.
-        tmp_1_filenames.push_back(fs::path(tmp_dirname) / fs::path(filename + ".sort.tmp"));
+				tmp_1_filenames.push_back(fs::path(tmp_dirname) / fs::path(filename + ".sort.tmp"));
         for (size_t i = 1; i <= 7; i++) {
             tmp_1_filenames.push_back(
                 fs::path(tmp_dirname) / fs::path(filename + ".table" + std::to_string(i) + ".tmp"));
@@ -241,9 +241,6 @@ public:
         if (!fs::exists(final_dirname)) {
             throw InvalidValueException("Final directory " + final_dirname + " does not exist");
         }
-        for (fs::path& p : tmp_1_filenames) {
-            fs::remove(p);
-        }
         fs::remove(tmp_2_filename);
         fs::remove(final_filename);
 
@@ -251,9 +248,11 @@ public:
 				{ // Scope for FileDisk and memory manager
 					MemoryManager memory_manager( memory_size, (phases_flags & DISABLE_BUFFER_CACHE) == 0 );
 
-            std::vector<FileDisk> tmp_1_disks;
-            for (auto const& fname : tmp_1_filenames)
-                tmp_1_disks.emplace_back(fname);
+						std::vector<FileDisk> tmp_1_disks;
+						for (auto const& fname : tmp_1_filenames){
+							fs::remove( fname );
+							tmp_1_disks.emplace_back(fname, false); // the files delete before than do not crete files up to their use
+						}
 
             FileDisk tmp2_disk(tmp_2_filename);
 
