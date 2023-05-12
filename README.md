@@ -47,9 +47,16 @@ For my measures for k32 each 1GiB of ram up to 22Gib saves around
 16GiB of writtings and 25GiB buffers saves ~45% of writtings, 46GiB
 buffer saves ~63% of writtings and 110GiB buffer saves ~93% of writtings
 ( all this for 256 bukets and compaction enabled ).
+```
+Known issue with using buffer as cache is a memory fragmentation.
+It is almost fixed when creating one plot at a time, but if python 
+calls the plotter many times the memory usage can be increased 
+drastically (2 times) for second and more plots.
+It is possible to disable cache also by prefixing temp dir with :NOCACHE:
+```
 
 I tested ram plotting on amazon R6i.8xlarge instance that is 256GiB RAM 
-and 30 vcores, the creation of k32 plot was taken 33 minutes.
+and 30 vcores, the time of creation k32 plot is 33 minutes.
 
 
 ```

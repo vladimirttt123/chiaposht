@@ -193,6 +193,10 @@ public:
 					phases_flags |= DISABLE_BUFFER_CACHE;
 					tmp_dirname = tmp_dirname.substr(9);
 				}
+				if( tmp2_dirname.find( ":NOCACHE:") == 0 ){
+					phases_flags |= DISABLE_BUFFER_CACHE;
+					tmp2_dirname = tmp2_dirname.substr(9);
+				}
 
         std::cout << std::endl
                   << "Starting plotting progress into temporary dirs: " << tmp_dirname << " and "
