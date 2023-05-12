@@ -58,10 +58,13 @@ public:
         return (DT_MEMO.find(R) != DT_MEMO.end());
     }   
 
-    void CTAssign(double R, FSE_CTable *ct)
+		bool CTAssign(double R, FSE_CTable *ct)
     {
         std::lock_guard<std::mutex> l(memoMutex);
+				if( (CT_MEMO.find(R) != CT_MEMO.end()) )
+					return false;
         CT_MEMO[R] = ct;
+				return true;
     }
 
     void DTAssign(double R, FSE_DTable *dt)
@@ -117,11 +120,6 @@ public:
         // triangle. This means less data is needed to represent y, since we know it's less
         // than x.
 			return (y>x) ? (GetXEnc(y) + x) : (GetXEnc(x) + y);
-//        if (y > x) {
-//            std::swap(x, y);
-//        }
-
-//        return GetXEnc(x) + y;
     }
 
     // Does the opposite as the above function, deterministicaly mapping a one dimensional
@@ -193,7 +191,8 @@ public:
             if (FSE_isError(err)) {
                 throw InvalidStateException(FSE_getErrorName(err));
             }
-            tmCache.CTAssign(R, ct);
+						if( !tmCache.CTAssign(R, ct) )
+							FSE_freeCTable( ct ); // already created in other thread
         }
 
         FSE_CTable *ct = tmCache.CTGet(R);
