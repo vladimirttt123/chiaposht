@@ -189,13 +189,13 @@ public:
 
 
 				// allow to provide no cache throw the chia without changing chia executable.
-				if( tmp_dirname.find( ":NOCACHE:") == 0 ){
-					phases_flags |= DISABLE_BUFFER_CACHE;
-					tmp_dirname = tmp_dirname.substr(9);
+				if( tmp_dirname.find( ":CACHE:") == 0 ){
+					phases_flags |= BUFFER_AS_CACHE;
+					tmp_dirname = tmp_dirname.substr(7);
 				}
-				if( tmp2_dirname.find( ":NOCACHE:") == 0 ){
-					phases_flags |= DISABLE_BUFFER_CACHE;
-					tmp2_dirname = tmp2_dirname.substr(9);
+				if( tmp2_dirname.find( ":CACHE:") == 0 ){
+					phases_flags |= BUFFER_AS_CACHE;
+					tmp2_dirname = tmp2_dirname.substr(7);
 				}
 
         std::cout << std::endl
@@ -209,7 +209,7 @@ public:
 				std::cout << "Buckets number: " << num_buckets << std::endl;
 				std::cout << "Flags: " << ( phases_flags&ENABLE_BITFIELD ? " using bitfield" : " NO bitfield" )
 									<< ", " << (phases_flags&NO_COMPACTION ? "NO compaction" : "with compaction" )
-									<< ", " << (phases_flags&DISABLE_BUFFER_CACHE ? "NO buffer as cache": "USE free buffer as cache");
+									<< ", " << (phases_flags&BUFFER_AS_CACHE ?"USE free buffer as cache" : "NO buffer as cache" );
 				if( phases_flags&ENABLE_BITFIELD )
 					std::cout << ", " << (phases_flags&TABLE_7_FULL_SCAN ? "table 7 FULL scan" : "table 7 QUICK scan" );
 				std::cout << std::endl;
@@ -250,7 +250,7 @@ public:
 
 
 				{ // Scope for FileDisk and memory manager
-					MemoryManager memory_manager( memory_size, (phases_flags & DISABLE_BUFFER_CACHE) == 0 );
+					MemoryManager memory_manager( memory_size, (phases_flags & BUFFER_AS_CACHE) != 0 );
 
 						std::vector<FileDisk> tmp_1_disks;
 						for (auto const& fname : tmp_1_filenames){

@@ -126,8 +126,8 @@ private:
 // ============== Cache ========================
 
 
-/* CachedFileStream class stores in cache as many data as possible before wrtting it to file
-	Warning! CachedFileStream class is not thread safe i.e. IO from more than one thread leads to unpredictable.
+/* BlockCachedFile class stores in cache as many data as possible before wrtting it to file
+	Warning! BlockCachedFile class is not thread safe i.e. IO from more than one thread leads to unpredictable.
 	Warning! Writing after start to read can lead to unperdictable.
 */
 struct BlockCachedFile: IBlockWriterReader, ICacheConsumer {

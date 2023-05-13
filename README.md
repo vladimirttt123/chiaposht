@@ -51,8 +51,10 @@ buffer saves ~63% of writtings and 110GiB buffer saves ~93% of writtings
 Known issue with using buffer as cache is a memory fragmentation.
 It is almost fixed when creating one plot at a time, but if python 
 calls the plotter many times the memory usage can be increased 
-drastically (2 times) for second and more plots.
-It is possible to disable cache also by prefixing temp dir with :NOCACHE:
+drastically (2-3 times) for second and more plots.
+This is the reason it is disabled by default.
+It is possible to enable cache also by prefixing temp dir with :CACHE:
+i.e. providing "-t :CACHE:/my/temp/dir" parameter
 ```
 
 I tested ram plotting on amazon R6i.8xlarge instance that is 256GiB RAM 
