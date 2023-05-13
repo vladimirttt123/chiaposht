@@ -60,6 +60,18 @@ i.e. providing "-t :CACHE:/my/temp/dir" parameter
 I tested ram plotting on amazon R6i.8xlarge instance that is 256GiB RAM 
 and 30 vcores, the time of creation k32 plot is 33 minutes.
 
+How to use?
+Get it from github
+```
+git clone https://github.com/vladimirttt123/chiaposht.git
+```
+Compile as original one. Then you have ProofOfSpace that not very usefull,
+but you can replace original chiapos with this one in installed chia. In
+order to do so you need replace file chiapos.cpython-310-x86_64-linux-gnu.so
+(the name depends on your python version) in chia installation sub dir
+venv/lib/python3.10/site-packages in addtion add there 2 more files: 
+libfse.a and libuint128.a. Now when you run plots as regular your will
+run by this plotter.
 
 ```
 ```
