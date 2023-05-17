@@ -84,8 +84,8 @@ struct MemoryManager{
 		used_ram += size;
 	}
 
-	inline void release( const uint32_t &size ){
-		assert( (int64_t)size <= used_ram );
+	inline void release( const uint64_t &size ){
+		assert( size <= used_ram );
 		used_ram -= size;
 	}
 
@@ -140,7 +140,7 @@ struct MemoryManager{
 		return res;
 	}
 
-	inline void consumerRelease( uint8_t* buffer, uint32_t cache_hit_size_size = 0 ){
+	inline void consumerRelease( uint8_t* buffer, uint64_t cache_hit_size_size = 0 ){
 
 		used_ram -= BUF_SIZE;
 		cleanable_ram -= BUF_SIZE;
