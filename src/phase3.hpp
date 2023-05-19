@@ -529,7 +529,7 @@ Phase3Results RunPhase3(
 						// Rewrites each right entry as (line_point, sort_key)
 						rewriter.next( current_pos );
 					} // end of loop of first computation pass
-				}
+				} // end srope for async rewriter
 
 				// Remove no longer needed file
 				left_disk.Truncate(0);

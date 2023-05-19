@@ -37,16 +37,15 @@ struct ICacheConsumer{
 };
 
 struct MemoryManager{
-	bool CacheEnabled;
+	const bool CacheEnabled;
 
-	MemoryManager( uint64_t size = 0, bool withCache = true )
-		: CacheEnabled(withCache), total_size(size) {}
+	MemoryManager( uint64_t size = 0, int64_t max_cache_size = 0 )
+		: CacheEnabled(max_cache_size > 0), total_size(size), max_cache_size(max_cache_size) {
+		regular_buffers.reserve( max_cache_size/BUF_SIZE + 1 );
+	}
 
 	inline uint64_t getTotalSize() const { return total_size; }
-	inline void setTotalSize( uint64_t size ){
-		total_size = size;
-		FreeBuffers( maxStoredBuffers() );
-	}
+
 
 	inline uint64_t getAccessibleRam() const {
 		return  total_size - used_ram + cleanable_ram;
@@ -119,16 +118,17 @@ struct MemoryManager{
 				res = regular_buffers[regular_buffers.size()-1];
 				regular_buffers.pop_back();
 			}
-		}
+		} else {
 
-		if( res == nullptr && getFreeRam() >= (int64_t)BUF_SIZE )
-			res = Util::NewSafeBuffer( BUF_SIZE );
-
-		if( res == nullptr && isForcedClean && CleanCache( BUF_SIZE ) ){
-			std::lock_guard<std::mutex> lk(sync_buffers);
-			if( regular_buffers.size() > 0 ){
-				res = regular_buffers[regular_buffers.size()-1];
-				regular_buffers.pop_back();
+			if( (int64_t)cleanable_ram.load( std::memory_order_relaxed ) < max_cache_size
+						&& getFreeRam() >= (int64_t)BUF_SIZE ){
+				res = Util::NewSafeBuffer( BUF_SIZE ); // have space for new buffer
+			} else if( isForcedClean && CleanCache( BUF_SIZE ) ){
+				std::lock_guard<std::mutex> lk(sync_buffers);
+				if( regular_buffers.size() > 0 ){
+					res = regular_buffers[regular_buffers.size()-1];
+					regular_buffers.pop_back();
+				}
 			}
 		}
 
@@ -159,11 +159,11 @@ struct MemoryManager{
 
 	~MemoryManager(){
 		CleanCache( total_size );
-		total_size = 0;
 		FreeBuffers( 0 );
 	}
 private:
-	int64_t total_size;
+	const int64_t total_size, max_cache_size;
+
 
 	std::atomic_ullong used_ram = 0, cleanable_ram = 0, not_written = 0;
 	std::mutex sync_consumers, sync_buffers;
