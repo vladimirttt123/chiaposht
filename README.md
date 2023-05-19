@@ -45,7 +45,7 @@ when using compaction with 256 (or more) buckets.
 Free buffer can be used as write caching that allows to write less.
 For my measures for k32 each 1GiB of ram up to 22Gib saves around 
 16GiB of writtings and 25GiB buffers saves ~45% of writtings, 46GiB
-buffer saves ~63% of writtings and 110GiB buffer saves ~93% of writtings
+buffer saves ~63% of writtings and 110GiB buffer saves ~83% of writtings
 ( all this for 256 bukets and compaction enabled ).
 ```
 Known issue with using buffer as cache is a memory fragmentation.
