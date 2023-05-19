@@ -198,6 +198,11 @@ public:
 					tmp2_dirname = tmp2_dirname.substr(7);
 				}
 
+				// estimation done by formula: if num_buckets >= 512 than size of 2 bitfields in other case more...
+				uint64_t est_non_cache_use = (1L<<(k-3)) * ( log_num_buckets > 8 ? 2 : ( 3*(1L<<(8-log_num_buckets)) ) );
+				if( est_non_cache_use > memory_size )
+					phases_flags &= ~BUFFER_AS_CACHE; // disable the flag
+
         std::cout << std::endl
                   << "Starting plotting progress into temporary dirs: " << tmp_dirname << " and "
                   << tmp2_dirname << std::endl;
@@ -255,8 +260,6 @@ public:
 
 
 				{ // Scope for FileDisk and memory manager
-					// estimation done by formula: if num_buckets >= 512 than size of 2 bitfields in other case more...
-					uint64_t est_non_cache_use = (1L<<(k-3)) * ( log_num_buckets > 8 ? 2 : ( 3*(1L<<(8-log_num_buckets)) ) );
 
 					MemoryManager memory_manager( memory_size, (phases_flags & BUFFER_AS_CACHE) == 0 ? -1 : (memory_size - est_non_cache_use) );
 
