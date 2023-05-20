@@ -37,50 +37,94 @@ struct ICacheConsumer{
 };
 
 
+struct BuffersStackMut{
+	const uint64_t max_buffers;
+
+	BuffersStackMut( uint64_t max_buffers )
+		: max_buffers(max_buffers), buffers( new uint8_t*[max_buffers] ),	count(0) {}
+
+	inline uint64_t size() const { return count; }
+
+	inline void put( uint8_t* buf ){
+		if( buf == nullptr ) return;
+		std::lock_guard lk(sync_mutes);
+		if( count < max_buffers )
+			buffers[count++] = buf;
+		else
+			delete [] buf;
+	}
+
+	inline uint8_t* get(){
+		if( count > 0 ){
+			std::lock_guard lk(sync_mutes);
+			if( count > 0 )
+				return buffers[--count];
+		}
+		return nullptr;
+	}
+
+	~BuffersStackMut(){
+		for( uint32_t i = 0; i < count; i++ )
+			delete [] buffers[i];
+	}
+private:
+	std::unique_ptr<uint8_t*[]> buffers;
+	uint64_t count;
+	std::mutex sync_mutes;
+};
+
+
 struct BuffersStack{
 	const uint64_t max_buffers;
 
 	BuffersStack( uint64_t max_buffers )
-		: max_buffers(max_buffers), buffers( new std::atomic<uint8_t*>[max_buffers]),	count(0){
+		: max_buffers(max_buffers), buffers( new std::atomic<uint8_t*>[max_buffers] ),	min_idx(0), max_idx(0) {
 		for( uint64_t i = 0; i < max_buffers; i++ )
 			buffers[i].store( nullptr, std::memory_order_relaxed );
 	}
 
-	inline void put( uint8_t* buf ){
-		if( buf == nullptr ) return; // is do it by assert?
-		auto idx = count.load( std::memory_order_relaxed );
-		while( idx < max_buffers ){
-			buf = buffers[idx].exchange( buf, std::memory_order_relaxed );
-			if( buf == nullptr ) {
-				count++; // multiple threads coudn't be here same time...
-				return;
-			}
-			idx = count.load( std::memory_order_relaxed );// this can reload same value and can do many extra work
-		}
+	inline uint64_t size() const { return std::max(0L, (int64_t)max_idx.load(std::memory_order_relaxed) - (int64_t)min_idx.load(std::memory_order_relaxed)); }
 
-		delete [] buf; // here because we cannot add
+	inline void put( uint8_t* buf ){
+		if( buf == nullptr ) return;
+		buf = buffers[ max_idx.fetch_add( 1, std::memory_order_relaxed) % max_buffers ].exchange( buf, std::memory_order_relaxed );
+		if( buf != nullptr )
+			delete [] buf;
+
+//		auto idx = max_idx.load( std::memory_order_relaxed );
+//		while( buf != nullptr && idx < (min_idx.load(std::memory_order_relaxed) + max_buffers) ){
+//			if( max_idx.compare_exchange_strong( idx, idx+1, std::memory_order_relaxed ) ){
+//				buf = buffers[ idx % max_buffers ].exchange( buf, std::memory_order_relaxed );
+//				assert( buf == nullptr );
+//			}
+//			else
+//				idx = max_idx.load( std::memory_order_relaxed );
+//		}
+
+//		if( buf != nullptr ) delete [] buf;
+
 	}
 
 	inline uint8_t* get(){
-		auto idx = count.load( std::memory_order_relaxed );
-		while( idx > 0 ){
-			auto res = buffers[idx].exchange( nullptr );
-			if( res != nullptr ){
-				count--; // only one thread here...
-				return res;
-			}
-			idx = count.load( std::memory_order_relaxed ); // this can reload same value and can do many extra work
-		}
+		auto idx = min_idx.load( std::memory_order_relaxed );
+		while( idx < max_idx ){
+			if( min_idx.compare_exchange_strong( idx, idx+1, std::memory_order_relaxed) )
+				return buffers[idx%max_buffers].exchange( nullptr, std::memory_order_relaxed );
 
+			idx = min_idx.load( std::memory_order_relaxed );
+		}
 		return nullptr;
 	}
 
-
+	~BuffersStack(){
+		for( uint32_t i = 0; i < max_buffers; i++ )
+			if( buffers[i] != nullptr)
+				delete [] buffers[i];
+	}
 private:
 	std::unique_ptr<std::atomic<uint8_t*>[]> buffers;
-	std::atomic_uint64_t count;
+	std::atomic_uint64_t min_idx, max_idx;
 };
-
 
 struct ConsumersArray{
 //	const uint32_t max_consumers;
@@ -121,10 +165,8 @@ struct MemoryManager{
 	const bool CacheEnabled;
 
 	MemoryManager( uint64_t size = 0, int64_t max_cache_size = 0 )
-		: CacheEnabled(max_cache_size > 0), total_size(size), max_cache_size(max_cache_size) {
-		if( max_cache_size > 0 )
-			regular_buffers.reserve( max_cache_size/BUF_SIZE + 1 );
-	}
+		: CacheEnabled(max_cache_size > 0), total_size(size), max_cache_size(max_cache_size)
+		, regular_buffers( std::max( 0L, max_cache_size/(int64_t)BUF_SIZE ) ){}
 
 	inline uint64_t getTotalSize() const { return total_size; }
 
@@ -195,24 +237,14 @@ struct MemoryManager{
 	}
 
 	inline uint8_t* consumerRequest(){
-		uint8_t* res = nullptr;
+		uint8_t* res = regular_buffers.get();
 
-		if( regular_buffers.size() > 0 ) {
-			std::lock_guard<std::mutex> lk(sync_buffers);
-			if( regular_buffers.size() > 0 ){
-				res = regular_buffers[regular_buffers.size()-1];
-				regular_buffers.pop_back();
-			}
-		} else {
+		if( res == nullptr ){
 
 			if( getFreeCache() >= (int64_t)BUF_SIZE ){
 				res = Util::NewSafeBuffer( BUF_SIZE ); // have space for new buffer
 			} else if( isForcedClean && CleanCache( BUF_SIZE ) ){
-				std::lock_guard<std::mutex> lk(sync_buffers);
-				if( regular_buffers.size() > 0 ){
-					res = regular_buffers[regular_buffers.size()-1];
-					regular_buffers.pop_back();
-				}
+				res = regular_buffers.get();
 			}
 		}
 
@@ -231,13 +263,7 @@ struct MemoryManager{
 		not_written += cache_hit_size_size;
 
 		if( buffer != nullptr )
-		{
-			if( regular_buffers.size() < maxStoredBuffers() ){
-				std::lock_guard<std::mutex> lk(sync_buffers);
-				regular_buffers.push_back( buffer );
-			}
-			else delete[] buffer;
-		}
+			regular_buffers.put( buffer );
 	}
 
 
@@ -250,22 +276,24 @@ private:
 
 
 	std::atomic_ullong used_ram = 0, cleanable_ram = 0, not_written = 0;
-	std::mutex sync_consumers, sync_buffers;
+	std::mutex sync_consumers;
 	std::vector<ICacheConsumer*> consumers;
 	uint32_t min_consumer_idx = 0;
 	bool isFIFO = false;
 	bool isForcedClean = false;
 
-	std::vector<uint8_t*> regular_buffers;
+	BuffersStack regular_buffers;
 
 	inline uint32_t maxStoredBuffers() const {
 		return std::max( 1ULL, (total_size-used_ram)/BUF_SIZE );
 	}
 
 	inline void FreeBuffers( uint32_t max_to_leave ){
-		std::lock_guard<std::mutex> lk(sync_buffers);
-		for( ; regular_buffers.size() > max_to_leave; regular_buffers.pop_back() )
-			delete[] regular_buffers[regular_buffers.size()-1];
+		while( regular_buffers.size() > max_to_leave ){
+			auto buf = regular_buffers.get();
+			assert( buf != nullptr );
+			delete[]buf;
+		}
 	}
 
 	inline bool CleanCache( int64_t need_size ){
