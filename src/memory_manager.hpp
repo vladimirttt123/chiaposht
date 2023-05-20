@@ -78,8 +78,9 @@ struct BuffersStack{
 	const uint64_t max_buffers;
 
 	BuffersStack( uint64_t max_buffers )
-		: max_buffers(max_buffers), buffers( new std::atomic<uint8_t*>[max_buffers] ),	min_idx(0), max_idx(0) {
-		for( uint64_t i = 0; i < max_buffers; i++ )
+			: max_buffers(max_buffers), buffers_size( max_buffers + 250UL /*it could be threads count or should be more than treads count*/ )
+			, buffers( new std::atomic<uint8_t*>[buffers_size] ),	min_idx(0), max_idx(0) {
+		for( uint64_t i = 0; i < buffers_size; i++ )
 			buffers[i].store( nullptr, std::memory_order_relaxed );
 	}
 
@@ -87,29 +88,20 @@ struct BuffersStack{
 
 	inline void put( uint8_t* buf ){
 		if( buf == nullptr ) return;
-		buf = buffers[ max_idx.fetch_add( 1, std::memory_order_relaxed) % max_buffers ].exchange( buf, std::memory_order_relaxed );
+		if( size() <= max_buffers ) {
+			buf = buffers[ max_idx.fetch_add( 1, std::memory_order_relaxed) % buffers_size ].exchange( buf, std::memory_order_relaxed );
+			assert( buf == nullptr ); // the place should be empty
+		}
+
 		if( buf != nullptr )
 			delete [] buf;
-
-//		auto idx = max_idx.load( std::memory_order_relaxed );
-//		while( buf != nullptr && idx < (min_idx.load(std::memory_order_relaxed) + max_buffers) ){
-//			if( max_idx.compare_exchange_strong( idx, idx+1, std::memory_order_relaxed ) ){
-//				buf = buffers[ idx % max_buffers ].exchange( buf, std::memory_order_relaxed );
-//				assert( buf == nullptr );
-//			}
-//			else
-//				idx = max_idx.load( std::memory_order_relaxed );
-//		}
-
-//		if( buf != nullptr ) delete [] buf;
-
 	}
 
 	inline uint8_t* get(){
 		auto idx = min_idx.load( std::memory_order_relaxed );
 		while( idx < max_idx ){
 			if( min_idx.compare_exchange_strong( idx, idx+1, std::memory_order_relaxed) )
-				return buffers[idx%max_buffers].exchange( nullptr, std::memory_order_relaxed );
+				return buffers[idx%buffers_size].exchange( nullptr, std::memory_order_relaxed );
 
 			idx = min_idx.load( std::memory_order_relaxed );
 		}
@@ -117,11 +109,12 @@ struct BuffersStack{
 	}
 
 	~BuffersStack(){
-		for( uint32_t i = 0; i < max_buffers; i++ )
+		for( uint32_t i = 0; i < buffers_size; i++ )
 			if( buffers[i] != nullptr)
 				delete [] buffers[i];
 	}
 private:
+	const uint64_t buffers_size;
 	std::unique_ptr<std::atomic<uint8_t*>[]> buffers;
 	std::atomic_uint64_t min_idx, max_idx;
 };
