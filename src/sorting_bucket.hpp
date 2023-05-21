@@ -123,10 +123,9 @@ struct SortingBucket{
 			// Read statistics from file
 			StreamBuffer buf;
 			statistics.reset( new uint32_t[1<<bucket_bits_count_] );// allocate ram for statistics
-			for( uint64_t read = 0; read < sizeof(uint32_t)<<bucket_bits_count_; read += buf.used() ){
-				statistics_file->Read( buf );
-				memcpy( statistics.get() + read, buf.get(), buf.used() );
-			}
+			for( uint8_t* stat_pos = (uint8_t*)statistics.get(); statistics_file->Read( buf ) > 0; stat_pos += buf.used() )
+				memcpy( stat_pos, buf.get(), buf.used() );
+
 			statistics_file->Remove();
 			statistics_file.reset();
 		}
