@@ -18,7 +18,7 @@
 #include "disk.hpp"
 
 #ifdef __GNUC__
-#include <stdatomic.h>
+#include <atomic>
 #endif
 
 struct bitfield
