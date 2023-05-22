@@ -17,6 +17,9 @@
 #include <memory>
 #include "disk.hpp"
 
+#ifdef __GNUC__
+#include <stdatomic.h>
+#endif
 
 struct bitfield
 {
@@ -125,35 +128,31 @@ struct bitfield
 		}
 		// -----------------------------------
 
-		inline void set(int64_t const bit)
+		inline void set( int64_t const bit )
     {
-				if( b_file_ != nullptr || table_7_max_entry >= 0 )
-					throw InvalidStateException( "Cannot set in RO bitfield" );
+//				if( b_file_ != nullptr || table_7_max_entry >= 0 )
+//					throw InvalidStateException( "Cannot set in RO bitfield" );
+				assert( !b_file_ ); // not flushed to disk
+				assert( table_7_max_entry < 0 ); // not table_7 bitfield
 				assert(bit / 64 < size_);
 				buffer_[bit / 64] |= uint64_t(1) << (bit & 63);
     }
 
-		// Set Multiple values in thread safe manner.
-		inline void setTS( const uint64_t *bits, const uint32_t &count ){
-			if( b_file_ != nullptr || table_7_max_entry >= 0 )
-				throw InvalidStateException( "Cannot set in RO bitfield" );
-
-			std::unique_ptr<uint64_t[]> position = std::make_unique<uint64_t[]>(count);
-			std::unique_ptr<uint64_t[]> bit_mask = std::make_unique<uint64_t[]>(count);
-
-			for( uint32_t i = 0; i < count; i++ ){
-				assert( bits[i] / 64 < (uint64_t)size_);
-				position[i] = bits[i] >> 6;
-				bit_mask[i] = uint64_t(1) << (bits[i] & 63);
-			}
-
-//			const std::lock_guard<std::mutex> lk(sync_mutex);
-			for( uint32_t i = 0; i < count; i++ ){
-				//buffer_[bits[i] / 64] |= uint64_t(1) << (bits[i] & 63);
-				buffer_[position[i]] |= bit_mask[i];
-			}
-
+		inline void setTS( int64_t const bit )
+		{
+//				if( b_file_ != nullptr || table_7_max_entry >= 0 )
+//					throw InvalidStateException( "Cannot set in RO bitfield" );
+				assert( !b_file_ ); // not flushed to disk
+				assert( table_7_max_entry < 0 ); // not table_7 bitfield
+				assert(bit / 64 < size_);
+#ifdef __GNUC__
+				__atomic_fetch_or( buffer_.get() + (bit / 64), uint64_t(1) << (bit & 63), __ATOMIC_RELAXED );
+#else // __GNUC__
+				std::lock_guard<std::mutex> lk(single_set_sync);
+				buffer_[bit / 64] |= uint64_t(1) << (bit & 63);
+#endif // __GNUC__
 		}
+
 
 		inline bool get(int64_t const bit) const
     {
@@ -291,6 +290,9 @@ private:
 
 		uint16_t syncs_num;
 		std::unique_ptr<std::mutex[]> thread_syncs;
+#ifndef __GNUC__
+		std::mutex single_set_sync;
+#endif
 };
 
 

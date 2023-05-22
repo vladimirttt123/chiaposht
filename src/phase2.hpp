@@ -52,8 +52,9 @@ inline void ScanTable( IReadDiskStream *disk, int16_t const &entry_size,
 	std::mutex read_mutex[2];
 	const int64_t read_bufsize = (BUF_SIZE/entry_size)*entry_size; // allign size to entry length
 
+#ifndef __GNUC__
 	next_bitfield.PrepareToThreads( max_threads );
-
+#endif // __GNUC__
 	// Run the threads
 	for( uint32_t i = 0; i < max_threads; i++ ){
 		threads[i] = std::thread( [ entry_size, pos_offset_size, read_bufsize, &read_mutex]
@@ -61,7 +62,9 @@ inline void ScanTable( IReadDiskStream *disk, int16_t const &entry_size,
 			std::unique_ptr<uint8_t[]> buffer( Util::NewSafeBuffer(read_bufsize) );
 			bitfieldReader cur_bitfield( *current_bitfield );
 			int64_t buf_size = 0, buf_start = 0;
+#ifndef __GNUC__
 			auto writer = bitfield::ThreadWriter( *next_bitfield );
+#endif // __GNUC__
 
 			while( true ){
 				{	// Read next buffer
@@ -92,8 +95,13 @@ inline void ScanTable( IReadDiskStream *disk, int16_t const &entry_size,
 					uint64_t entry_offset = entry_pos_offset & ((1U << kOffsetSize) - 1);
 
 					// mark the two matching entries as used (pos and pos+offset)
+#ifdef __GNUC__
+					next_bitfield->setTS( entry_pos );
+					next_bitfield->setTS( entry_pos + entry_offset );
+#else // __GNUC__
 					writer.set( entry_pos );
 					writer.set( entry_pos + entry_offset );
+#endif // __GNUC__
 				}
 			}
 
