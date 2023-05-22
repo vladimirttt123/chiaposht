@@ -51,6 +51,27 @@ static uint128_t to_uint128(uint64_t hi, uint64_t lo) { return (uint128_t)hi << 
 
 TEST_CASE( "DISK_STREAMS" ){
 
+	SECTION("BLOCK_READ_WRITE"){
+		const uint64_t write_size = BUF_SIZE*2;
+		StreamBuffer wbuf;
+		wbuf.ensureSize( write_size ).setUsed( write_size );
+		for( uint32_t i = 0; i < write_size; i++ )
+			wbuf.get()[i] = i;
+
+		BlockedFileStream file("blocked.file.tmp");
+		file.Write(wbuf);
+		file.Close();
+
+		StreamBuffer buf;
+		uint8_t read_data[write_size];
+		for( uint64_t read = 0; read < write_size; read += buf.used() ){
+			file.Read( buf );
+			memcpy( read_data + read, buf.get(), buf.used() );
+		}
+		file.Remove();
+
+		assert( memcmp( wbuf.get(), read_data, write_size ) == 0 );
+	}
 	SECTION("BlockBufferedWriter"){
 		const uint16_t entry_size = 7;
 		const uint32_t iterations = 242857;
@@ -1012,8 +1033,8 @@ TEST_CASE("PlottingOne")
 {
 	SECTION("Disk plot k22 small buffer in dual-thread")
 	{
-			PlotAndTestProofOfSpace("cpp-test-plot.dat", 5000, 22, plot_id_3, 18 , 4932,
-															65536, 2, 16, ENABLE_BITFIELD | NO_COMPACTION  );
+			PlotAndTestProofOfSpace("cpp-test-plot.dat", 5000, 22, plot_id_3, 40 , 4932,
+															65536, 2, 16, ENABLE_BITFIELD | NO_COMPACTION | BUFFER_AS_CACHE );
 	}
 }
 TEST_CASE("Plotting")
