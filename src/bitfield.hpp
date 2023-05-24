@@ -76,7 +76,7 @@ struct bitfield
 
 		explicit bitfield( int64_t size )
         : buffer_(new uint64_t[(size + 63) / 64])
-				, size_((size + 63) / 64)
+				, size_((size + 63) / 64), allocated_size(size_)
     {
         clear();
     }
@@ -89,13 +89,16 @@ struct bitfield
 		bitfield( int64_t size, const fs::path &filename, bool with_file_remove = true )
 			: size_((size + 63) / 64)
 		{
-			FileDisk file = FileDisk( filename, false );
-			file.Read( 0, (uint8_t*)(&table_7_max_entry), 8 );
+			file_.reset( new FileDisk( filename, false ) );
+			file_->Read( 0, (uint8_t*)(&table_7_max_entry), 8 );
 			if( table_7_max_entry < 0 ){
-				buffer_.reset( new uint64_t[(size + 63) / 64] );
-				file.Read( 8, (uint8_t*)buffer_.get(), size_*8 );
+				b_file_.reset( new BufferedDisk( file_.get(), size + 8 ) );
 			}
-			if( with_file_remove ) file.Remove();
+			else {
+				if( with_file_remove )
+					file_->Remove();
+				file_.reset();
+			}
 		}
 
 		// copy partially from other
@@ -109,7 +112,7 @@ struct bitfield
 			if( other.table_7_max_entry >= 0 )
 				table_7_max_entry = other.table_7_max_entry - start_bit;
 			else{
-				buffer_.reset(new uint64_t[(size + 63) / 64]);
+				buffer_.reset(new uint64_t[ allocated_size = size_ ]);
 				if( other.file_ == nullptr )
 					memcpy( (uint8_t*)buffer_.get(), ((uint8_t*)other.buffer_.get()) + (start_bit>>3), size_ << 3 );
 				else
@@ -173,10 +176,20 @@ struct bitfield
 			std::memset(buffer_.get(), 0, size_ * 8);
 		}
 
+		inline void reset( int64_t new_size ){
+			b_file_.reset(); // clear file
+			table_7_max_entry = -1; // clear table 7 bitfield
+			size_ = (new_size + 63) / 64; // set new size
+			if( size_ > allocated_size ) // reallocate mem if need
+				buffer_.reset( new uint64_t[ allocated_size = size_ ] );
+
+			clear();
+		}
+
 		// size is the max number of elements could be stored
 		inline int64_t size() const { return size_ * 64; }
-		inline uint64_t memSize() const { return ( file_ == nullptr && table_7_max_entry < 0 )? ((uint64_t)size_ << 3) : 0; }
-		static inline uint64_t memSize( uint64_t bits ) { return bits >> 3; }
+		inline uint64_t memSize() const { return allocated_size*8; }
+		static inline uint64_t memSize( uint64_t bits ) { return ((bits + 63) / 64)*8; }
 
 		inline int64_t count(int64_t const start_bit, int64_t const end_bit) const
     {
@@ -244,25 +257,32 @@ struct bitfield
 			}
 
 			table_7_max_entry = max_is;
-			buffer_.reset();
+			FreeMemory();
 			return true;
 		}
 
-		void FreeMemory( bool with_file_remove = true )
+		void RemoveFile(){
+			if( b_file_ ){
+				b_file_->FreeMemory();
+				b_file_.reset();
+			}
+			if( file_ ){
+				file_->Remove();
+				file_.reset();
+			}
+		}
+
+		int64_t FreeMemory()
     {
-				buffer_.reset();
-				if( b_file_ != nullptr ){
-					b_file_->FreeMemory();
-					b_file_.reset();
-					if( with_file_remove )
-						file_->Remove();
-					file_.reset();
-				}
-				size_ = 0;
+			int64_t res = allocated_size;
+			buffer_.reset();
+			size_ = allocated_size = 0;
+			return res * 8;
     }
 
-		void FlushToDisk( const fs::path &filename ){
-			if( file_ ) return;
+		// return amount of freed ram
+		int64_t FlushToDisk( const fs::path &filename, bitfield *transfer_ram_to = nullptr ){
+			if( file_ ) return 0;
 			auto const length = memSize();
 			file_.reset( new FileDisk( filename ) );
 			file_->Write( 0, (uint8_t*)(&table_7_max_entry), 8 );
@@ -270,8 +290,19 @@ struct bitfield
 				file_->Write( 8, (uint8_t*)buffer_.get(), length );
 			file_->Flush();
 			b_file_.reset( new BufferedDisk( file_.get(), length + 8 ) );
-			// free memory
-			buffer_.reset();
+
+			int64_t res = 0;
+			if( transfer_ram_to == nullptr || transfer_ram_to->allocated_size > 0 ){
+				buffer_.reset(); // free memory
+				res = allocated_size * 8;
+			}
+			else {
+				buffer_.swap( transfer_ram_to->buffer_ );
+				transfer_ram_to->allocated_size = allocated_size;
+			}
+			allocated_size = 0;
+
+			return res;
 		}
 
 		inline bool is_readonly() const { return file_ != nullptr; }
@@ -279,7 +310,7 @@ struct bitfield
 private:
 		std::unique_ptr<uint64_t[]> buffer_;
     // number of 64-bit words
-    int64_t size_;
+		int64_t size_, allocated_size = 0;
 
 		std::unique_ptr<FileDisk> file_;
 		std::unique_ptr<BufferedDisk> b_file_;
@@ -289,7 +320,7 @@ private:
 		std::mutex sync_mutex;
 
 		uint16_t syncs_num;
-		std::unique_ptr<std::mutex[]> thread_syncs;
+		std::unique_ptr<std::mutex[]> thread_syncs; // used for thread writer
 #ifndef __GNUC__
 		std::mutex single_set_sync;
 #endif

@@ -44,7 +44,7 @@ struct Phase2Results
 inline void ScanTable( IReadDiskStream *disk, int16_t const &entry_size,
 											 bitfield &current_bitfield, bitfield &next_bitfield,
 											 const uint32_t &num_threads, uint8_t const pos_offset_size ){
-	next_bitfield.clear();
+	// next_bitfield.clear(); next_bitfield should be cleared outside!!!!
 
 	int64_t read_cursor = 0;
 	const auto max_threads = std::max((uint32_t)1, num_threads);
@@ -215,8 +215,25 @@ Phase2Results RunPhase2(
     // At the end of the iteration, we transfer the next_bitfield to the current bitfield
     // to use it to prune the next table to scan.
 
+		uint64_t max_table_size = 0;
+		for( int table_index = 1; table_index < 7; table_index++ )
+			if( max_table_size < table_sizes[table_index] ) max_table_size = table_sizes[table_index];
+
+		if( !memory_manager.request( bitfield::memSize( max_table_size ), true ) ){
+			throw InsufficientMemoryException(
+					"Cannot allocate memory for bitfield. Need " +
+					std::to_string( bitfield::memSize( max_table_size ) / (1024.0 * 1024.0 * 1024.0)) +
+					"GiB, have " + std::to_string( memory_manager.getAccessibleRam() / (1024.0 * 1024.0 * 1024.0) ) + "GiB" );
+		}
+
+		bool is_one_bitfield = !memory_manager.request( bitfield::memSize( max_table_size ), true );
+		if( is_one_bitfield )
+			std::cout << "Warning: Cannot fit 2 bitfields in buffer, one would be flash to disk. Need Ram:"
+								<< ( ( bitfield::memSize( max_table_size ) * 2 )/1024.0/1024/1024 ) << "GiB" << std::endl;
+
 		auto current_bitfield = std::make_unique<bitfield>(
 					table_sizes[7], tmp_1_disks[7].GetFileName() + ".bitfield.tmp", false );
+		auto next_bitfield = std::make_unique<bitfield>( max_table_size );
 
     std::vector<std::unique_ptr<SortManager>> output_files;
 
@@ -242,21 +259,13 @@ Phase2Results RunPhase2(
 				// that twice is 1GiB or larger than 900KiB
 				// in such case we can operate with one bitfield only and the current one write
 				// to disk and use FilteredDisk class
-				if( memory_manager.getAccessibleRam() < bitfield::memSize( std::max( current_bitfield->size(), table_size ) ) ) { // ( bitfield::memSize(table_size) + current_bitfield->memSize() ) ){
-					std::cout << "Warning: Cannot fit 2 bitfields in buffer, flushing one to disk. Need Ram:"
-										<< ( ( bitfield::memSize(table_size) + current_bitfield->memSize() )/1024.0/1024/1024 ) << "GiB" << std::endl;
-					memory_manager.release( current_bitfield->memSize() );
-					current_bitfield->FlushToDisk( tmp_1_disks[table_index].GetFileName() + ".bitfield.tmp" );
+				if( is_one_bitfield && !current_bitfield->is_table_7() ) {
+					std::cout << " Flush bitfield to disk " << std::endl;
+					current_bitfield->FlushToDisk( tmp_1_disks[table_index].GetFileName() + ".bitfield.tmp", next_bitfield.get() );
 				}
 
-				if( !memory_manager.request( bitfield::memSize( std::max( current_bitfield->size(), table_size ) ), true ) ){
-					throw InsufficientMemoryException(
-							"Cannot allocate memory for bitfield. Need " +
-							std::to_string( bitfield::memSize( std::max( current_bitfield->size(), table_size ) ) / (1024.0 * 1024.0 * 1024.0)) +
-							"GiB, have " + std::to_string( memory_manager.getAccessibleRam() / (1024.0 * 1024.0 * 1024.0) ) + "GiB" );
-				}
+				next_bitfield.get()->reset( max_table_size ); // this also cleans contnet
 
-				auto next_bitfield = std::make_unique<bitfield>( std::max( current_bitfield->size(), table_size ) );
 
 				{ // Scope for reader
 					Timer scan_timer;
@@ -338,9 +347,9 @@ Phase2Results RunPhase2(
 
 
 			sort_timer.PrintElapsed( ", time =" );
-			current_bitfield.swap(next_bitfield);
-			memory_manager.release( next_bitfield->memSize() );
-			next_bitfield->FreeMemory( table_index != 6 );// do not delete file of table 7 bitfield
+			current_bitfield.swap( next_bitfield );
+			if( table_index != 6 )// do not delete file of table 7 bitfield
+				next_bitfield->RemoveFile();
 
 			// The files for Table 1 and 7 are re-used, overwritten and passed on to
 			// the next phase. However, table 2 through 6 are all written to sort
@@ -348,13 +357,15 @@ Phase2Results RunPhase2(
 			// to delete the input files for table 2-6 to save disk space.
 			// This loop doesn't cover table 1, it's handled below with the
 			// FilteredDisk wrapper.
-			if (table_index != 7) {
-					tmp_1_disks[table_index].Truncate(0);
-			}
-			if (flags & SHOW_PROGRESS) {
+			if (table_index != 7)
+					tmp_1_disks[table_index].Remove();
+
+			if (flags & SHOW_PROGRESS)
 					progress(2, 8 - table_index, 6);
-			}
     }
+
+		memory_manager.release( next_bitfield->FreeMemory() );
+
 
     // lazy-compact table 1 based on current_bitfield
 
@@ -365,12 +376,15 @@ Phase2Results RunPhase2(
     // at this point, table 1 still needs to be compacted, based on
     // current_bitfield. Instead of compacting it right now, defer it and read
     // from it as-if it was compacted. This saves one read and one write pass
-		new_table_sizes[table_index] = current_bitfield->count(0, table_size);
+		new_table_sizes[table_index] = current_bitfield->count( 0, table_size );
 
     std::cout << "table " << table_index << " new size: " << new_table_sizes[table_index] << std::endl;
 
 		// to free memory we flush the bitfield to disk
-		//current_bitfield->flush_to_disk( tmp_1_disks[table_index].GetFileName() + ".bitfield.tmp" );
+		if( is_one_bitfield ){ // TODO more precise check if we need to flush or not that depends on sorting bucket size
+			std::cout << " Flush bitfield to disk " << std::endl;
+			memory_manager.release( current_bitfield->FlushToDisk( tmp_1_disks[table_index].GetFileName() + ".bitfield.tmp" ) );
+		}
 
 		// TODO some more check, it can be memory leaks with current_bitfield
 		BufferedDisk disk_table1(&tmp_1_disks[1], table_size * entry_size);

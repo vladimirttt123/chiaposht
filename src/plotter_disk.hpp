@@ -425,7 +425,7 @@ public:
             all_phases.PrintElapsed("Total time =");
 
 						for( uint32_t i = 0; i < tmp_1_disks.size(); i++)
-							tmp_1_disks[i].Remove();
+							tmp_1_disks[i].Remove( false ); // this should do nothing... because now files deleted stright after use.
         }
 
 

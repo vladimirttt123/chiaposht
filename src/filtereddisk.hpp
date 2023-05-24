@@ -74,7 +74,7 @@ struct FilteredDisk : Disk
 		{
 				if( filter_ != nullptr ){
 					memory_manager.release( filter_->memSize() );
-					filter_->FreeMemory();
+					filter_->RemoveFile();
 					delete filter_;
 					filter_ = nullptr;
 				}
