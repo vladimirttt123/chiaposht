@@ -117,7 +117,7 @@ inline void ScanTable( IReadDiskStream *disk, int16_t const &entry_size,
 inline void SortRegularTableThread( IReadDiskStream * disk, const uint64_t &table_size,
 																				const int16_t &entry_size, const int16_t &new_entry_size,
 																				uint64_t *read_position, uint64_t *global_write_counter,
-																				const bitfield *current_bitfield, const bitfield_index &index,
+																				const bitfield *current_bitfield, const bitfield_index *index,
 																				SortManager * sort_manager, std::mutex *sync_mutex,
 																				const uint8_t &pos_offset_size, const uint8_t &k )
 {
@@ -158,7 +158,7 @@ inline void SortRegularTableThread( IReadDiskStream * disk, const uint64_t &tabl
 			// assemble the new entry and write it to the sort manager
 
 			// map the pos and offset to the new, compacted, positions and offsets
-			std::tie(entry_pos, entry_offset) = index.lookup(entry_pos, entry_offset);
+			std::tie(entry_pos, entry_offset) = index->lookup(entry_pos, entry_offset);
 			entry_pos_offset = (entry_pos << kOffsetSize) | entry_offset;
 
 			// The new entry is slightly different. Metadata is dropped, to
@@ -234,6 +234,7 @@ Phase2Results RunPhase2(
 		auto current_bitfield = std::make_unique<bitfield>(
 					table_sizes[7], tmp_1_disks[7].GetFileName() + ".bitfield.tmp", false );
 		auto next_bitfield = std::make_unique<bitfield>( max_table_size );
+		bitfield_index index( max_table_size );
 
     std::vector<std::unique_ptr<SortManager>> output_files;
 
@@ -294,7 +295,7 @@ Phase2Results RunPhase2(
 				// as we scan the table for the second time, we'll also need to remap
 				// the positions and offsets based on the next_bitfield.
 
-			bitfield_index const index(  *next_bitfield.get() );
+			index.reinit( next_bitfield.get() );
 
 			auto sort_manager = std::make_unique<SortManager>(
 					memory_manager,
@@ -321,11 +322,11 @@ Phase2Results RunPhase2(
 					threads[t] = std::thread(	SortRegularTableThread, &table_stream,
 																		table_size, entry_size, new_entry_size,
 																		&read_position, &write_counter, current_bitfield.get(),
-																		index, sort_manager.get(), &sort_mutext, pos_offset_size, k );
+																		&index, sort_manager.get(), &sort_mutext, pos_offset_size, k );
 
 				SortRegularTableThread( &table_stream, table_size, entry_size, new_entry_size,
 																	 &read_position, &write_counter, current_bitfield.get(),
-																	 index, sort_manager.get(), &sort_mutext, pos_offset_size, k );
+																	 &index, sort_manager.get(), &sort_mutext, pos_offset_size, k );
 
 				for( uint64_t t = 0; t < num_threads - 1; t++ )
 					threads[t].join();
