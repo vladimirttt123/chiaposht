@@ -25,11 +25,7 @@ struct bitfield_index
 		static inline const uint64_t kIndexBucket = 1UL<<kIndexBucketBits;
 
 		bitfield_index( uint64_t entries_count ) { setSize( entries_count ); }
-
-		bitfield_index(bitfield &b) : bitfield_(&b)
-    {
-			reinit( &b );
-		}
+		bitfield_index(bitfield &b) { reinit( &b ); }
 
 		void reinit( bitfield *b ){
 			bitfield_ = b;
@@ -53,36 +49,38 @@ struct bitfield_index
 			uint64_t const bucket_lo = pos >> kIndexBucketBits;
 			uint64_t const bucket_hi = pos >> 32;
 
-				assert(bucket_lo < size);
-				assert(pos < uint64_t(bitfield_->size()));
-				assert(pos + offset < uint64_t(bitfield_->size()));
-				assert(bitfield_->get(pos) && bitfield_->get(pos + offset));
+			assert(bucket_lo < size);
+			assert(pos < uint64_t(bitfield_->size()));
+			assert(pos + offset < uint64_t(bitfield_->size()));
+			assert(bitfield_->get(pos) && bitfield_->get(pos + offset));
 
-				uint64_t const base = index_hi[bucket_hi] + index_lo[bucket_lo];
+			uint64_t const base = index_hi[bucket_hi] + index_lo[bucket_lo];
 
-        int64_t const aligned_pos = pos & ~uint64_t(63);
+			assert( base == bitfield_->count(0, bucket_lo<<kIndexBucketBits ) );
 
-				uint64_t const aligned_pos_count = bitfield_->count(bucket_lo << kIndexBucketBits, aligned_pos);
-				uint64_t const offset_count = aligned_pos_count + bitfield_->count(aligned_pos, pos + offset);
-				uint64_t const pos_count = aligned_pos_count + bitfield_->count(aligned_pos, pos);
+			int64_t const aligned_pos = pos & ~uint64_t(63);
 
-        assert(offset_count >= pos_count);
+			uint64_t const aligned_pos_count = bitfield_->count(bucket_lo << kIndexBucketBits, aligned_pos);
+			uint64_t const offset_count = aligned_pos_count + bitfield_->count(aligned_pos, pos + offset);
+			uint64_t const pos_count = aligned_pos_count + bitfield_->count(aligned_pos, pos);
 
-        return { base + pos_count, offset_count - pos_count };
+			assert(offset_count >= pos_count);
+
+			return { base + pos_count, offset_count - pos_count };
     }
 private:
 		static inline uint64_t align_size( uint64_t size ) { return (size-1+(1UL<<kIndexBucketBits))>>kIndexBucketBits; }
 
 		void setSize( uint64_t new_size ){
-			size = align_size( bitfield_->size() );
+			size = align_size( new_size );
 			if( size > allocated_size ){
 				index_lo.reset( new uint32_t[allocated_size = size] );
 				index_hi.reset( new uint64_t[1 + (new_size>>32)] );
 			}
 		}
 
-		bitfield * bitfield_;
-		uint64_t allocated_size, size = 0;
+		bitfield * bitfield_ = nullptr;
+		uint64_t allocated_size = 0, size = 0;
 		std::unique_ptr<uint64_t[]> index_hi;
 		std::unique_ptr<uint32_t[]> index_lo;
 };
