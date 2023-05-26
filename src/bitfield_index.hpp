@@ -32,20 +32,20 @@ struct bitfield_index
 			bitfield_ = b;
 			setSize( b->size() );
 
-			for( uint64_t idx = 0, counter = 0; idx < uint64_t(bitfield_->size()); idx += kIndexBucket ) {
+			for( uint64_t idx = 0, counter = 0, last_hi = 0, last_mid = 0;
+					 idx < uint64_t(bitfield_->size()); idx += kIndexBucket ) {
 				assert( (idx >> kIndexBucketBits ) < allocated_size );
 
-				if( (idx&0xffffffff) == 0 ){
-					index_hi[idx>>32] = counter + (idx>0?index_hi[(idx>>32)-1]:0);
-					counter = 0;
-				}
+				if( (idx&0xffffffff) == 0 )
+					last_hi = index_hi[idx>>32] = counter;
+
 
 				if( (idx&0xffff) == 0 ){
-					index_mid[idx>>16] = counter + (idx>0?index_mid[(idx>>16)-1]:0);
-					counter = 0;
+					index_mid[idx>>16] = counter - last_hi;
+					last_mid = counter;
 				}
 
-				index_lo[idx>>kIndexBucketBits] = counter;
+				index_lo[idx>>kIndexBucketBits] = counter - last_mid;
 				int64_t const left = std::min( uint64_t(bitfield_->size()) - idx, kIndexBucket);
 				counter += bitfield_->count(idx, idx + left);
 			}

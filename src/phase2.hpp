@@ -381,8 +381,8 @@ Phase2Results RunPhase2(
 
     std::cout << "table " << table_index << " new size: " << new_table_sizes[table_index] << std::endl;
 
-		// to free memory we flush the bitfield to disk
-		if( is_one_bitfield ){ // TODO more precise check if we need to flush or not that depends on sorting bucket size
+		// in case sort will suffer from low buffer we flush last bitfield in order to free memory
+		if( (output_files[0]->BiggestBucketSize()*2 + current_bitfield->memSize()) >= memory_manager.getTotalSize() ){
 			std::cout << " Flush bitfield to disk " << std::endl;
 			memory_manager.release( current_bitfield->FlushToDisk( tmp_1_disks[table_index].GetFileName() + ".bitfield.tmp" ) );
 		}

@@ -308,6 +308,13 @@ public:
 			final_position_end = 0;
     }
 
+		uint64_t BiggestBucketSize() const {
+			uint64_t res = 0;
+			for( auto &b : buckets_ )
+				if( b.Size() > res ) res = b.Size();
+			return res;
+		}
+
     ~SortManager()
     {
 			if( next_bucket_sorting_thread ) // all threads should be joined
@@ -366,8 +373,7 @@ private:
 				uint64_t const bucket_i = this->next_bucket_to_sort;
 				if( bucket_i == 0 ){
 					// find biggerst bucket and reserv ram to sort it
-					for( auto &b : buckets_ )
-						if( b.Size() > reserved_buffer_size ) reserved_buffer_size = b.Size();
+					reserved_buffer_size  = BiggestBucketSize();
 
 					if( !memory_manager.request(  reserved_buffer_size, true ) ) {
 						std::cout<< "!!! Not enough memory for sort in RAM. Need to sort " <<
