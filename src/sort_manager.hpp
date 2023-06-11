@@ -83,7 +83,7 @@ public:
         , prev_bucket_buf_size(
             2 * (stripe_size + 10 * (kBC / pow(2, kExtraBits))) * entry_size)
 				, num_threads( num_threads )
-				, num_background_treads( num_threads > 1 ? 2 : 1 )
+				, num_background_treads( num_threads )
 				, subbucket_bits( std::min( (uint8_t)(32-log_num_buckets), std::max( (uint8_t)2, (uint8_t)(k - log_num_buckets - kSubBucketBits) ) ) )
 				, k_(k), phase_(phase), table_index_(table_index)
 				, stats_mask( ( (uint64_t)1<<subbucket_bits)-1 )
@@ -352,6 +352,7 @@ private:
     uint64_t final_position_end = 0;
     uint64_t next_bucket_to_sort = 0;
 		uint32_t num_threads, num_background_treads;
+		bool adapt_down = true;
 		const uint8_t subbucket_bits;
 		std::unique_ptr<std::thread> next_bucket_sorting_thread;
 
@@ -427,7 +428,11 @@ private:
 					wait_time = (end_time - start_time)/std::chrono::milliseconds(1);
 					time_total_wait += wait_time;
 					// if we are waiting for sorts than we can add threads to it
-					if( wait_time > 10 && num_background_treads < num_threads )
+					if( adapt_down ){
+						if( wait_time < 10 && num_background_treads > 2 ) num_background_treads--;
+						else adapt_down = false;
+					}
+					else if( wait_time > 10 && num_background_treads < num_threads )
 						num_background_treads++;
 
 					sorted_current_bucket.swap( sorted_next_bucket ); // put sorted result in action
