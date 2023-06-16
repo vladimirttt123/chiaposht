@@ -27,7 +27,7 @@
 
 class EntrySizes {
 public:
-    static uint32_t GetMaxEntrySize(uint8_t k, uint8_t table_index, bool phase_1_size)
+		static uint32_t GetMaxEntrySizeBits(uint8_t k, uint8_t table_index, bool phase_1_size)
     {
         // This represents the largest entry size that each table will have, throughout the
         // entire plotting process. This is useful because it allows us to rewrite tables
@@ -36,11 +36,11 @@ public:
             case 1:
                 // Represents f1, x
                 if (phase_1_size) {
-                    return Util::ByteAlign(k + kExtraBits + k) / 8;
+										return k + kExtraBits + k;
                 } else {
                     // After computing matches, table 1 is rewritten without the f1, which
                     // is useless after phase1.
-                    return Util::ByteAlign(k) / 8;
+										return k;
                 }
             case 2:
             case 3:
@@ -50,25 +50,26 @@ public:
                 if (phase_1_size)
                     // If we are in phase 1, use the max size, with metadata.
                     // Represents f, pos, offset, and metadata
-                    return Util::ByteAlign(
-                               k + kExtraBits + (k) + kOffsetSize +
-                               k * kVectorLens[table_index + 1]) /
-                           8;
+										return	k + kExtraBits + (k) + kOffsetSize +
+														k * kVectorLens[table_index + 1];
                 else
                     // If we are past phase 1, we can use a smaller size, the smaller between
                     // phases 2 and 3. Represents either:
                     //    a:  sort_key, pos, offset        or
                     //    b:  line_point, sort_key
-                    return Util::ByteAlign(
-                               std::max(static_cast<uint32_t>(2 * k + kOffsetSize),
-                                   static_cast<uint32_t>(3 * k - 1))) /
-                           8;
+										return std::max( static_cast<uint32_t>(2 * k + kOffsetSize),
+																	 static_cast<uint32_t>(3 * k - 1) );
             case 7:
             default:
                 // Represents line_point, f7
-                return Util::ByteAlign(3 * k - 1) / 8;
+								return 3 * k - 1;
         }
     }
+
+		static uint32_t GetMaxEntrySize(uint8_t k, uint8_t table_index, bool phase_1_size){
+			return  Util::ByteAlign( GetMaxEntrySizeBits( k, table_index, phase_1_size ) ) / 8;
+		}
+
 
     // Get size of entries containing (sort_key, pos, offset). Such entries are
     // written to table 7 in phase 1 and to tables 2-7 in phase 2.

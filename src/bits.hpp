@@ -76,6 +76,7 @@ struct ParkVector {
     }
 
     size_type size() const noexcept { return count_; }
+		void resize(const size_type n) { count_ = n; }
 
 private:
     uint64_t v_[2048];
@@ -375,17 +376,6 @@ public:
         return ((uint32_t)values_.size() - 1) * 64 + last_size_;
     }
 
-//    void AppendValue(uint128_t value, uint8_t length)
-//    {
-//        if (length > 64) {
-//            std::cout << "SPLITTING AppendValue" << std::endl;
-//            DoAppendValue(value >> 64, length - 64);
-//            DoAppendValue((uint64_t)value, 64);
-//        } else {
-//            DoAppendValue((uint64_t)value, length);
-//        }
-//    }
-
 		inline void AppendValue( uint64_t value, uint8_t length ){
 			assert( length <= 64 );
 			DoAppendValue( value, length );
@@ -420,6 +410,8 @@ public:
             }
         }
     }
+
+		inline void Clear() {this->last_size_ = 0; values_.resize(0); }
 
     template <class X>
     friend std::ostream& operator<<(std::ostream&, const BitsGeneric<X>&);

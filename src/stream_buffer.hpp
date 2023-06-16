@@ -24,10 +24,12 @@ struct StreamBuffer{
 	StreamBuffer( uint8_t* buf, uint32_t size, uint32_t used = 0 )
 		: buffer( buf ), size_(size), used_size( used )	{	}
 
-	uint8_t* get(){
+	inline uint8_t* get(){
 		return buffer == nullptr ?
 			( buffer = Util::NewSafeBuffer( size_ ) ) : buffer;
 	}
+
+	inline uint8_t* getEnd(){ return get() + used_size; }
 
 	inline StreamBuffer & add( const uint8_t* data, uint32_t data_size) {
 		assert( used_size + data_size <= size_ );
@@ -41,7 +43,11 @@ struct StreamBuffer{
 		used_size = new_used;
 		return *this;
 	}
-
+	inline StreamBuffer & addUsed( uint32_t add ) {
+		assert( used_size + add <= size_ );
+		used_size += add;
+		return *this;
+	}
 
 	inline uint32_t used() const { return used_size; }
 	inline uint32_t size() const { return size_; }
