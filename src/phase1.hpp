@@ -48,6 +48,8 @@
 #include "util.hpp"
 #include "progress.hpp"
 
+#include "last_table_file.hpp"
+
 struct THREADDATA {
     int index;
     Sem::type* mine;
@@ -74,7 +76,7 @@ struct GlobalData {
     uint64_t right_writer;
     uint64_t stripe_size;
 		uint16_t num_threads;
-		IWriteDiskStream *table7;
+		LastTableWriter *table7;
 };
 
 GlobalData globals;
@@ -497,6 +499,8 @@ void* phase1_thread(THREADDATA* ptd)
 				}
 
 				uint64_t const correction = (globals.left_writer_count - stripe_start_correction) << shiftamt;
+				const uint64_t write_position = globals.right_writer;
+
 				globals.right_writer += right_writer_count * right_entry_size_bytes;
 				globals.right_writer_count += right_writer_count;
 
@@ -508,7 +512,7 @@ void* phase1_thread(THREADDATA* ptd)
 				globals.matches += matches;
 
 				// tables 1-6 written to sort manager and can be done in parallele with others
-				if( table_index < 6 )
+				//if( table_index < 6 )
 					Sem::Post(ptd->mine);
 
         // Correct positions
@@ -531,8 +535,8 @@ void* phase1_thread(THREADDATA* ptd)
 
 				if( table_index >= 6 ) {
             // Writes out the right table for table 7
-						globals.table7->Write( right_writer_buf, right_writer_count * right_entry_size_bytes );
-						Sem::Post(ptd->mine);
+						globals.table7->Write( write_position, right_writer_buf.get(), right_writer_count * right_entry_size_bytes );
+						//Sem::Post(ptd->mine);
 				}
     }
 
@@ -651,7 +655,7 @@ std::vector<uint64_t> RunPhase1(
         Timer table_timer;
 
 				if( table_index == 6 )
-					globals.table7 = CreateLastTableWriter( &tmp_1_disks[7], k,
+					globals.table7 = new LastTableWriter( &tmp_1_disks[7], k,
 							EntrySizes::GetKeyPosOffsetSize(k),
 							(flags&NO_COMPACTION) == 0 && (flags&ENABLE_BITFIELD) != 0,
 							(flags&ENABLE_BITFIELD) != 0, (flags&TABLE_7_FULL_SCAN) != 0 );

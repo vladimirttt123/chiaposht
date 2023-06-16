@@ -1475,19 +1475,6 @@ private:
 	std::unique_ptr<bitfield_index> index;
 };
 
-IReadDiskStream * CreateLastTableReader( FileDisk * file, uint8_t k, uint16_t entry_size,
-																				bool withCompaction, uint32_t max_buffer_size = 0 ){
-	IReadDiskStream *res = new ReadFileStream( file, file->GetWriteMax() );
-
-	if( withCompaction && k >= 30 )
-		res = new SequenceCompacterReader( res, entry_size, k );
-
-
-	if( max_buffer_size > 0 )
-		res = new AsyncStreamReader( res, max_buffer_size );
-
-	return res;
-}
 
 IReadDiskStream * CreateLastTableReader( FileDisk * file, uint8_t k, uint16_t entry_size,
 																				 uint64_t num_entries, const fs::path &bitfield_filename,
@@ -1504,8 +1491,6 @@ IReadDiskStream * CreateLastTableReader( FileDisk * file, uint8_t k, uint16_t en
 
 	return res;
 }
-
-
 
 
 struct LastTableScanner : IWriteDiskStream

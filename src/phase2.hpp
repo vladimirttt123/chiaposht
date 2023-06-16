@@ -25,17 +25,18 @@
 #include "bitfield_index.hpp"
 #include "progress.hpp"
 #include "filtereddisk.hpp"
+#include "last_table_file.hpp"
 
 struct Phase2Results
 {
 		Disk& disk_for_table(int const table_index)
     {
         if (table_index == 1) return table1;
-        else if (table_index == 7) return table7;
+				else if (table_index == 7) return *table7.get();
         else return *output_files[table_index - 2];
     }
     FilteredDisk table1;
-		ReadStreamToDisk table7;
+		std::unique_ptr<LastTableReader> table7;
     std::vector<std::unique_ptr<SortManager>> output_files;
     std::vector<uint64_t> table_sizes;
 };
@@ -391,9 +392,8 @@ Phase2Results RunPhase2(
 		BufferedDisk disk_table1(&tmp_1_disks[1], table_size * entry_size);
 		return {
 				FilteredDisk(std::move(disk_table1), memory_manager, current_bitfield.release(), entry_size)
-				, ReadStreamToDisk( CreateLastTableReader( &tmp_1_disks[7], k, new_entry_size,
-														new_table_sizes[7], tmp_1_disks[7].GetFileName() + ".bitfield.tmp",
-														(flags&NO_COMPACTION)==0 ), new_entry_size )
+				, std::make_unique<LastTableReader>( &tmp_1_disks[7], k, new_entry_size,
+														new_table_sizes[7], (flags&NO_COMPACTION)==0 )
         , std::move(output_files)
         , std::move(new_table_sizes)
     };
