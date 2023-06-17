@@ -28,12 +28,13 @@ using namespace std::chrono_literals; // for time units;
 struct LastTableWriter {
 	LastTableWriter( FileDisk * file, uint8_t k, uint16_t entry_size,
 									 bool withCompaction, bool withScan, bool full_scan )
-		: k(k), entry_size(entry_size), entry_size_bits( k + k + kOffsetSize /* with bitfield only version */)
-		,	pos_offset_size( k + kOffsetSize )
+		: k(k), entry_size(entry_size),	pos_offset_size( k + kOffsetSize )
 		, with_scan(withScan), with_compaction(withCompaction), disk(file)
 	{
 		if( withScan && full_scan )
 			bitmap.reset(  new bitfield( ((uint64_t)2)<<k /* POSSIBLE SIZE PROBLEM */ ) );
+
+		//debug_disk = new FileDisk( file->GetFileName() + ".src.tmp" );
 	}
 
 	const inline uint64_t getWritePosition() { return write_position; }
@@ -42,6 +43,11 @@ struct LastTableWriter {
 		if( with_scan ) scan( buf, buf_size );
 
 		if( with_compaction ){
+//			{
+//				std::lock_guard<std::mutex> lk(file_sync);
+//				debug_disk->Write( write_pos, buf, buf_size ); // just write on mentioned position
+//			}
+
 			StreamBuffer cbuf;
 
 			compact(buf, buf_size, cbuf);
@@ -71,6 +77,7 @@ struct LastTableWriter {
 	void Close(){
 
 		disk->Close();
+		//debug_disk->Close();
 
 		if( with_scan ){
 			if( bitmap ){
@@ -89,13 +96,13 @@ struct LastTableWriter {
 private:
 	const uint8_t k;
 	const uint16_t entry_size;
-	const uint64_t entry_size_bits;
 	const uint8_t  pos_offset_size;
 	const bool with_scan, with_compaction;
 
 	uint64_t write_position = 0, disk_position = 0;
 	std::mutex file_sync;
 	FileDisk * disk;
+//	FileDisk * debug_disk;
 	std::unique_ptr<bitfield> bitmap;
 	std::atomic_uint_fast64_t max_entry_index = 0;
 
@@ -125,39 +132,69 @@ private:
 
 	void compact( uint8_t * buf, const uint32_t &buf_size, StreamBuffer &cbuf ){
 
-		if( (entry_size_bits%8) == 0 ){
-			// no compaction
-			cbuf.ensureSize(buf_size).setUsed( buf_size );
-			memcpy( cbuf.get(), buf, buf_size );
-		}else{
-			assert( k + kOffsetSize < 64 ); // this works up to this limit only since kOffsetSize == 10 than up to k54
-			// compact here
-			ParkBits parkStart, parkMid, parkEnd;
-			const uint32_t num_entries = buf_size / entry_size;
+		assert( k + kOffsetSize < 64 ); // this works up to this limit only since kOffsetSize == 10 than up to k54
+		// compact here
+		ParkBits parkStart, parkMid, parkEnd;
+		const uint32_t num_entries = buf_size / entry_size;
 
-			cbuf.ensureSize( 4 + (num_entries * k + 7)/8 + (num_entries*(k+kOffsetSize)+7)/8 ).setUsed( 4 );
-			memcpy( cbuf.get(), &num_entries, 4 );
+		// pre evaluation for header
+		uint64_t last_val = Util::SliceInt64FromBytes( buf, k, k + kOffsetSize );
+		int64_t max_diff = 0, min_diff = 0;
+		for( uint32_t buf_ptr = entry_size; buf_ptr < buf_size; buf_ptr += entry_size ){
+			uint64_t cur = Util::SliceInt64FromBytes( buf + buf_ptr, k, k + kOffsetSize );
+			int64_t diff = cur - last_val;
+			if( diff > max_diff ) max_diff = diff;
+			if( diff < min_diff ) min_diff = diff;
+			last_val = cur;
+		}
 
-			for( uint32_t buf_ptr = 0; buf_ptr < buf_size; buf_ptr += entry_size ){
-				if( buf_ptr > 0 && ((buf_ptr/entry_size)%8) == 0 ){
-					addBits( cbuf, parkStart );
-					addBits( cbuf, parkEnd );
-					parkStart.Clear();
-					parkEnd.Clear();
-				}
+		const uint8_t bits_need = std::log2( max_diff - min_diff ) + 1;
+		last_val = Util::SliceInt64FromBytes( buf, k, k + kOffsetSize );
+		min_diff = -min_diff;
+		assert( std::log2( min_diff ) + 1 < bits_need );
 
-				uint64_t start = Util::SliceInt64FromBytes( buf + buf_ptr, k );
-				uint64_t end = Util::SliceInt64FromBytes( buf + buf_ptr, k, k + kOffsetSize );
+		const uint8_t first_val_bytes = (k + kOffsetSize + 7 )/8;
+		const uint32_t headers_size = 4 /*num_entries*/ + 1 /*bits_need*/
+				+ first_val_bytes + (bits_need+7)/8 ;
+		const uint32_t compacted_size = headers_size - 4 // variable header
+				+ (k + bits_need)*(num_entries/8) // size of all full parks
+				+ (k*(num_entries%8) + 7)/8 // not full start park
+				+ (bits_need*(num_entries%8) + 7)/8; // not full endpark
 
-				parkStart.AppendValue( start, k );
-				parkEnd.AppendValue( end, k + kOffsetSize );
-			}
+		// write header
+		cbuf.ensureSize( compacted_size + 4 ).setUsed( headers_size );
+		memcpy( cbuf.get(), &num_entries, 4 ); // number of entry
+		cbuf.get()[4] = bits_need;
+		for( uint64_t i = 0; i < first_val_bytes; i++ )
+			cbuf.get()[i + 5] = (last_val>>(i*8))&0xff;
+		for( uint64_t i = 0; i < (bits_need+7U)/8U; i++ )
+			cbuf.get()[i+5+first_val_bytes] = (min_diff>>(i*8))&0xff;
 
-			if( parkStart.GetSize() > 0 ){
+
+		for( uint32_t buf_ptr = 0; buf_ptr < buf_size; buf_ptr += entry_size ){
+			if( buf_ptr > 0 && ((buf_ptr/entry_size)%8) == 0 ){
 				addBits( cbuf, parkStart );
 				addBits( cbuf, parkEnd );
+				parkStart.Clear();
+				parkEnd.Clear();
 			}
+
+			uint64_t start = Util::SliceInt64FromBytes( buf + buf_ptr, k );
+			uint64_t end = Util::SliceInt64FromBytes( buf + buf_ptr, k, k + kOffsetSize );
+			uint64_t end_diff = end - last_val + min_diff;
+			last_val = end;
+			assert( end_diff < (1UL<<bits_need) );
+
+			parkStart.AppendValue( start, k );
+			parkEnd.AppendValue( end_diff, bits_need );
 		}
+
+		if( parkStart.GetSize() > 0 ){
+			addBits( cbuf, parkStart );
+			addBits( cbuf, parkEnd );
+		}
+
+		assert( compacted_size + 4 == cbuf.used() );
 	}
 };
 
@@ -188,8 +225,18 @@ struct LastTableReader : Disk {
 		while( begin >= buffer_start_pos + buffer.used() ){
 			buffer_start_pos += buffer.used();
 
-			if( with_compaction && (entry_size_bits%8) )
+			if( with_compaction ){
 				UncompactNext();
+
+//				if( !debug_disk )
+//					debug_disk = new FileDisk( disk->GetFileName() + ".src.tmp", false );
+//				uint8_t debug_buf[buffer.used()];
+//				debug_disk->Read( buffer_start_pos, debug_buf, buffer.used() );
+//				uint64_t idx = 0;
+//				while( idx < buffer.used() && buffer.get()[idx] == debug_buf[idx] )
+//					idx++;
+//				assert( idx == buffer.used() );
+			}
 			else{
 				buffer.setUsed( std::min( BUF_SIZE/entry_size*entry_size, num_entries*entry_size - buffer_start_pos ) );
 
@@ -225,52 +272,74 @@ private:
 	const bool with_compaction;
 
 	FileDisk * disk;
+//	FileDisk * debug_disk = nullptr;
 	std::unique_ptr<bitfield> bitfield_;
 	std::unique_ptr<bitfield_index> index;
 	StreamBuffer buffer, cbuf;
 	uint64_t buffer_start_pos = 0;
 	uint64_t disk_read_pos = 0;
-	uint32_t next_block_num_entries = 0;
+	uint8_t next_block_prefix[5];
 
 
-	int32_t inflateOne( uint8_t * from, uint8_t * to, uint8_t count ){
-		ParkBits parkStart( from, (k*count + 7)/8, (k*count + 7)/8*8 );
-		ParkBits parkEnd( from + (k*count+7)/8, ((k+kOffsetSize) * count + 7)/8, ((k+kOffsetSize)*count + 7)/8*8 );
+	inline int32_t inflateOne( uint8_t * from, uint8_t * to, uint8_t count,
+														 const uint8_t &bits_need, const uint64_t &min_diff, uint64_t &last_val ){
+		const uint32_t parkStartSize = (k*count + 7)/8;
+		const uint32_t parkEndSize = (bits_need*count+7)/8;
+		ParkBits parkStart( from, parkStartSize, parkStartSize*8 );
+		ParkBits parkEnd( from + parkStartSize, parkEndSize, parkEndSize*8 );
 
 		for( uint32_t i = 0; i < count; i++ ){
 			Bits entry;
 			entry.AppendValue( parkStart.SliceBitsToInt( i*k, i*k + k ), k );
-			entry.AppendValue( parkEnd.SliceBitsToInt( i*(k+kOffsetSize), (i+1)*(k+kOffsetSize) ), k+kOffsetSize );
+			uint64_t diff = parkEnd.SliceBitsToInt( i*bits_need, (i+1)*bits_need );
+			uint64_t end = last_val + diff - min_diff;
+			entry.AppendValue( end, k+kOffsetSize );
+			last_val = end;
 			entry.ToBytes( to + i * entry_size );
 		}
-		return (k*count + 7)/8 + ((k+kOffsetSize) * count + 7)/8;
+		return parkStartSize + parkEndSize;
 	}
 
 	void UncompactNext(){
 		if( disk_read_pos == 0 ){
-			disk->Read( 0, (uint8_t*)(&next_block_num_entries), 4 );
-			disk_read_pos += 4;
+			disk->Read( 0, (uint8_t*)(&next_block_prefix), 5 );
+			disk_read_pos += 5;
 		}
+		const uint32_t next_block_num_entries = *((uint32_t*)next_block_prefix);
+		const uint8_t bits_need = next_block_prefix[4];
 
 		// define size to read
 		bool hasNext = buffer_start_pos / entry_size + next_block_num_entries < num_entries;
-		uint32_t size_to_read = Util::ByteAlign( next_block_num_entries*k ) / 8
-				+ Util::ByteAlign( next_block_num_entries*(k+kOffsetSize) )/8
-				+ (hasNext?4:0);
+		uint32_t size_to_read = (bits_need+7)/8 // min diff size
+													+ (k+kOffsetSize+7)/8 // first value
+													+ (k + bits_need)*(next_block_num_entries/8) // size of all full parks
+													+ (k*(next_block_num_entries%8) + 7)/8 // not full start park
+													+ (bits_need*(next_block_num_entries%8) + 7)/8 // not full endpark
+													+ (hasNext?5:0);
 
-		cbuf.ensureSize( size_to_read ).setUsed( size_to_read - (hasNext?4:0) );
+		cbuf.ensureSize( size_to_read ).setUsed( size_to_read - (hasNext?5:0) );
 		disk->Read( disk_read_pos, cbuf.get(), size_to_read );
 		disk_read_pos += size_to_read;
 
-		buffer.ensureSize( next_block_num_entries*entry_size ).setUsed( next_block_num_entries*entry_size );
-		uint8_t* buf_at = cbuf.get();
-		for( uint32_t i = 0; i < next_block_num_entries; i += 8 )
-			buf_at += inflateOne( buf_at, buffer.get() + i * entry_size, std::min( 8U, next_block_num_entries-i ) );
+		const uint8_t first_val_bytes = (k + kOffsetSize + 7 )/8;
+		uint64_t min_diff = 0, last_val = 0;
+		for( uint64_t i = 0; i < first_val_bytes; i++ )
+			last_val |= ((uint64_t)cbuf.get()[i])<<(i*8);
+		for( uint64_t i = 0; i < (bits_need+7U)/8U; i++ )
+			min_diff |= ((uint64_t)cbuf.get()[i+first_val_bytes])<<(i*8);
 
+		buffer.ensureSize( next_block_num_entries*entry_size ).setUsed( next_block_num_entries*entry_size );
+		uint8_t* buf_at = cbuf.get() + first_val_bytes + (bits_need+7)/8;
+		for( uint32_t i = 0; i < next_block_num_entries; i += 8 )
+			buf_at += inflateOne( buf_at, buffer.get() + i * entry_size, std::min( 8U, next_block_num_entries-i ),
+														bits_need, min_diff, last_val );
+
+		assert( buf_at == cbuf.get() + cbuf.used() );
+//		assert( memcmp(debug_buffer, buffer.get(), buffer.used() ) == 0 );
 
 		if( hasNext )
-			memcpy( &next_block_num_entries, cbuf.get() + size_to_read - 4, 4 );
-		else next_block_num_entries = 0;
+			memcpy( next_block_prefix, cbuf.get() + size_to_read - 5, 5 );
+		else memset( next_block_prefix, 0, 5);
 	}
 
 	void RewriteBuffer(){
