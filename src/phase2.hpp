@@ -393,7 +393,7 @@ Phase2Results RunPhase2(
 		return {
 				FilteredDisk(std::move(disk_table1), memory_manager, current_bitfield.release(), entry_size)
 				, std::make_unique<LastTableReader>( &tmp_1_disks[7], k, new_entry_size,
-														new_table_sizes[7], (flags&NO_COMPACTION)==0 )
+														new_table_sizes[7], (flags&NO_COMPACTION)==0, num_threads )
         , std::move(output_files)
         , std::move(new_table_sizes)
     };

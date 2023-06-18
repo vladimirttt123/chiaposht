@@ -19,11 +19,15 @@
 #include "bitfield_index.hpp"
 #include "disk.hpp"
 #include "stream_buffer.hpp"
+#include "threading.hpp"
 
 #include <mutex>
 #include <atomic>
 
 using namespace std::chrono_literals; // for time units;
+
+
+
 
 struct LastTableWriter {
 	LastTableWriter( FileDisk * file, uint8_t k, uint16_t entry_size,
@@ -199,57 +203,61 @@ private:
 };
 
 
-
-
+//=======================================================
+//======================= READER ========================
+//=======================================================
 struct LastTableReader : Disk {
 
 	LastTableReader( FileDisk * file, const uint8_t &k, const uint16_t &entry_size,
-									 const uint64_t &num_entries,	bool withCompaction )
-		: k(k), entry_size(entry_size), entry_size_bits( k + k + kOffsetSize /* with bitfield only version */)
+									 const uint64_t &num_entries,	bool withCompaction, uint16_t num_threads )
+		: k(k), entry_size(entry_size)
 		, f7_shift( 128 - k ), pos_offset_size( k + kOffsetSize )
-		, t7_pos_offset_shift( f7_shift - pos_offset_size ), num_entries(num_entries), with_compaction(withCompaction)
-		, disk(file), buffer( BUF_SIZE/entry_size*entry_size )
-	{
+		, t7_pos_offset_shift( f7_shift - pos_offset_size )
+		, num_entries(num_entries), with_compaction(withCompaction)
+		, max_threads(std::max( 1U, (uint32_t)num_threads )), disk(file)
+		, threads( new ThreadData[max_threads] )
+	{	}
 
-	}
+
 
 	uint8_t const* Read( uint64_t begin, uint64_t length) override{
 		if( !bitfield_ ){ // first read
 			bitfield_.reset( new bitfield( num_entries, disk->GetFileName() + ".bitfield.tmp" ) );
 			index.reset( new bitfield_index( *bitfield_.get() ) );
-			buffer.ensureSize( BUF_SIZE/entry_size*entry_size );
+			StartThread();
 		}
 
 		assert( length == entry_size ); // alway reads by one entry
-		assert( begin >= buffer_start_pos );
-		while( begin >= buffer_start_pos + buffer.used() ){
-			buffer_start_pos += buffer.used();
+		assert( (begin%entry_size) == 0 ); // all reads alligned to entry size
+		assert( begin >= cur_buffer_start_pos );// forward only read
+		assert( begin < num_entries*entry_size ); // read inside table
 
-			if( with_compaction ){
-				UncompactNext();
+		while( cur_buffer_start_pos + cur_buffer.used() <= begin ){
+			assert( cur_buffer_start_pos + cur_buffer.used() == begin ); // it should read every entry
 
-//				if( !debug_disk )
-//					debug_disk = new FileDisk( disk->GetFileName() + ".src.tmp", false );
-//				uint8_t debug_buf[buffer.used()];
-//				debug_disk->Read( buffer_start_pos, debug_buf, buffer.used() );
-//				uint64_t idx = 0;
-//				while( idx < buffer.used() && buffer.get()[idx] == debug_buf[idx] )
-//					idx++;
-//				assert( idx == buffer.used() );
+			cur_buffer.setUsed( 0 ); // clear current buffer;
+			// need to get next from threads...
+			for( uint16_t i = 0; i < max_threads && threads[i].thread != nullptr; i++ ){
+				if( threads[i].buffer_start_position == begin ) {
+					if( !threads[i].ready && begin > 0 ) StartThread(); // start more threads if we need to wait for not first buffer
+					Sem::Wait( &threads[i].sem_done ); // now get semaphore
+					threads[i].buffer.swap( cur_buffer.setUsed( 0 ) ); // get buffer from thread
+					cur_buffer_start_pos = threads[i].buffer_start_position;
+					threads[i].ready = false;
+					Sem::Post( &threads[i].sem_run ); // we got value from thread free it to run
+				}
 			}
-			else{
-				buffer.setUsed( std::min( BUF_SIZE/entry_size*entry_size, num_entries*entry_size - buffer_start_pos ) );
-
-				assert( buffer.used() > 0 ); // we should be here when it is something to read;
-
-				disk->Read( buffer_start_pos, buffer.get(), buffer.used() );
+			if( cur_buffer.used() == 0 ) { // we not found thread working on next
+				StartThread();
+				// wait timeout or for some thread??
+				std::this_thread::sleep_for( 10ns );
 			}
-
-			RewriteBuffer();
 		}
 
-		return buffer.get() + begin - buffer_start_pos;
+		return cur_buffer.get() + begin - cur_buffer_start_pos;
 	};
+
+
 	void Write(uint64_t begin, const uint8_t *memcache, uint64_t length) override {
 		throw InvalidStateException( "Write impossible to read only disk" );
 	};
@@ -259,27 +267,102 @@ struct LastTableReader : Disk {
 	};
 
 	std::string GetFileName() override { return disk->GetFileName(); };
-	void FreeMemory() override { buffer.reset(); index.reset(); bitfield_.reset(); };
+	void FreeMemory() override { cur_buffer.reset(); index.reset(); bitfield_.reset(); };
 
-private:
+	~LastTableReader(){
+
+	}
+private: // *********************
+
+	struct ThreadData {
+		Sem::type sem_done, sem_run;
+		std::thread * thread = nullptr;
+
+		StreamBuffer buffer, cbuf;
+		uint64_t buffer_start_position = 0;
+		bool ready = false;
+
+		ThreadData(){
+			sem_run = Sem::Create();
+			sem_done = Sem::Create();
+			Sem::Post(&sem_run); // ready to start
+		}
+		~ThreadData(){
+			if( thread != nullptr ) {
+				thread->join();
+				delete thread;
+			}
+			Sem::Destroy( sem_run );
+			Sem::Destroy( sem_done );
+		}
+	};
+
 	const uint8_t k;
 	const uint16_t entry_size;
-	const uint64_t entry_size_bits;
 	const uint8_t f7_shift;
 	const uint8_t pos_offset_size;
 	const uint8_t t7_pos_offset_shift;
 	const uint64_t num_entries;
 	const bool with_compaction;
+	const uint16_t max_threads;
 
 	FileDisk * disk;
+	std::mutex file_sync;
 //	FileDisk * debug_disk = nullptr;
 	std::unique_ptr<bitfield> bitfield_;
 	std::unique_ptr<bitfield_index> index;
-	StreamBuffer buffer, cbuf;
-	uint64_t buffer_start_pos = 0;
+	StreamBuffer cur_buffer;
+	uint64_t cur_buffer_start_pos = 0;
 	uint64_t disk_read_pos = 0;
+	uint64_t disk_unpacked_pos = 0;
 	uint8_t next_block_prefix[5];
+	std::unique_ptr<ThreadData[]> threads;
 
+
+	void StartThread(){
+		for( uint16_t i = 0; i < max_threads; i++ ){
+			if( threads[i].thread == nullptr ){
+				if( with_compaction ){
+					threads[i].thread = new std::thread( [this]( ThreadData *dat ){
+							while( disk_unpacked_pos < num_entries*entry_size ){
+								Sem::Wait( &dat->sem_run );
+								if( !UncompactNext( dat->buffer, dat->buffer_start_position, dat->cbuf ) )
+									return; // nothing more to read;
+								RewriteBuffer( dat->buffer );
+								dat->ready = true;
+								Sem::Post( &dat->sem_done );
+							}
+						}, &threads[i] );
+				} else {
+					threads[i].thread = new std::thread( [this]( ThreadData * dat ){
+							const uint64_t buf_size = BUF_SIZE/entry_size*entry_size;
+							while( true ){
+								Sem::Wait( &dat->sem_run );
+								{	// Read next buffer
+									std::lock_guard<std::mutex> lk(file_sync);
+									if( disk_read_pos  >= num_entries*entry_size )
+										return ; // nothing more to read
+
+									dat->buffer_start_position = disk_read_pos;
+									dat->buffer.ensureSize( buf_size ).setUsed( std::min( buf_size, num_entries*entry_size - disk_read_pos ) );
+
+									assert( dat->buffer.used() > 0 ); // we should be here when it is something to read;
+
+									disk->Read( disk_read_pos, dat->buffer.get(), dat->buffer.used() );
+									disk_read_pos += dat->buffer.used();
+								}
+
+								RewriteBuffer( dat->buffer );
+								dat->ready = true;
+								Sem::Post( &dat->sem_done );
+							}
+						}, &threads[i] );
+				}
+
+				return; // thread started
+			}
+		}
+	}
 
 	inline int32_t inflateOne( uint8_t * from, uint8_t * to, uint8_t count,
 														 const uint8_t &bits_need, const uint64_t &min_diff, uint64_t &last_val ){
@@ -300,49 +383,61 @@ private:
 		return parkStartSize + parkEndSize;
 	}
 
-	void UncompactNext(){
-		if( disk_read_pos == 0 ){
-			disk->Read( 0, (uint8_t*)(&next_block_prefix), 5 );
-			disk_read_pos += 5;
+	bool UncompactNext( StreamBuffer &buffer, uint64_t &buffer_start_position, StreamBuffer &cbuf ){
+		uint32_t block_num_entries;
+		uint8_t bits_need;
+
+		{ // Read from file
+			std::lock_guard<std::mutex> lk(file_sync);
+			if( disk_unpacked_pos >= num_entries*entry_size ) return false;
+
+			if( disk_read_pos == 0 ){
+				disk->Read( 0, (uint8_t*)(&next_block_prefix), 5 );
+				disk_read_pos += 5;
+			}
+
+			block_num_entries = *((uint32_t*)next_block_prefix);
+			bits_need = next_block_prefix[4];
+
+			// define size to read
+			bool hasNext = disk_unpacked_pos / entry_size + block_num_entries < num_entries;
+			uint32_t size_to_read = (bits_need+7)/8 // min diff size
+														+ (k+kOffsetSize+7)/8 // first value
+														+ (k + bits_need)*(block_num_entries/8) // size of all full parks
+														+ (k*(block_num_entries%8) + 7)/8 // not full start park
+														+ (bits_need*(block_num_entries%8) + 7)/8 // not full endpark
+														+ (hasNext?5:0);
+
+			cbuf.ensureSize( size_to_read ).setUsed( size_to_read - (hasNext?5:0) );
+			disk->Read( disk_read_pos, cbuf.get(), size_to_read );
+			disk_read_pos += size_to_read;
+			disk_unpacked_pos += block_num_entries*entry_size;
+
+			if( hasNext )
+				memcpy( next_block_prefix, cbuf.get() + size_to_read - 5, 5 );
+			else memset( next_block_prefix, 0, 5);
 		}
-		const uint32_t next_block_num_entries = *((uint32_t*)next_block_prefix);
-		const uint8_t bits_need = next_block_prefix[4];
 
-		// define size to read
-		bool hasNext = buffer_start_pos / entry_size + next_block_num_entries < num_entries;
-		uint32_t size_to_read = (bits_need+7)/8 // min diff size
-													+ (k+kOffsetSize+7)/8 // first value
-													+ (k + bits_need)*(next_block_num_entries/8) // size of all full parks
-													+ (k*(next_block_num_entries%8) + 7)/8 // not full start park
-													+ (bits_need*(next_block_num_entries%8) + 7)/8 // not full endpark
-													+ (hasNext?5:0);
 
-		cbuf.ensureSize( size_to_read ).setUsed( size_to_read - (hasNext?5:0) );
-		disk->Read( disk_read_pos, cbuf.get(), size_to_read );
-		disk_read_pos += size_to_read;
 
-		const uint8_t first_val_bytes = (k + kOffsetSize + 7 )/8;
+		const uint8_t first_val_bytes = (k + kOffsetSize + 7 )/8; // length of first end value
 		uint64_t min_diff = 0, last_val = 0;
 		for( uint64_t i = 0; i < first_val_bytes; i++ )
 			last_val |= ((uint64_t)cbuf.get()[i])<<(i*8);
 		for( uint64_t i = 0; i < (bits_need+7U)/8U; i++ )
 			min_diff |= ((uint64_t)cbuf.get()[i+first_val_bytes])<<(i*8);
 
-		buffer.ensureSize( next_block_num_entries*entry_size ).setUsed( next_block_num_entries*entry_size );
+		buffer.ensureSize( block_num_entries*entry_size ).setUsed( block_num_entries*entry_size );
 		uint8_t* buf_at = cbuf.get() + first_val_bytes + (bits_need+7)/8;
-		for( uint32_t i = 0; i < next_block_num_entries; i += 8 )
-			buf_at += inflateOne( buf_at, buffer.get() + i * entry_size, std::min( 8U, next_block_num_entries-i ),
+		for( uint32_t i = 0; i < block_num_entries; i += 8 )
+			buf_at += inflateOne( buf_at, buffer.get() + i * entry_size, std::min( 8U, block_num_entries-i ),
 														bits_need, min_diff, last_val );
 
 		assert( buf_at == cbuf.get() + cbuf.used() );
-//		assert( memcmp(debug_buffer, buffer.get(), buffer.used() ) == 0 );
-
-		if( hasNext )
-			memcpy( next_block_prefix, cbuf.get() + size_to_read - 5, 5 );
-		else memset( next_block_prefix, 0, 5);
+		return true;
 	}
 
-	void RewriteBuffer(){
+	void RewriteBuffer( StreamBuffer & buffer ){
 		for( uint64_t buf_ptr = 0; buf_ptr < buffer.used(); buf_ptr += entry_size ){
 
 			uint8_t * entry = buffer.get() + buf_ptr;
