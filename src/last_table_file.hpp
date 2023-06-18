@@ -391,6 +391,8 @@ private: // *********************
 			std::lock_guard<std::mutex> lk(file_sync);
 			if( disk_unpacked_pos >= num_entries*entry_size ) return false;
 
+			buffer_start_position = disk_unpacked_pos; // reset buffer start position as soon as possible
+
 			if( disk_read_pos == 0 ){
 				disk->Read( 0, (uint8_t*)(&next_block_prefix), 5 );
 				disk_read_pos += 5;
