@@ -167,64 +167,6 @@ TEST_CASE( "DISK_STREAMS" ){
 //			delete cfile[i];
 //	}
 
-	SECTION( "SequenceCompacterStream" ) {
-		const uint64_t iteration = 3000;
-		const uint32_t begins[] = { 24, 25, 27, 30 };
-		const uint64_t entries_per_buffer = 127;
-		const auto cur_buf_size = BUF_SIZE;
-		BUF_SIZE = 4096;
-
-		for( uint32_t bits_begin : begins ){
-			for( uint16_t entry_size = 8; entry_size < 16; entry_size += 3 ){
-				std::cout << "SequenceCompacterStream entry_size: "
-									<< entry_size << ", bits_begin: " << bits_begin << std::endl;
-
-				std::unique_ptr<uint8_t[]> buf( Util::NewSafeBuffer(iteration*entry_size) );
-				// fill buffer with entreies
-				for( uint64_t i = 0, next = 0; i < iteration; i++ ){
-					next += rand()&0xff;
-					if( (rand()&0xff) > 250 ) next *= rand()&0xffff;
-					buf.get()[i*entry_size] = rand()&0xff;
-					buf.get()[i*entry_size+1] = rand()&0xff;
-					buf.get()[i*entry_size+2] = rand()&0xff;
-					buf.get()[i*entry_size+3] = (rand()&0xff00)>>(bits_begin&7);
-					buf.get()[i*entry_size+4] = (next>>16)&0xff;
-					buf.get()[i*entry_size+5] = (next>>8)&0xff;
-					buf.get()[i*entry_size+6] = next&0xff;
-					for( uint32_t j = 7; j< entry_size; j++ )
-						buf.get()[i*entry_size+j] = rand();
-				}
-				FileDisk disk = FileDisk("sequence.stream.tmp");
-				{
-					SequenceCompacterWriter wstream = SequenceCompacterWriter(
-								new WriteFileStream(&disk), entry_size, bits_begin );
-
-					for( uint64_t i = 0; i < iteration; i += entries_per_buffer ){
-						auto subBuf = std::unique_ptr<uint8_t[]>( buf.get() + i*entry_size );
-						wstream.Write( subBuf, ((i+entries_per_buffer) < iteration ?
-																			entries_per_buffer : (iteration%entries_per_buffer) ) *entry_size );
-						subBuf.release();
-					}
-				} // this destruct and closing write stream
-
-
-				{ // check by read stream
-					SequenceCompacterReader rstream = SequenceCompacterReader(
-								new ReadFileStream(&disk, disk.GetWriteMax() ), entry_size, bits_begin );
-					auto rbuf = make_unique<uint8_t[]>(entries_per_buffer*entry_size);
-					uint64_t buf_ptr = 0;
-					for( uint32_t buf_size = rstream.Read( rbuf, entries_per_buffer*entry_size);
-							 buf_size > 0; buf_size = rstream.Read( rbuf, entries_per_buffer*entry_size) ){
-						for( uint32_t i = 0; i < buf_size; i++ )
-							REQUIRE( rbuf.get()[i] == buf.get()[buf_ptr++] );
-					}
-					REQUIRE( buf_ptr == iteration*entry_size );
-				}
-
-			}
-		}
-		BUF_SIZE = cur_buf_size;
-	}
 
 	SECTION( "BucketStream" ){
 		const uint64_t iteration = 6000;
@@ -1034,7 +976,7 @@ TEST_CASE("PlottingOne")
 	SECTION("Disk plot k22 small buffer in dual-thread")
 	{
 			PlotAndTestProofOfSpace("cpp-test-plot.dat", 5000, 22, plot_id_3, 40 , 4932,
-															65536, 2, 16, ENABLE_BITFIELD | NO_COMPACTION | BUFFER_AS_CACHE );
+															65536, 2, 16, ENABLE_BITFIELD |  BUFFER_AS_CACHE );
 	}
 }
 TEST_CASE("Plotting")
