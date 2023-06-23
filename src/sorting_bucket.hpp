@@ -13,6 +13,7 @@
 #ifndef SRC_CPP_SORTING_BUCKET_HPP_
 #define SRC_CPP_SORTING_BUCKET_HPP_
 
+#include <atomic>
 #include <mutex>
 #include "util.hpp"
 #include "quicksort.hpp"
@@ -32,11 +33,12 @@ struct SortingBucket{
 		, bucket_bits_count_(bucket_bits_count)
 		, entry_size_(entry_size)
 		, begin_bits_(begin_bits)
-		, statistics( new uint32_t[1<<bucket_bits_count] )
+		, statistics( new std::atomic_uint32_t[1<<bucket_bits_count] )
 		, memory_manager(memory_manager)
 	{
 		// clear statistics
-		memset( statistics.get(), 0, sizeof(uint32_t)*(1<<bucket_bits_count) );
+		for( int64_t i = (1<<bucket_bits_count)-1; i >= 0; i-- )
+			statistics[i].store( 0, std::memory_order_relaxed );
 	}
 
 	inline uint64_t Size() const { return entry_size_*entries_count; }
@@ -53,7 +55,7 @@ struct SortingBucket{
 		assert( statistics_bits < ((uint32_t)1<<bucket_bits_count_) );
 		assert( Util::ExtractNum( entry.get(), entry_size_, begin_bits_, bucket_bits_count_ ) == statistics_bits );
 
-		statistics[statistics_bits]++;
+		statistics[statistics_bits].fetch_add(1, std::memory_order_relaxed );
 		entries_count++;
 		disk->Write( entry );
 	}
@@ -67,7 +69,7 @@ struct SortingBucket{
 		// Adding to statistics
 		for( uint32_t i = 0; i < count; i++ )	{
 			assert( Util::ExtractNum( entries.get() + i*entry_size_, entry_size_, begin_bits_, bucket_bits_count_ ) == stats[i] );
-			statistics[stats[i]]++;
+			statistics[stats[i]].fetch_add( 1, std::memory_order_relaxed );
 		}
 
 		disk->Write( entries );
@@ -84,7 +86,11 @@ struct SortingBucket{
 			if( entries_count > 0 ){
 				// Save statistics to file
 				statistics_file.reset( CreateFileStream( disk->getFileName() + ".statistics.tmp", memory_manager ) );
-				StreamBuffer buf(  (uint8_t*)statistics.release(), sizeof(uint32_t)<<bucket_bits_count_, sizeof(uint32_t)<<bucket_bits_count_ );
+				StreamBuffer buf(sizeof(uint32_t)<<bucket_bits_count_);
+				for( int64_t i = (1<<bucket_bits_count_)-1; i >= 0; i-- )
+					((uint32_t*)buf.get())[i] = statistics[i].load( std::memory_order_relaxed );
+				statistics.reset();
+				buf.setUsed( sizeof(uint32_t)<<bucket_bits_count_ );
 				statistics_file->Write( buf );
 				((IBlockWriter*)statistics_file.get())->Close();
 			}
@@ -95,9 +101,7 @@ struct SortingBucket{
 
 	}
 
-	void FreeMemory(){
-	//	statistics.reset();
-	}
+	void FreeMemory(){} // TODO: remove the proc
 
 	/* Like destructor totaly removes the bucket including underlying file */
 	void Remove(){
@@ -118,16 +122,21 @@ struct SortingBucket{
 		if( entries_count == 0 ) return; // nothing to sort
 
 		auto start_time = std::chrono::high_resolution_clock::now();
+		uint32_t stats[1<<bucket_bits_count_];
+
 		if( !statistics ) {
 			assert( statistics_file );
 			// Read statistics from file
 			StreamBuffer buf;
-			statistics.reset( new uint32_t[1<<bucket_bits_count_] );// allocate ram for statistics
-			for( uint8_t* stat_pos = (uint8_t*)statistics.get(); statistics_file->Read( buf ) > 0; stat_pos += buf.used() )
+			for( uint8_t* stat_pos = (uint8_t*)stats; statistics_file->Read( buf ) > 0; stat_pos += buf.used() )
 				memcpy( stat_pos, buf.get(), buf.used() );
 
 			statistics_file->Remove();
 			statistics_file.reset();
+		}else { // copy from atomic to stack
+			for( int64_t i = (1<<bucket_bits_count_)-1; i >= 0; i-- )
+				stats[i] = statistics[i].load(std::memory_order_relaxed);
+			statistics.reset();
 		}
 
 		uint32_t buckets_count = 1<<bucket_bits_count_;
@@ -136,10 +145,10 @@ struct SortingBucket{
 		// Calculate initial buckets positions.
 		bucket_positions[0] = 0;
 		for( uint32_t i = 1; i < buckets_count; i++ )
-			bucket_positions[i] = bucket_positions[i-1] + (statistics[i-1]*entry_size_);
+			bucket_positions[i] = bucket_positions[i-1] + (stats[i-1]*entry_size_);
 
 		// Last position should end at count.
-		assert( bucket_positions[buckets_count-1]/entry_size_ + statistics[buckets_count-1] == Count() );
+		assert( bucket_positions[buckets_count-1]/entry_size_ + stats[buckets_count-1] == Count() );
 
 
 		auto end_prepare_time = std::chrono::high_resolution_clock::now();
@@ -151,7 +160,7 @@ struct SortingBucket{
 			for( StreamBuffer buf; disk->Read( buf ) > 0; )
 				 FillBuckets( memory, buf.get(), buf.used(), bucket_positions.get(), entry_size_ );
 
-			assert( bucket_positions[0] == statistics[0]*entry_size_ ); // check first bucket is full
+			assert( bucket_positions[0] == stats[0]*entry_size_ ); // check first bucket is full
 			assert( bucket_positions[buckets_count-1]/entry_size_ == Count() ); // check last bucket is full
 		} else { // Read by threads
 			// read in 2 directions one fills from start and second from back.
@@ -162,7 +171,7 @@ struct SortingBucket{
 				back_bucket_positions[i].store( bucket_positions[i+1]-entry_size_, std::memory_order_relaxed );
 			}
 			a_bucket_positions[buckets_count-1].store( bucket_positions[buckets_count-1], std::memory_order_relaxed );
-			back_bucket_positions[buckets_count-1].store( back_bucket_positions[buckets_count-2] + statistics[buckets_count-1] * entry_size_, std::memory_order_relaxed );
+			back_bucket_positions[buckets_count-1].store( back_bucket_positions[buckets_count-2] + stats[buckets_count-1] * entry_size_, std::memory_order_relaxed );
 
 			uint32_t max_threads = std::max( (uint32_t)1, num_threads/2 );
 
@@ -203,28 +212,28 @@ struct SortingBucket{
 			disk.reset();
 
 			// Fix bucket_positions for sorting step in such way that bucket_positions[i] reprsents end position of subbucket.
-			bucket_positions[0] = statistics[0]*entry_size_;
+			bucket_positions[0] = stats[0]*entry_size_;
 			for( uint32_t i = 1; i < buckets_count; i++ )
-				bucket_positions[i] = bucket_positions[i-1] + statistics[i]*entry_size_;
+				bucket_positions[i] = bucket_positions[i-1] + stats[i]*entry_size_;
 		}
 
 		read_time = (std::chrono::high_resolution_clock::now() - end_prepare_time)/std::chrono::milliseconds(1);
 
 		if( num_threads <= 1 ){
 			// Sort first bucket
-			QuickSort::Sort( memory, entry_size_, statistics[0], begin_bits_ + bucket_bits_count_ );
+			QuickSort::Sort( memory, entry_size_, stats[0], begin_bits_ + bucket_bits_count_ );
 			for( uint32_t i = 1; i < buckets_count; i++ ){
-				assert( bucket_positions[i] == (bucket_positions[i-1] + statistics[i]*entry_size_) ); // check any bucket is full
-				QuickSort::Sort( memory + bucket_positions[i-1], entry_size_, statistics[i], begin_bits_ + bucket_bits_count_ );
+				assert( bucket_positions[i] == (bucket_positions[i-1] + stats[i]*entry_size_) ); // check any bucket is full
+				QuickSort::Sort( memory + bucket_positions[i-1], entry_size_, stats[i], begin_bits_ + bucket_bits_count_ );
 			}
 		}else {
 			// Sort in threads
 			auto threads = std::make_unique<std::thread[]>(num_threads);
 			for( uint32_t i = 0; i < num_threads; i++ )
-				threads[i] = std::thread( [&num_threads, &buckets_count, this, &bucket_positions, &memory]( uint32_t thread_no ){
+				threads[i] = std::thread( [&num_threads, &buckets_count, this, &bucket_positions, &memory, &stats]( uint32_t thread_no ){
 						for( uint32_t i = thread_no; i < buckets_count; i += num_threads ){
-							assert( i == 0 || bucket_positions[i] == (bucket_positions[i-1] + statistics[i]*entry_size_) ); // check any bucket is full
-							QuickSort::Sort( memory + (i == 0 ? 0 : bucket_positions[i-1]), entry_size_, statistics[i], begin_bits_ + bucket_bits_count_ );
+							assert( i == 0 || bucket_positions[i] == (bucket_positions[i-1] + stats[i]*entry_size_) ); // check any bucket is full
+							QuickSort::Sort( memory + (i == 0 ? 0 : bucket_positions[i-1]), entry_size_, stats[i], begin_bits_ + bucket_bits_count_ );
 						}
 					}, i );
 
@@ -251,7 +260,7 @@ private:
 	const uint16_t entry_size_;
 	const uint16_t begin_bits_;
 	// this is the number of entries for each subbucket
-	std::unique_ptr<uint32_t[]> statistics;
+	std::unique_ptr<std::atomic_uint32_t[]> statistics;
 	std::unique_ptr<IBlockWriterReader> statistics_file;
 	uint64_t entries_count = 0;
 	MemoryManager &memory_manager;

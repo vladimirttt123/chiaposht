@@ -150,7 +150,7 @@ public:
 //			const uint8_t begin_bytes;
 //			const uint8_t begin_bits;
 //			const uint8_t bits_shift;
-		}; // end of ThreadWriter
+		}; // ====== END OF ThreadWriter
 
 		// returned number of entries
 		inline uint64_t Count() const {
