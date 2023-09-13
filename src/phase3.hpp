@@ -350,7 +350,7 @@ private:
 Phase3Results RunPhase3(
 		uint8_t k,
 		FileDisk &tmp2_disk /*filename*/,
-		Phase2Results res2,
+		Phase2Results &res2,
 		const uint8_t *id,
 		const std::string &tmp_dirname,
 		const std::string &filename,
@@ -395,14 +395,12 @@ Phase3Results RunPhase3(
 				std::cout << "Progress update: " << progress_percent[table_index - 1] << std::endl;
 
 				Disk& right_disk = res2.disk_for_table(table_index + 1);
-				Disk& left_disk = res2.disk_for_table(table_index);
 
 				// Sort key is k bits for all tables. For table 7 it is just y, which
 				// is k bits, and for all other tables the number of entries does not
 				// exceed 0.865 * 2^k on average.
 				const uint32_t right_sort_key_size = k;
 
-				const uint32_t left_entry_size_bytes = EntrySizes::GetMaxEntrySize(k, table_index, false);
 				const uint32_t p2_entry_size_bytes = EntrySizes::GetKeyPosOffsetSize(k);
 				const uint32_t right_entry_size_bytes = EntrySizes::GetMaxEntrySize(k, table_index + 1, false);
 
@@ -510,8 +508,7 @@ Phase3Results RunPhase3(
 							// We read the "new_pos" from the L table, which for table 1 is just x. For
 							// other tables, the new_pos
 							if (table_index == 1) {
-									left_entry_disk_buf = left_disk.Read(left_reader, left_entry_size_bytes);
-									left_reader += left_entry_size_bytes;
+									left_entry_disk_buf = res2.table1.ReadNext();
 
 									// Only k bits, since this is x
 									left_new_pos[current_pos % kCachedPositionsSize] =
@@ -532,7 +529,7 @@ Phase3Results RunPhase3(
 				} // end srope for async rewriter
 
 				// Remove no longer needed file
-				left_disk.Truncate(0);
+				res2.table1.FreeMemory();
 
 				// Flush cache so all entries are written to buckets
 				R_sort_manager->FlushCache();
@@ -691,7 +688,6 @@ Phase3Results RunPhase3(
 
 				table_timer.PrintElapsed("Total compress table time:");
 
-				left_disk.FreeMemory();
 				right_disk.FreeMemory();
 				if (flags & SHOW_PROGRESS) { progress(3, table_index, 6); }
 		}

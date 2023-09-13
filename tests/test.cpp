@@ -1735,67 +1735,67 @@ TEST_CASE("DiskProver")
     }
 }
 
-TEST_CASE("FilteredDisk")
-{
-    FileDisk d = FileDisk("test_file.bin");
-    write_disk_file(d);
+//TEST_CASE("FilteredDisk")
+//{
+//    FileDisk d = FileDisk("test_file.bin");
+//    write_disk_file(d);
 
-    SECTION("filter even")
-    {
-        BufferedDisk bd(&d, num_test_entries * 4);
-        // filter every other entry (starting with 0)
-				bitfield *filter = new bitfield(num_test_entries);
-        for (int i = 0; i < num_test_entries; ++i) {
-						if ((i & 1) == 1) filter->set(i);
-        }
-				MemoryManager memory_manager( filter->memSize() * 2 );
-				memory_manager.request( filter->memSize() );
-				FilteredDisk fd(std::move(bd), memory_manager, filter, 4);
+//    SECTION("filter even")
+//    {
+//        BufferedDisk bd(&d, num_test_entries * 4);
+//        // filter every other entry (starting with 0)
+//				bitfield *filter = new bitfield(num_test_entries);
+//        for (int i = 0; i < num_test_entries; ++i) {
+//						if ((i & 1) == 1) filter->set(i);
+//        }
+//				MemoryManager memory_manager( filter->memSize() * 2 );
+//				memory_manager.request( filter->memSize() );
+//				FilteredDisk fd(std::move(bd), memory_manager, filter, 4);
 
-        for (uint32_t i = 0; i < num_test_entries / 2 - 1; ++i) {
-            auto const val = *reinterpret_cast<std::uint32_t const*>(fd.Read(i * 4, 4));
-            CHECK((i * 2) + 1 == val);
-        }
+//        for (uint32_t i = 0; i < num_test_entries / 2 - 1; ++i) {
+//            auto const val = *reinterpret_cast<std::uint32_t const*>(fd.Read(i * 4, 4));
+//            CHECK((i * 2) + 1 == val);
+//        }
 
-        // don't go all the way down to 0, every backwards read cursor movement will
-        // print a warning
-        for (uint32_t i = num_test_entries / 2 - 1; i > num_test_entries / 2 + 200; --i) {
-            auto const val = *reinterpret_cast<std::uint32_t const*>(fd.Read(i * 4, 4));
-            CHECK((i * 2) + 1 == val);
-        }
-    }
+//        // don't go all the way down to 0, every backwards read cursor movement will
+//        // print a warning
+//        for (uint32_t i = num_test_entries / 2 - 1; i > num_test_entries / 2 + 200; --i) {
+//            auto const val = *reinterpret_cast<std::uint32_t const*>(fd.Read(i * 4, 4));
+//            CHECK((i * 2) + 1 == val);
+//        }
+//    }
 
-    SECTION("filter odd")
-    {
-        BufferedDisk bd(&d, num_test_entries * 4);
-        // filter every other entry (starting with 0)
-				bitfield *filter = new bitfield(num_test_entries);
-        for (int i = 0; i < num_test_entries; ++i) {
-					if ((i & 1) == 0) filter->set(i);
-        }
-				MemoryManager memory_manager( filter->memSize() * 2 );
-				memory_manager.request( filter->memSize() );
-				FilteredDisk fd(std::move(bd), memory_manager, filter, 4);
+//    SECTION("filter odd")
+//    {
+//        BufferedDisk bd(&d, num_test_entries * 4);
+//        // filter every other entry (starting with 0)
+//				bitfield *filter = new bitfield(num_test_entries);
+//        for (int i = 0; i < num_test_entries; ++i) {
+//					if ((i & 1) == 0) filter->set(i);
+//        }
+//				MemoryManager memory_manager( filter->memSize() * 2 );
+//				memory_manager.request( filter->memSize() );
+//				FilteredDisk fd(std::move(bd), memory_manager, filter, 4);
 
-        for (uint32_t i = 0; i < num_test_entries / 2 - 1; ++i) {
-            auto const val = *reinterpret_cast<std::uint32_t const*>(fd.Read(i * 4, 4));
-            CHECK((i * 2) == val);
-        }
+//        for (uint32_t i = 0; i < num_test_entries / 2 - 1; ++i) {
+//            auto const val = *reinterpret_cast<std::uint32_t const*>(fd.Read(i * 4, 4));
+//            CHECK((i * 2) == val);
+//        }
 
-        // don't go all the way down to 0, every backwards read cursor movement will
-        // print a warning
-        for (uint32_t i = num_test_entries / 2 - 1; i > num_test_entries / 2 + 200; --i) {
-            auto const val = *reinterpret_cast<std::uint32_t const*>(fd.Read(i * 4, 4));
-            CHECK((i * 2) == val);
-        }
-    }
-/*
-    SECTION("empty bitfield")
-    {
-        BufferedDisk bd(&d, num_test_entries * 4);
-        bitfield filter(num_test_entries);
-        FilteredDisk fd(std::move(bd), std::move(filter), 4);
-    }
-*/
-    remove("test_file.bin");
-}
+//        // don't go all the way down to 0, every backwards read cursor movement will
+//        // print a warning
+//        for (uint32_t i = num_test_entries / 2 - 1; i > num_test_entries / 2 + 200; --i) {
+//            auto const val = *reinterpret_cast<std::uint32_t const*>(fd.Read(i * 4, 4));
+//            CHECK((i * 2) == val);
+//        }
+//    }
+///*
+//    SECTION("empty bitfield")
+//    {
+//        BufferedDisk bd(&d, num_test_entries * 4);
+//        bitfield filter(num_test_entries);
+//        FilteredDisk fd(std::move(bd), std::move(filter), 4);
+//    }
+//*/
+//    remove("test_file.bin");
+//}

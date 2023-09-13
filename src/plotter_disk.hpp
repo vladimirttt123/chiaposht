@@ -388,7 +388,7 @@ public:
                 Phase3Results res = RunPhase3(
                     k,
                     tmp2_disk,
-                    std::move(res2),
+										res2,
                     id,
                     tmp_dirname,
                     filename,

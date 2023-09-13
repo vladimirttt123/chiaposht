@@ -24,6 +24,10 @@
 #include <thread>
 #include <mutex>
 
+#ifdef __GNUC__
+// to punch holes in files
+#include <fcntl.h>
+#endif // __GNUC__
 
 // enables disk I/O logging to disk.log
 // use tools/disk.gnuplot to generate a plot
@@ -222,6 +226,12 @@ struct FileDisk {
                 Open(retryOpenFlag);
             }
         } while (amtread != length);
+
+			#ifdef __GNUC__
+				if( clear_after_read )
+					clear_after_read = fallocate( fileno(f_), FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, begin, length ) == 0;
+			#endif // __GNUC__
+
 			SetCouldBeClosed();
     }
 
@@ -279,6 +289,8 @@ struct FileDisk {
 			total_bytes_written.fetch_add( amtwritten, std::memory_order_relaxed );
 		}
 
+		void setClearAfterRead(){ clear_after_read = true;}
+
 		std::string GetFileName() const { return filename_.string(); }
 
     uint64_t GetWriteMax() const noexcept { return writeMax; }
@@ -305,6 +317,8 @@ private:
 
     fs::path filename_;
     FILE *f_ = nullptr;
+
+		bool clear_after_read = false;
 
     static const uint8_t writeFlag = 0b01;
     static const uint8_t retryOpenFlag = 0b10;

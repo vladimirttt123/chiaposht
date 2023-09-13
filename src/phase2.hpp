@@ -31,8 +31,7 @@ struct Phase2Results
 {
 		Disk& disk_for_table(int const table_index)
     {
-        if (table_index == 1) return table1;
-				else if (table_index == 7) return *table7.get();
+				if (table_index == 7) return *table7.get();
         else return *output_files[table_index - 2];
     }
     FilteredDisk table1;
@@ -318,6 +317,7 @@ Phase2Results RunPhase2(
 			auto threads = std::make_unique<std::thread[]>( num_threads - 1 );
 
 			{	// scope for reader stream
+				tmp_1_disks[table_index].setClearAfterRead(); // after this read we do not need the data anymore
 				auto table_stream = ReadFileStream( &tmp_1_disks[table_index], table_size*entry_size );
 				for( uint64_t t = 0; t < num_threads - 1; t++ )
 					threads[t] = std::thread(	SortRegularTableThread, &table_stream,
@@ -389,9 +389,10 @@ Phase2Results RunPhase2(
 		}
 
 		// TODO some more check, it can be memory leaks with current_bitfield
-		BufferedDisk disk_table1(&tmp_1_disks[1], table_size * entry_size);
+		tmp_1_disks[1].setClearAfterRead(); // next read is last read
+		// BufferedDisk disk_table1(&tmp_1_disks[1], table_size * entry_size);
 		return {
-				FilteredDisk(std::move(disk_table1), memory_manager, current_bitfield.release(), entry_size)
+				FilteredDisk( &tmp_1_disks[1], memory_manager, current_bitfield.release(), entry_size, table_size * entry_size )
 				, std::make_unique<LastTableReader>( &tmp_1_disks[7], k, new_entry_size,
 														new_table_sizes[7], (flags&NO_COMPACTION)==0, num_threads )
         , std::move(output_files)
