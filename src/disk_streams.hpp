@@ -51,7 +51,7 @@ struct BlockedFileStream : public IBlockWriterReader {
 		if( !disk ){
 			assert( write_position == 0 );
 			disk.reset( new FileDisk(file_name) );
-			disk->setClearAfterRead(); // we read only once, may be this could slow down
+			// disk->setClearAfterRead(); // we read only once, may be this could slow down
 		}
 		disk->Write( write_position, block.get(), block.used() );
 		write_position += block.used();
