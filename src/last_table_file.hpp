@@ -224,18 +224,18 @@ struct LastTableReader : Disk {
 		if( !bitfield_ ){ // first read
 			bitfield_.reset( new bitfield( num_entries, disk->GetFileName() + ".bitfield.tmp" ) );
 			index.reset( new bitfield_index( *bitfield_.get() ) );
-			StartThread();
+			StartThread(); // start first thread
 		}
 
 		assert( length == entry_size ); // alway reads by one entry
 		assert( (begin%entry_size) == 0 ); // all reads alligned to entry size
 		assert( begin >= cur_buffer_start_pos );// forward only read
 		assert( begin < num_entries*entry_size ); // read inside table
+		assert( cur_buffer.used() > 0 ? (begin > 0) : (cur_buffer_start_pos == 0 && begin == 0 ) ); // zeros on begining of read only
 
 		while( cur_buffer_start_pos + cur_buffer.used() <= begin ){
 			assert( cur_buffer_start_pos + cur_buffer.used() == begin ); // it should read every entry
 
-			cur_buffer.setUsed( 0 ); // clear current buffer;
 			// need to get next from threads...
 			for( uint16_t i = 0; i < max_threads && threads[i].thread != nullptr; i++ ){
 				if( threads[i].buffer_start_position == begin ) {
@@ -247,9 +247,9 @@ struct LastTableReader : Disk {
 					Sem::Post( &threads[i].sem_run ); // we got value from thread free it to run
 				}
 			}
-			if( cur_buffer.used() == 0 ) { // we not found thread working on next
-				StartThread();
-				// wait timeout or for some thread??
+			if( cur_buffer_start_pos + cur_buffer.used() <= begin ) { // we not found thread working on next
+				if( begin > 0 ) StartThread();
+				// it can happen when first thread havn't started yet and need to wait
 				std::this_thread::sleep_for( 10ns );
 			}
 		}
