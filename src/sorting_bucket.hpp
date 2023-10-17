@@ -45,6 +45,7 @@ struct SortingBucket{
 	inline uint64_t Count() const { return entries_count; }
 	inline uint16_t EntrySize() const { return entry_size_; }
 
+	std::chrono::time_point<std::chrono::high_resolution_clock> start_time;
 	uint64_t prepare_time = 0, read_time = 0, sort_time = 0;
 
 	// Adds Entry to bucket
@@ -116,12 +117,12 @@ struct SortingBucket{
 	}
 
 
-	void SortToMemory( uint8_t * memory, uint32_t num_threads = 2 ){
+	void SortToMemory( uint8_t * memory, uint32_t num_threads = 2, uint32_t num_read_threads = 2 ){
 		assert( disk );
 
 		if( entries_count == 0 ) return; // nothing to sort
 
-		auto start_time = std::chrono::high_resolution_clock::now();
+		start_time = std::chrono::high_resolution_clock::now();
 		uint32_t stats[1<<bucket_bits_count_];
 
 		if( !statistics ) {
@@ -155,7 +156,7 @@ struct SortingBucket{
 		prepare_time = (end_prepare_time - start_time)/std::chrono::milliseconds(1);
 
 		// Read from file to buckets, do not run threads if less than 1024 entries to read
-		if( num_threads <= 1 || /*read_size*/ Size() < 1024*entry_size_ ){
+		if( num_read_threads <= 1 || /*read_size*/ Size() < 1024*entry_size_ ){
 
 			for( StreamBuffer buf; disk->Read( buf ) > 0; )
 				 FillBuckets( memory, buf.get(), buf.used(), bucket_positions.get(), entry_size_ );
@@ -165,18 +166,13 @@ struct SortingBucket{
 		} else { // Read by threads
 			// read in 2 directions one fills from start and second from back.
 			auto a_bucket_positions = std::make_unique<std::atomic_uint64_t[]>( buckets_count );
-			auto back_bucket_positions = std::make_unique<std::atomic_uint64_t[]>( buckets_count );
 			for( uint32_t i = 0; i < buckets_count - 1; i++ ){
 				a_bucket_positions[i].store( bucket_positions[i], std::memory_order_relaxed );
-				back_bucket_positions[i].store( bucket_positions[i+1]-entry_size_, std::memory_order_relaxed );
 			}
 			a_bucket_positions[buckets_count-1].store( bucket_positions[buckets_count-1], std::memory_order_relaxed );
-			back_bucket_positions[buckets_count-1].store( back_bucket_positions[buckets_count-2] + stats[buckets_count-1] * entry_size_, std::memory_order_relaxed );
-
-			uint32_t max_threads = std::max( (uint32_t)1, num_threads/2 );
 
 			// Define thread function
-			auto thread_func = [this, &memory]( std::atomic_uint64_t* bucket_positions, const int64_t direction ){
+			auto thread_func = [this, &memory, &a_bucket_positions](){
 				StreamBuffer buf( BUF_SIZE/entry_size_*entry_size_ );
 				std::unique_ptr<IBlockReader> reader( disk->CreateReader() );
 
@@ -184,7 +180,7 @@ struct SortingBucket{
 					for( auto buf_ptr = buf.get() + buf.used() - entry_size_; buf_ptr >= buf.get(); buf_ptr -= entry_size_ ){
 						auto b_bits = (uint32_t)Util::ExtractNum64( buf_ptr, begin_bits_, bucket_bits_count_ );
 						// Put next entry to its bucket and move pointer inside bucket to next entry position
-						memcpy( memory + bucket_positions[b_bits].fetch_add( direction, std::memory_order_relaxed), buf_ptr, entry_size_ );
+						memcpy( memory + a_bucket_positions[b_bits].fetch_add( entry_size_, std::memory_order_relaxed), buf_ptr, entry_size_ );
 					}
 				}
 			};
@@ -192,23 +188,23 @@ struct SortingBucket{
 			// Start threads
 			{
 				std::vector<std::thread> threads;
-				for( uint32_t t = 0; t < max_threads; t++ ){
-					threads.emplace_back( thread_func, a_bucket_positions.get(), entry_size_ ); // thread forward
-					threads.emplace_back( thread_func, back_bucket_positions.get(), -(int64_t)entry_size_ ); // thread backward
-				}
+				for( uint32_t t = 0; t < num_read_threads; t++ )
+					threads.emplace_back( thread_func );
 
-				for (auto& t : threads)
-						t.join();
+				for (auto& t : threads) t.join();
 			}
 
 #ifndef NDEBUG
 			// Chcek everything read as written.
-			for( uint32_t i = 0; i < buckets_count; i++ )
-				assert( (int64_t)a_bucket_positions[i].load( std::memory_order_relaxed )
-								== (int64_t)back_bucket_positions[i].load( std::memory_order_relaxed ) + entry_size_ );
+			for( uint32_t i = 0; i < buckets_count-1; i++ )
+				assert( a_bucket_positions[i].load( std::memory_order_relaxed ) == bucket_positions[i+1] );
+			// last bucket at the count
+			assert( a_bucket_positions[buckets_count-1].load( std::memory_order_relaxed ) == Count()*entry_size_ );
 #endif
 			// Clean underling resources
 			disk->EndToRead();
+			total_reads = disk->getTotalReads(); // save reads statistics
+			instant_reads = disk->getInstantReads();// save reads statistics
 			disk.reset();
 
 			// Fix bucket_positions for sorting step in such way that bucket_positions[i] reprsents end position of subbucket.
@@ -249,6 +245,9 @@ struct SortingBucket{
 #endif
 	}
 
+	inline uint64_t getTotalReads() const { return total_reads; }
+	inline uint64_t getInstantReads() const { return instant_reads; }
+
 private:
 	std::unique_ptr<std::mutex> addMutex = std::make_unique<std::mutex>();
 	std::unique_ptr<BucketStream> disk;
@@ -264,6 +263,9 @@ private:
 	std::unique_ptr<IBlockWriterReader> statistics_file;
 	uint64_t entries_count = 0;
 	MemoryManager &memory_manager;
+
+	uint64_t total_reads = 0, instant_reads = 0;
+
 
 
 	/* Used for reading from disk */

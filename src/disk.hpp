@@ -187,49 +187,49 @@ struct FileDisk {
 
     void Read(uint64_t begin, uint8_t *memcache, uint64_t length)
     {
-        Open(retryOpenFlag);
+			Open(retryOpenFlag);
 #if ENABLE_LOGGING
-        disk_log(filename_, op_t::read, begin, length);
+			disk_log(filename_, op_t::read, begin, length);
 #endif
-        // Seek, read, and replace into memcache
-        uint64_t amtread;
-        do {
-						if( !bReading ) Flush();
-            if ((!bReading) || (begin != readPos)) {
+			// Seek, read, and replace into memcache
+			uint64_t amtread;
+			do {
+					if( !bReading ) Flush();
+					if ((!bReading) || (begin != readPos)) {
 #ifdef _WIN32
-								_fseeki64(f_, begin, SEEK_SET);
+							_fseeki64(f_, begin, SEEK_SET);
 #else
-                // fseek() takes a long as offset, make sure it's wide enough
-                static_assert(sizeof(long) >= sizeof(begin));
-								auto seek_res = ::fseek( f_, begin, SEEK_SET );
-								if( seek_res != 0 ){
-									std::cout << "Error of seeking to position " << begin << " where writeMax= " << writeMax
-														<< " in file " << filename_ << std::endl;
-									throw InvalidStateException( "Cann't seek to " + std::to_string(begin) + " in file " + GetFileName() );
-								}
+							// fseek() takes a long as offset, make sure it's wide enough
+							static_assert(sizeof(long) >= sizeof(begin));
+							auto seek_res = ::fseek( f_, begin, SEEK_SET );
+							if( seek_res != 0 ){
+								std::cout << "Error of seeking to position " << begin << " where writeMax= " << writeMax
+													<< " in file " << filename_ << std::endl;
+								throw InvalidStateException( "Cann't seek to " + std::to_string(begin) + " in file " + GetFileName() );
+							}
 #endif
-                bReading = true;
-            }
-            amtread = ::fread(reinterpret_cast<char *>(memcache), sizeof(uint8_t), length, f_);
-            readPos = begin + amtread;
-            if (amtread != length) {
-                std::cout << "Only read " << amtread << " of " << length << " bytes at offset "
-                          << begin << " from " << filename_ << " with length " << writeMax
-													<< ". Error " << ferror(f_) << ": " << ::strerror(ferror(f_))
-													<< ". Retrying in five minutes." << std::endl;
-                // Close, Reopen, and re-seek the file to recover in case the filesystem
-                // has been remounted.
-                Close();
-								CloseCouldBeClosed();
-                bReading = false;
-								std::this_thread::sleep_for(5min);
-                Open(retryOpenFlag);
-            }
-        } while (amtread != length);
+							bReading = true;
+					}
+					amtread = ::fread(reinterpret_cast<char *>(memcache), sizeof(uint8_t), length, f_);
+					readPos = begin + amtread;
+					if (amtread != length) {
+							std::cout << "Only read " << amtread << " of " << length << " bytes at offset "
+												<< begin << " from " << filename_ << " with length " << writeMax
+												<< ". Error " << ferror(f_) << ": " << ::strerror(ferror(f_))
+												<< ". Retrying in five minutes." << std::endl;
+							// Close, Reopen, and re-seek the file to recover in case the filesystem
+							// has been remounted.
+							Close();
+							CloseCouldBeClosed();
+							bReading = false;
+							std::this_thread::sleep_for(5min);
+							Open(retryOpenFlag);
+					}
+			} while (amtread != length);
 
 			#ifdef __GNUC__
-				if( clear_after_read )
-					clear_after_read = fallocate( fileno(f_), FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, begin, length ) == 0;
+			if( clear_after_read )
+				clear_after_read = fallocate( fileno(f_), FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, begin, length ) == 0;
 			#endif // __GNUC__
 
 			SetCouldBeClosed();

@@ -84,6 +84,7 @@ public:
             2 * (stripe_size + 10 * (kBC / pow(2, kExtraBits))) * entry_size)
 				, num_threads( num_threads )
 				, num_background_treads( num_threads )
+				, num_read_threads( num_threads )
 				, subbucket_bits( std::min( (uint8_t)(32-log_num_buckets), std::max( (uint8_t)2, (uint8_t)(k - log_num_buckets - kSubBucketBits) ) ) )
 				, k_(k), phase_(phase), table_index_(table_index)
 				, stats_mask( ( (uint64_t)1<<subbucket_bits)-1 )
@@ -236,7 +237,7 @@ public:
 		};
 		void Close() override { FreeMemory(); };
 
-		uint64_t GetReadPosition()const { return stream_read_position; }
+		inline uint64_t GetReadPosition() const { return stream_read_position; }
 		//#End IReadStream implementation
 
 		const uint8_t *ReadEntry(uint64_t position)
@@ -351,8 +352,7 @@ private:
     uint64_t final_position_start = 0;
     uint64_t final_position_end = 0;
     uint64_t next_bucket_to_sort = 0;
-		uint32_t num_threads, num_background_treads;
-		bool adapt_down = true;
+		uint32_t num_threads, num_background_treads, num_read_threads;
 		const uint8_t subbucket_bits;
 		std::unique_ptr<std::thread> next_bucket_sorting_thread;
 
@@ -407,42 +407,56 @@ private:
 				double const qs_ram = b.Size() / (1024.0 * 1024.0 * 1024.0);
 
 				std::cout << "\r\tk" << (uint32_t)k_ << " p" << (uint32_t)phase_ << " t" << (uint32_t)table_index_
-									<< " Bucket " << bucket_i << " ram: " << std::fixed
+									<< " Bucket " << bucket_i << " size: "
+									<< std::setprecision( qs_ram > 10 ? 1:( qs_ram>1? 2 : 3) ) <<  qs_ram << "GiB,"
+									<< " ram: " << std::fixed
 									<< std::setprecision( total_ram > 10 ? 1:( total_ram>1? 2 : 3) ) << total_ram << "GiB";
 				if( memory_manager.CacheEnabled )
 					std::cout << std::fixed << ", cache: "
 									<< std::setprecision( cache_ram > 10 ? 1:( cache_ram>1? 2 : 3) ) << cache_ram << "GiB";
 				std::cout << std::fixed << ", free: "
-									<< std::setprecision( free_ram > 10 ? 1:( free_ram>1? 2 : 3) ) << free_ram << "GiB, bucket size: "
-									<< std::setprecision( qs_ram > 10 ? 1:( qs_ram>1? 2 : 3) ) <<  qs_ram << "GiB" << std::flush;
+									<< std::setprecision( free_ram > 10 ? 1:( free_ram>1? 2 : 3) ) << free_ram << "GiB"
+									<< std::flush;
 
 
 				int64_t wait_time = 0;
 				if( next_bucket_sorting_thread ){
-					std::cout << ", bg thr: " << num_background_treads << std::flush;
+					std::cout << ", thr: (bg: " << num_background_treads << ", read: " << num_read_threads << ")" << std::flush;
 					auto start_time = std::chrono::high_resolution_clock::now();
-					next_bucket_sorting_thread->join();
+					next_bucket_sorting_thread->join(); // wait for sorting finish
 					auto end_time = std::chrono::high_resolution_clock::now();
-					next_bucket_sorting_thread.reset();
+					next_bucket_sorting_thread.reset(); // free resources
 
 					wait_time = (end_time - start_time)/std::chrono::milliseconds(1);
 					time_total_wait += wait_time;
-					// if we are waiting for sorts than we can add threads to it
-					if( adapt_down ){
-						if( wait_time < 10 && num_background_treads > 2 ) num_background_treads--;
-						else adapt_down = false;
-					}
-					else if( wait_time > 10 && num_background_treads < num_threads )
-						num_background_treads++;
+					if( wait_time == 0 )
+						wait_time = b.sort_time - (start_time-b.start_time)/std::chrono::milliseconds(1); // negative value
 
+					int64_t time_threashold = b.sort_time/20; // 5%
+
+					// if we are waiting for sorts than we can add threads to it
+					if( wait_time < 0 && (-wait_time) > time_threashold ){
+						if( num_background_treads > 2 && (num_background_treads*2) > num_read_threads ){
+								num_background_treads--; // if no wait time than adjust number of computations threads down
+						}
+						else if( num_read_threads > 2 )
+							num_read_threads--; // if number of computational threads cant be down down read thredds
+					}
+					else if( wait_time > time_threashold ){
+						if( num_background_treads < num_threads )
+							num_background_treads++;
+
+						if( num_read_threads < (num_threads<<2) && (b.getInstantReads()<<3/*12.5%*/) > b.getTotalReads() )
+							num_read_threads++; // have space to improve reading time.
+					}
 					sorted_current_bucket.swap( sorted_next_bucket ); // put sorted result in action
 				}
 				else{
-					b.SortToMemory( sorted_current_bucket.get(), num_threads );
+					b.SortToMemory( sorted_current_bucket.get(), num_threads, num_read_threads );
 				}
 
 				if( b.Size() > 0 )
-					std::cout << ", times: ( wait:" << wait_time/1000.0 << ", read:" << b.read_time/1000.0 << "s, total: "
+					std::cout << ", times: ( wait:" << wait_time/1000.0 << "s, read:" << b.read_time/1000.0 << "s, total: "
 										<< b.sort_time/1000.0 << "s )" << std::flush;
 
         this->final_position_start = this->final_position_end;
@@ -467,7 +481,7 @@ private:
 					if( this->next_bucket_to_sort < buckets_.size() )
 						next_bucket_sorting_thread.reset(
 									new std::thread( [this](){ buckets_[this->next_bucket_to_sort].SortToMemory(
-																						sorted_next_bucket.get(), num_background_treads );} ) );
+																						sorted_next_bucket.get(), num_background_treads, num_read_threads );} ) );
 					else { // no next sort -> we can release the next sort buffer
 						sorted_next_bucket.reset();
 						memory_manager.release( reserved_buffer_size );

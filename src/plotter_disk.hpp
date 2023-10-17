@@ -372,7 +372,7 @@ public:
                     num_buckets,
                     log_num_buckets,
 										phases_flags,
-										num_threads * ( num_threads > 1 ? 2 : 1) ); //double threads for phase 2.
+										num_threads  );
 
 								// after phase 2 return default cache mode
 								memory_manager.SetMode( false, false );

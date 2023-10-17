@@ -192,6 +192,7 @@ Phase2Results RunPhase2(
 		uint32_t num_threads )
 {
 		num_threads = std::max((uint32_t)1,num_threads);
+		uint32_t max_threads = num_threads * ( num_threads > 1 ? 2 : 1); //double threads for phase 2.
     // After pruning each table will have 0.865 * 2^k or fewer entries on
     // average
     uint8_t const pos_size = k;
@@ -274,7 +275,7 @@ Phase2Results RunPhase2(
 
 					auto table_reader = ReadFileStream( &tmp_1_disks[table_index], table_size * entry_size );
 					ScanTable( &table_reader, entry_size, *current_bitfield.get(), *next_bitfield.get(),
-										 num_threads, pos_offset_size );
+										 max_threads, pos_offset_size );
 
 					scan_timer.PrintElapsed( "time =" );
 				}
@@ -314,12 +315,12 @@ Phase2Results RunPhase2(
 
 			uint64_t read_position = 0, write_counter = 0;
 			std::mutex sort_mutext;
-			auto threads = std::make_unique<std::thread[]>( num_threads - 1 );
+			auto threads = std::make_unique<std::thread[]>( max_threads - 1 );
 
 			{	// scope for reader stream
 				tmp_1_disks[table_index].setClearAfterRead(); // after this read we do not need the data anymore
 				auto table_stream = ReadFileStream( &tmp_1_disks[table_index], table_size*entry_size );
-				for( uint64_t t = 0; t < num_threads - 1; t++ )
+				for( uint64_t t = 0; t < max_threads - 1; t++ )
 					threads[t] = std::thread(	SortRegularTableThread, &table_stream,
 																		table_size, entry_size, new_entry_size,
 																		&read_position, &write_counter, current_bitfield.get(),
@@ -329,7 +330,7 @@ Phase2Results RunPhase2(
 																	 &read_position, &write_counter, current_bitfield.get(),
 																	 &index, sort_manager.get(), &sort_mutext, pos_offset_size, k );
 
-				for( uint64_t t = 0; t < num_threads - 1; t++ )
+				for( uint64_t t = 0; t < max_threads - 1; t++ )
 					threads[t].join();
 			}
 

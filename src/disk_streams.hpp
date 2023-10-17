@@ -697,14 +697,23 @@ private:
 };
 
 // ============== Manager Streams =============================
+
 struct BlockThreadSafeReader : IBlockReader{
 	// Thread safe means more than one thread reads from underlying stream
 	// It means not delete and no close for underlying stream
-	BlockThreadSafeReader( IBlockReader *read_stream, std::mutex & sync_mutex )
-		: rstream(read_stream), sync_mutex(sync_mutex) {}
+	BlockThreadSafeReader( IBlockReader *read_stream, std::mutex & sync_mutex, uint64_t *total_reads, uint64_t *instant_reads )
+		: rstream(read_stream), sync_mutex(sync_mutex), total_reads(total_reads), instant_reads(instant_reads) {}
 
 	uint32_t Read( StreamBuffer & block ) override {
+		if( sync_mutex.try_lock() ){
+			(*instant_reads)++;
+			(*total_reads)++;
+			auto res = rstream->Read( block );
+			sync_mutex.unlock();
+			return res;
+		}
 		std::lock_guard<std::mutex> lk(sync_mutex);
+		(*total_reads)++;
 		return rstream->Read( block );
 	}
 	bool atEnd() const override { return rstream->atEnd();};
@@ -713,6 +722,7 @@ struct BlockThreadSafeReader : IBlockReader{
 private:
 	IBlockReader * rstream;
 	std::mutex &sync_mutex;
+	uint64_t *total_reads, *instant_reads;
 };
 
 struct BlockOneBuffer : IBlockReader {
@@ -898,7 +908,7 @@ struct BucketStream{
 
 		IBlockReader* fin = bucket_file.get();
 		if( isThreadSafe )
-			fin = new BlockThreadSafeReader( fin, sync_mutex );
+			fin = new BlockThreadSafeReader( fin, sync_mutex, &total_reads, &instant_reads );
 		else
 			fin = new BlockNotFreeingReader( fin );
 
@@ -925,7 +935,7 @@ struct BucketStream{
 		return fin;
 	}
 
-	// This is NOT thread safe
+	// This is NOT thread safe, and used in one thread reading only
 	uint32_t Read( StreamBuffer &buf ){
 		if( !disk_input ) disk_input.reset( CreateReader( false ) );
 		return disk_input->Read( buf );
@@ -948,6 +958,9 @@ struct BucketStream{
 		}
 	}
 
+	inline uint64_t getTotalReads() const { return total_reads; }
+	inline uint64_t getInstantReads() const { return instant_reads; }
+
 private:
 	const std::string fileName;
 	MemoryManager &memory_manager;
@@ -966,6 +979,8 @@ private:
 
 	BlockSequenceCompacterWriter * compacter = nullptr;
 	BlockBufferedWriter * buf_writer = nullptr;
+
+	uint64_t total_reads = 0, instant_reads = 0;
 };
 
 
