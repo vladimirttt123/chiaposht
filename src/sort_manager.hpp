@@ -60,7 +60,6 @@ private:
 	SortingBucket &parent;
 };
 
-
 struct SortedBucketBuffer{
 	const uint64_t buffer_size;
 	const bool in_background;
@@ -95,7 +94,7 @@ struct SortedBucketBuffer{
 
 	// returns true if current sort just finished.
 	void WaitForSortedTo( uint64_t position ){
-		while( sorting_thread != NULL && position >= start_position && position < end_position
+		while( sorting_thread != NULL && position >= start_position && position <= end_position
 					 && position > ( bucket->SortedCount() * bucket->EntrySize() + start_position ) )
 				std::this_thread::sleep_for( 100ns );
 	}
@@ -188,8 +187,8 @@ public:
 			, prev_bucket_buf_size(
 					2 * (stripe_size + 10 * (kBC / pow(2, kExtraBits))) * entry_size)
 			, num_threads( num_threads )
-			, num_background_threads( num_threads )
-			, num_read_threads( num_threads )
+			, num_background_threads( std::max( num_threads>1?2U:1U, num_threads/2 ) )
+			, num_read_threads( std::max( num_threads>1?2U:1U, num_threads/3 ) )
 			, subbucket_bits( std::min( (uint8_t)(32-log_num_buckets), std::max( (uint8_t)2, (uint8_t)(k - log_num_buckets - kSubBucketBits) ) ) )
 			, k_(k), phase_(phase), table_index_(table_index)
 			, stats_mask( ( (uint64_t)1<<subbucket_bits)-1 )
@@ -317,7 +316,7 @@ public:
 
 		//#Start IReadStream implementation
 		uint32_t Read( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) override {
-			if( stream_read_position == 0 ) EnsureSortedTo( 0 ); // initiate if needed
+			if( stream_read_position == 0 ) StartFirstBucket(); // initiate if needed
 
 			for( uint32_t buf_start = 0; buf_start < buf_size; ){
 				if( hasMoreBuckets && stream_read_position == sorted_current->EndPosition() )
@@ -528,7 +527,12 @@ private:
 			std::cout << std::fixed << ", free: "
 								<< std::setprecision( free_ram > 10 ? 1:( free_ram>1? 2 : 3) ) << free_ram << "GiB"
 								<< std::flush;
-			std::cout << std::endl;
+
+			std::cout << ", times: ( read:" << (sorted_current->Bucket()->read_time)/1000.0 << "s, total: "
+								<< (sorted_current->Bucket()->sort_time)/1000.0 << "s )" << std::flush;
+
+			//if( !hasMoreBuckets )
+				std::cout << std::endl;
 		}
 
 		void SwitchNextBucket()
