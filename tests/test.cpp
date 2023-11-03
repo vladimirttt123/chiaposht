@@ -821,7 +821,7 @@ TEST_CASE("(De)Serialization")
         DiskPlotter plotter = DiskPlotter();
         uint8_t memo[5] = {1, 2, 3, 4, 5};
         plotter.CreatePlotDisk(
-            ".", ".", ".", filename, 18, memo, 5, plot_id_1, 32, 11, 0, 4000, 2);
+						".", ".", ".", filename, 18, memo, 5, plot_id_1, 32, 11, 0, 4000, 2 /*threads*/ );
         DiskProver prover1(filename);
         std::vector<uint8_t> vecBytes = prover1.ToBytes();
         DiskProver prover2(vecBytes);

@@ -19,6 +19,7 @@
 #include "quicksort.hpp"
 #include "disk_streams.hpp"
 
+enum sorting_bucket_status : uint8_t{ WRITING = 0, READING = 1, SORTING = 2, SORTED = 3 };
 
 // ==================================================================================================
 struct SortingBucket{
@@ -39,6 +40,19 @@ struct SortingBucket{
 		// clear statistics
 		for( int64_t i = (1<<bucket_bits_count)-1; i >= 0; i-- )
 			statistics[i].store( 0, std::memory_order_relaxed );
+	}
+
+	inline uint64_t SortedCount() const {
+		switch( sorted_counts.size() ){
+		case 0: return 0;
+		case 1: return sorted_counts[0];
+		}
+
+		uint64_t res = entries_count;
+		for( uint i = 0; i < sorted_counts.size(); i++ )
+			if( sorted_counts[i] < res ) res = sorted_counts[i];
+
+		return res;
 	}
 
 	inline uint64_t Size() const { return entry_size_*entries_count; }
@@ -225,16 +239,26 @@ struct SortingBucket{
 		}else {
 			// Sort in threads
 			auto threads = std::make_unique<std::thread[]>(num_threads);
+			sorted_counts.resize( num_threads );
+			sorted_counts[num_threads-1] = 0; // the minimum value is metter
+
 			for( uint32_t i = 0; i < num_threads; i++ )
 				threads[i] = std::thread( [&num_threads, &buckets_count, this, &bucket_positions, &memory, &stats]( uint32_t thread_no ){
 						for( uint32_t i = thread_no; i < buckets_count; i += num_threads ){
 							assert( i == 0 || bucket_positions[i] == (bucket_positions[i-1] + stats[i]*entry_size_) ); // check any bucket is full
-							QuickSort::Sort( memory + (i == 0 ? 0 : bucket_positions[i-1]), entry_size_, stats[i], begin_bits_ + bucket_bits_count_ );
+
+							uint64_t start_pos = i == 0 ? 0 : bucket_positions[i-1];
+							sorted_counts[thread_no] = start_pos/entry_size_; // it is metter for beging of start...
+							QuickSort::Sort( memory + start_pos, entry_size_, stats[i], begin_bits_ + bucket_bits_count_ );
+							sorted_counts[thread_no] += stats[i];
 						}
 					}, i );
 
 			for( uint32_t i = 0; i < num_threads; i++ )
 				threads[i].join();
+
+			sorted_counts.resize(1);
+			sorted_counts[0] = entries_count;
 		}
 
 		sort_time = (std::chrono::high_resolution_clock::now() - start_time)/std::chrono::milliseconds(1);
@@ -262,6 +286,7 @@ private:
 	std::unique_ptr<std::atomic_uint32_t[]> statistics;
 	std::unique_ptr<IBlockWriterReader> statistics_file;
 	uint64_t entries_count = 0;
+	std::vector<uint64_t> sorted_counts;
 	MemoryManager &memory_manager;
 
 	uint64_t total_reads = 0, instant_reads = 0;

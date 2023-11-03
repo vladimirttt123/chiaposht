@@ -678,8 +678,8 @@ std::vector<uint64_t> RunPhase1(
             }
         }
 
-        std::cout << "Computing table " << int{table_index + 1} << std::endl;
-        std::cout << "Progress update: " << progress_percent[table_index - 1] << std::endl;
+				std::cout << "Computing table " << int{table_index + 1} << std::endl;
+				std::cout << "Progress update: " << std::setprecision(2) << progress_percent[table_index - 1] << std::endl;
         // Start of parallel execution
 
         FxCalculator f(k, table_index + 1);  // dummy to load static table

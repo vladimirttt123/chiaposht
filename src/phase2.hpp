@@ -253,7 +253,7 @@ Phase2Results RunPhase2(
 				int16_t const entry_size = cdiv(k + kOffsetSize, 8);
 
 				std::cout << "Backpropagating on table " << table_index << "  size: " << table_size <<  std::endl;
-        std::cout << "Progress update: " << progress_percent[7 - table_index] << std::endl;
+				std::cout << "Progress update: "<< std::setprecision(2) << progress_percent[7 - table_index] << std::endl;
 
 				// 2 instances of bitfield can be larger than memory_size
 				// for example recomended minimum for k32 is 900MiB and

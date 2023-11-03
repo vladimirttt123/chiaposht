@@ -27,8 +27,6 @@
 using namespace std::chrono_literals; // for time units;
 
 
-
-
 struct LastTableWriter {
 	LastTableWriter( FileDisk * file, uint8_t k, uint16_t entry_size,
 									 bool withCompaction, bool withScan, bool full_scan )

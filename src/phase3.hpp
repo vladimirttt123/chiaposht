@@ -392,7 +392,7 @@ Phase3Results RunPhase3(
 				Timer computation_pass_1_timer;
 				std::cout << "Compressing tables " << table_index << " and " << (table_index + 1)
 									<< std::endl;
-				std::cout << "Progress update: " << progress_percent[table_index - 1] << std::endl;
+				std::cout << "Progress update: " << std::setprecision(2) << progress_percent[table_index - 1] << std::endl;
 
 				Disk& right_disk = res2.disk_for_table(table_index + 1);
 
