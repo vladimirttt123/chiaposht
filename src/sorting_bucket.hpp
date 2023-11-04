@@ -119,10 +119,13 @@ struct SortingBucket{
 	}
 
 
-	void SortToMemory( uint8_t * memory, uint32_t num_threads = 2, uint32_t num_read_threads = 2 ){
+	void SortToMemory( uint8_t * memory, uint32_t num_threads = 2, uint32_t num_read_threads = 2, std::mutex * read_mutex = NULL ){
 		assert( disk );
 
-		if( entries_count == 0 ) return; // nothing to sort
+		if( entries_count == 0 ){
+			if( read_mutex != NULL ) read_mutex->unlock();
+			return; // nothing to sort
+		}
 
 		start_time = std::chrono::high_resolution_clock::now();
 		uint32_t stats[1<<bucket_bits_count_];
@@ -194,6 +197,8 @@ struct SortingBucket{
 					threads.emplace_back( thread_func );
 
 				for (auto& t : threads) t.join();
+
+				if( read_mutex != NULL ) read_mutex->unlock();
 			}
 
 #ifndef NDEBUG
