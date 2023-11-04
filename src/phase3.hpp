@@ -535,7 +535,7 @@ Phase3Results RunPhase3(
 				R_sort_manager->FlushCache();
 				R_sort_manager->FreeMemory();
 
-				computation_pass_1_timer.PrintElapsed("\tFirst computation pass time:");
+				computation_pass_1_timer.PrintElapsed("\n\tFirst computation pass time:");
 
 				Timer computation_pass_2_timer;
 
