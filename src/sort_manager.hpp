@@ -62,6 +62,7 @@ private:
 
 class SortManager;
 struct SortedBucketBuffer;
+// this function used to show statistics from thread when sorting is finished
 void ShowStats( const SortManager* sort_mngr, const SortedBucketBuffer *sbuf );
 
 // ------------------------------------------------------------------
@@ -82,6 +83,8 @@ struct SortedBucketBuffer{
 
 	~SortedBucketBuffer(){ FinishSort(); }
 
+	inline uint64_t WiatsCount() const { return waits_count; }
+
 	// returns true if current sort just finished.
 	inline void WaitForSortedTo( uint64_t position ){
 		assert( position >= start_position && position <= end_position );
@@ -89,10 +92,9 @@ struct SortedBucketBuffer{
 		if( sorting_thread.load( std::memory_order_relaxed ) != NULL && position >= start_position && position <= end_position ){
 			if( position == end_position ) FinishSort();
 			else {
-				uint wait_count = 0;
 				while( sorting_thread.load( std::memory_order_relaxed ) != NULL && position >= start_position
 							 && (position - start_position) > bucket->SortedPosision() ){
-					wait_count++;
+					waits_count++;
 					std::this_thread::sleep_for( 100us );
 				}
 
@@ -132,6 +134,7 @@ struct SortedBucketBuffer{
 		this->start_position = start_position;
 		this->end_position = start_position + bucket->Size();
 
+		waits_count = 0;
 		FinishSort( new std::thread(
 										[this]( SortingBucket* bucket, uint8_t* buf, std::mutex *r_mutex ){
 												r_mutex->lock();
@@ -146,6 +149,7 @@ private:
 	SortingBucket *bucket = NULL;
 	std::atomic<std::thread*> sorting_thread = NULL;
 	std::mutex *read_mutex;
+	uint64_t waits_count = 0;
 
 
 	inline bool FinishSort( std::thread * newThread = NULL){
@@ -523,7 +527,6 @@ private:
 		return true;
 	}
 
-	// TODO move stright after bucket sorted
 	void ShowStatistics( const SortedBucketBuffer *stats_of ) const {
 		double const total_ram = memory_manager.getTotalSize() / (1024.0 * 1024.0 * 1024.0);
 		// double const cache_ram = memory_manager.getAccessibleRam() / (1024.0 * 1024.0 * 1024.0);
@@ -546,7 +549,10 @@ private:
 		auto total_time = (stats_of->Bucket()->sort_time)/1000.0;
 		std::cout << std::setprecision( std::min( read_time, total_time ) < 10 ? 2 : 1 )
 							<< ", times: ( read:" << read_time << "s, total: "
-							<< total_time << "s )" << std::flush;
+							<< total_time << "s )";
+		if( stats_of->WiatsCount() > 0 )
+			std::cout<< ", waits: " << stats_of->WiatsCount();
+		std::cout << std::flush;
 
 #ifndef NDBUG
 		std::cout << std::endl;
