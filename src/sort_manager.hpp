@@ -123,6 +123,7 @@ struct SortedBucketBuffer{
 		end_position = start_position + next_bucket->Size();
 
 		bucket->SortToMemory( bucket_buffer.get(), num_background_threads, num_read_threads );
+		ShowStats( this->sort_manager, this );
 	}
 
 	void StartSorting( uint bucket_no, uint64_t start_position, SortingBucket * bucket ){
@@ -190,16 +191,19 @@ public:
 
 		uint64_t sorting_size = (1<<k)*entry_size;
 		auto expected_buckets = (uint64_t)(num_buckets*(phase_==1?1.0:0.8));
-		auto expected_bucket_size = sorting_size/expected_buckets;
-		auto memory_size = memory_manager.getTotalSize()/(phase_==1?1:2);
-		if( memory_size/expected_bucket_size < 2.1 ){
+		const auto expected_bucket_size = sorting_size/(double)expected_buckets;
+		const auto memory_size = memory_manager.getTotalSize()/(phase_==1?1:2);
+		const double buckets_in_ram = num_threads > 1 ? 2.1 : 1.05;
+
+		if( memory_size/expected_bucket_size < buckets_in_ram ){
 			uint32_t need_buckets = num_buckets;
-			for( auto size = expected_bucket_size; memory_size/size < 2.1; size /= 2 )
+			for( auto size = expected_bucket_size; memory_size/size < buckets_in_ram; size /= 2 )
 				need_buckets *= 2;
 			std::cout << std::setprecision(2)
-								<< "Expected bucket size " << (expected_bucket_size/1024/1024) << "MiB with " << num_buckets
-								<< " buckets is not suit twice in available buffer " << (memory_size>>20) << "MiB"
-								<< " number of buckets will be increase to " << need_buckets << std::endl;
+								<< "Warning! Expected bucket size " << (expected_bucket_size/1024/1024) << "MiB for table "
+								<< (uint32_t)table_index_ << " with " << num_buckets
+								<< "buckets. Available buffer " << (memory_size>>20) << "MiB is too small for this size."
+								<< " Increase number of buckets to " << need_buckets << std::endl;
 			num_buckets = need_buckets;
 		}
 
@@ -550,9 +554,10 @@ private:
 		// double const cache_ram = memory_manager.getAccessibleRam() / (1024.0 * 1024.0 * 1024.0);
 		double const free_ram = memory_manager.getFreeRam() / (1024.0 * 1024.0 * 1024.0);
 		double const qs_ram = stats_of->Bucket()->Size() / (1024.0 * 1024.0 * 1024.0);
-
+		int max_bucket = buckets_.size();
+		while( max_bucket > 0 && buckets_[max_bucket-1].Count() == 0 ) max_bucket--;
 		std::cout << "\r\tk" << (uint32_t)k_ << " p" << (uint32_t)phase_ << " t" << (uint32_t)table_index_
-							<< " Bucket " << stats_of->BucketNo() << " size: "
+							<< " Bucket " << (stats_of->BucketNo()+1) << "/" << max_bucket << " size: "
 							<< std::setprecision( qs_ram > 10 ? 1:( qs_ram>1? 2 : 3) ) <<  qs_ram << "GiB,"
 							<< " ram: " << std::fixed
 							<< std::setprecision( total_ram > 10 ? 1:( total_ram>1? 2 : 3) ) << total_ram << "GiB";
@@ -602,7 +607,6 @@ private:
 			uint next_bucket_no = sorted_current->BucketNo() + 1;
 			sorted_current->SortBucket( &buckets_[next_bucket_no] );
 			hasMoreBuckets = next_bucket_no + 1 < buckets_.size() && buckets_[next_bucket_no+1].Count() > 0;
-			ShowStatistics( sorted_current.get() );
 		}
 
 		if( !hasMoreBuckets ) std::cout << std::endl;
