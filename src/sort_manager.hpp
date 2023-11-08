@@ -60,12 +60,21 @@ private:
 	SortingBucket &parent;
 };
 
+class SortManager;
+struct SortedBucketBuffer;
+void ShowStats( const SortManager* sort_mngr, const SortedBucketBuffer *sbuf );
+
 // ------------------------------------------------------------------
 struct SortedBucketBuffer{
 	const uint64_t buffer_size;
+	const SortManager *sort_manager;
+	int num_background_threads, num_read_threads;
 
-	SortedBucketBuffer( uint64_t buffer_size, std::mutex *read_mutex )
+	SortedBucketBuffer( const SortManager *sort_manager, uint64_t buffer_size, std::mutex *read_mutex, int num_background_threads, int num_read_threads )
 			: buffer_size( buffer_size )
+			, sort_manager( sort_manager )
+			, num_background_threads(num_background_threads)
+			, num_read_threads( num_read_threads )
 			, bucket_buffer( Util::NewSafeBuffer( buffer_size ) )
 			, read_mutex( read_mutex )
 	{
@@ -104,7 +113,7 @@ struct SortedBucketBuffer{
 	inline uint64_t EndPosition() const { return end_position; }
 
 	// Sort next bucket synchronously
-	void SortBucket( SortingBucket * next_bucket, int num_background_threads, int num_read_threads ){
+	void SortBucket( SortingBucket * next_bucket ){
 		bucket_no++;
 		bucket = next_bucket;
 
@@ -114,7 +123,7 @@ struct SortedBucketBuffer{
 		bucket->SortToMemory( bucket_buffer.get(), num_background_threads, num_read_threads );
 	}
 
-	void StartSorting( uint bucket_no, uint64_t start_position, SortingBucket * bucket, int num_background_threads, int num_read_threads ){
+	void StartSorting( uint bucket_no, uint64_t start_position, SortingBucket * bucket ){
 		assert( bucket_no >= 0 );
 
 		this->bucket_no = (int)bucket_no;
@@ -124,9 +133,10 @@ struct SortedBucketBuffer{
 		this->end_position = start_position + bucket->Size();
 
 		FinishSort( new std::thread(
-											[num_background_threads, num_read_threads]( SortingBucket* bucket, uint8_t* buf, std::mutex *r_mutex ){
+										[this]( SortingBucket* bucket, uint8_t* buf, std::mutex *r_mutex ){
 												r_mutex->lock();
 												bucket->SortToMemory( buf, num_background_threads, num_read_threads, r_mutex );
+												ShowStats( this->sort_manager, this );
 											}, this->bucket, this->bucket_buffer.get(), this->read_mutex ) );
 	}
 private:
@@ -172,8 +182,6 @@ public:
 			, prev_bucket_buf_size(
 					2 * (stripe_size + 10 * (kBC / pow(2, kExtraBits))) * entry_size)
 			, num_threads( num_threads )
-			, num_background_threads( std::max( num_threads>1?2U:1U, num_threads/( ( phase == 1 || table_index == 1 ) ? 1 : 2) ) )
-			, num_read_threads( std::max( num_threads>1?2U:1U, num_threads/( ( phase == 1 || table_index == 1 ) ? 2 : 3)  ) )
 			, subbucket_bits( std::min( (uint8_t)(32-log_num_buckets), std::max( (uint8_t)2, (uint8_t)(k - log_num_buckets - kSubBucketBits) ) ) )
 			, k_(k), phase_(phase), table_index_(table_index)
 			, stats_mask( ( (uint64_t)1<<subbucket_bits)-1 )
@@ -447,132 +455,140 @@ public:
 
 private:
 
-    // Size of the whole memory array
-		MemoryManager &memory_manager;
-    // Size of each entry
-		const uint16_t entry_size_;
-    // Bucket determined by the first "log_num_buckets" bits starting at "begin_bits"
-		const uint32_t begin_bits_;
-    // Log of the number of buckets; num bits to use to determine bucket
-		const uint32_t log_num_buckets_;
+	// Size of the whole memory array
+	MemoryManager &memory_manager;
+	// Size of each entry
+	const uint16_t entry_size_;
+	// Bucket determined by the first "log_num_buckets" bits starting at "begin_bits"
+	const uint32_t begin_bits_;
+	// Log of the number of buckets; num bits to use to determine bucket
+	const uint32_t log_num_buckets_;
 
-		std::vector<SortingBucket> buckets_;
-		bool hasMoreBuckets = true;
+	std::vector<SortingBucket> buckets_;
+	bool hasMoreBuckets = true;
 
-		const uint64_t prev_bucket_buf_size;
-    std::unique_ptr<uint8_t[]> prev_bucket_buf_;
-    uint64_t prev_bucket_position_start = 0;
+	const uint64_t prev_bucket_buf_size;
+	std::unique_ptr<uint8_t[]> prev_bucket_buf_;
+	uint64_t prev_bucket_position_start = 0;
 
-		std::unique_ptr<SortedBucketBuffer> sorted_current, sorted_next;
-		std::mutex bucket_read_mutex;
+	std::unique_ptr<SortedBucketBuffer> sorted_current, sorted_next;
+	std::mutex bucket_read_mutex;
 
-		uint32_t num_threads, num_background_threads, num_read_threads;
-		const uint8_t subbucket_bits;
+	uint32_t num_threads;
+	const uint8_t subbucket_bits;
 
-		const uint8_t k_, phase_, table_index_;
-		const uint32_t stats_mask;
-		//uint64_t time_total_wait = 0;
+	const uint8_t k_, phase_, table_index_;
+	const uint32_t stats_mask;
+	//uint64_t time_total_wait = 0;
 
-		uint64_t stream_read_position = 0;
+	uint64_t stream_read_position = 0;
 
-		const inline uint8_t* memory_start() const {return sorted_current->buffer();}
+	const inline uint8_t* memory_start() const {return sorted_current->buffer();}
 
-		void inline EnsureSortingStarted() { if( !sorted_current ) StartSorting(); }
+	void inline EnsureSortingStarted() { if( !sorted_current ) StartSorting(); }
 
-		bool StartSorting(){
-			if( sorted_current ) return false;
+	bool StartSorting(){
+		if( sorted_current ) return false;
 
-			assert( buckets_.size() > 0 );
+		assert( buckets_.size() > 0 );
 
-			// find biggerst bucket and reserv ram to sort it
-			uint64_t reserved_buffer_size  = BiggestBucketSize();
+		// find biggerst bucket and reserv ram to sort it
+		uint64_t reserved_buffer_size  = BiggestBucketSize();
 
-			if( !memory_manager.request(  reserved_buffer_size, true ) ) {
-				std::cout<< "!!! Not enough memory for sort in RAM. Need to sort " <<
-						(reserved_buffer_size / (1024.0 * 1024.0 * 1024.0)) << "GiB!!!" << std::endl;
-				std::cout<< "!!!Going to continue using bigger buffer than in parameters!!!" << std::endl;
+		if( !memory_manager.request(  reserved_buffer_size, true ) ) {
+			std::cout<< "!!! Not enough memory for sort in RAM. Need to sort " <<
+					(reserved_buffer_size / (1024.0 * 1024.0 * 1024.0)) << "GiB!!!" << std::endl;
+			std::cout<< "!!!Going to continue using bigger buffer than in parameters!!!" << std::endl;
 
-				memory_manager.requier( reserved_buffer_size );
-			}
-
-			sorted_current.reset( new SortedBucketBuffer( reserved_buffer_size, &bucket_read_mutex ) ); // reserve for current bucket
-			sorted_current->SortBucket( &buckets_[0], num_background_threads, num_read_threads ); // first one always sync sort
-
-			if( num_threads > 1 && buckets_.size() > 1 ){
-				if( memory_manager.request( reserved_buffer_size, true ) ){
-					sorted_next.reset( new SortedBucketBuffer( reserved_buffer_size, &bucket_read_mutex ) ); // reserve for next bucket background sorting
-					sorted_next->StartSorting( 1, sorted_current->EndPosition(), &buckets_[1], num_background_threads, num_read_threads ); // backgound sorting for next bucket
-				}
-				else
-					std::cout << "Warning buffer is too small to allow background sorting, the performance may be slower." << std::endl
-										<< "It is possible to increase buffer or to add number of buckets to improve multithreaded performance." << std::endl;
-			}
-
-			return true;
+			memory_manager.requier( reserved_buffer_size );
 		}
 
-		// TODO move stright after bucket sorted
-		void ShowStatistics(){
-			double const total_ram = memory_manager.getTotalSize() / (1024.0 * 1024.0 * 1024.0);
-			// double const cache_ram = memory_manager.getAccessibleRam() / (1024.0 * 1024.0 * 1024.0);
-			double const free_ram = memory_manager.getFreeRam() / (1024.0 * 1024.0 * 1024.0);
-			double const qs_ram = sorted_current->Bucket()->Size() / (1024.0 * 1024.0 * 1024.0);
+		uint32_t num_background_threads = std::max( num_threads>1?2U:1U, num_threads/( ( phase_ == 1 || table_index_ == 1 ) ? 1 : 2) )
+				, num_read_threads = std::max( num_threads>1?2U:1U, num_threads/( ( phase_ == 1 || table_index_ == 1 ) ? 2 : 3)  );
 
-			std::cout << "\r\tk" << (uint32_t)k_ << " p" << (uint32_t)phase_ << " t" << (uint32_t)table_index_
-								<< " Bucket " << sorted_current->BucketNo() << " size: "
-								<< std::setprecision( qs_ram > 10 ? 1:( qs_ram>1? 2 : 3) ) <<  qs_ram << "GiB,"
-								<< " ram: " << std::fixed
-								<< std::setprecision( total_ram > 10 ? 1:( total_ram>1? 2 : 3) ) << total_ram << "GiB";
+		sorted_current.reset( new SortedBucketBuffer( this, reserved_buffer_size, &bucket_read_mutex, num_background_threads, num_read_threads ) ); // reserve for current bucket
+		sorted_current->SortBucket( &buckets_[0] ); // first one always sync sort
+
+
+		if( num_threads > 1 && buckets_.size() > 1 ){
+			if( memory_manager.request( reserved_buffer_size, true ) ){
+				sorted_next.reset( new SortedBucketBuffer( this, reserved_buffer_size, &bucket_read_mutex, num_background_threads, num_read_threads ) ); // reserve for next bucket background sorting
+				sorted_next->StartSorting( 1, sorted_current->EndPosition(), &buckets_[1] ); // backgound sorting for next bucket
+			}
+			else
+				std::cout << "Warning buffer is too small to allow background sorting, the performance may be slower." << std::endl
+									<< "It is possible to increase buffer or to add number of buckets to improve multithreaded performance." << std::endl;
+		}
+
+		return true;
+	}
+
+	// TODO move stright after bucket sorted
+	void ShowStatistics( const SortedBucketBuffer *stats_of ) const {
+		double const total_ram = memory_manager.getTotalSize() / (1024.0 * 1024.0 * 1024.0);
+		// double const cache_ram = memory_manager.getAccessibleRam() / (1024.0 * 1024.0 * 1024.0);
+		double const free_ram = memory_manager.getFreeRam() / (1024.0 * 1024.0 * 1024.0);
+		double const qs_ram = stats_of->Bucket()->Size() / (1024.0 * 1024.0 * 1024.0);
+
+		std::cout << "\r\tk" << (uint32_t)k_ << " p" << (uint32_t)phase_ << " t" << (uint32_t)table_index_
+							<< " Bucket " << stats_of->BucketNo() << " size: "
+							<< std::setprecision( qs_ram > 10 ? 1:( qs_ram>1? 2 : 3) ) <<  qs_ram << "GiB,"
+							<< " ram: " << std::fixed
+							<< std::setprecision( total_ram > 10 ? 1:( total_ram>1? 2 : 3) ) << total_ram << "GiB";
 //			if( memory_manager.CacheEnabled )
 //				std::cout << std::fixed << ", cache: "
 //								<< std::setprecision( cache_ram > 10 ? 1:( cache_ram>1? 2 : 3) ) << cache_ram << "GiB";
-			std::cout << std::fixed << ", free: "
-								<< std::setprecision( free_ram > 10 ? 1:( free_ram>1? 2 : 3) ) << free_ram << "GiB"
-								<< std::flush;
+		std::cout << std::fixed << ", free: "
+							<< std::setprecision( free_ram > 10 ? 1:( free_ram>1? 2 : 3) ) << free_ram << "GiB"
+							<< std::flush;
 
-			auto read_time = (sorted_current->Bucket()->read_time)/1000.0;
-			auto total_time = (sorted_current->Bucket()->sort_time)/1000.0;
-			std::cout << std::setprecision( std::min( read_time, total_time ) < 10 ? 2 : 1 )
-								<< ", times: ( read:" << read_time << "s, total: "
-								<< total_time << "s )" << std::flush;
+		auto read_time = (stats_of->Bucket()->read_time)/1000.0;
+		auto total_time = (stats_of->Bucket()->sort_time)/1000.0;
+		std::cout << std::setprecision( std::min( read_time, total_time ) < 10 ? 2 : 1 )
+							<< ", times: ( read:" << read_time << "s, total: "
+							<< total_time << "s )" << std::flush;
 
 #ifndef NDBUG
-			std::cout << std::endl;
+		std::cout << std::endl;
 #endif
 
-			if( !hasMoreBuckets || buckets_[sorted_current->BucketNo()+1].Size() == 0 )
-				std::cout << std::endl;
+		if( !hasMoreBuckets || buckets_[stats_of->BucketNo()+1].Size() == 0 )
+			std::cout << std::endl;
+	}
+
+	void SwitchNextBucket()
+	{
+		if( StartSorting() ) return; // for first bucket
+
+		if( !hasMoreBuckets )
+			throw InvalidValueException( "Trying to sort bucket which does not exist." );
+
+
+		if( sorted_next ){
+			assert( sorted_next->BucketNo() == sorted_current->BucketNo() + 1 );
+			assert( !sorted_current->WaitForSorted() ); // sort on current should be finished at this point
+
+			sorted_current.swap( sorted_next ); // bring sorted to front
+
+			uint next_bucket_no = sorted_current->BucketNo() + 1;
+			hasMoreBuckets = next_bucket_no < buckets_.size() && buckets_[next_bucket_no].Count() > 0;
+			if( hasMoreBuckets )
+				sorted_next->StartSorting( next_bucket_no, sorted_current->EndPosition(), &buckets_[next_bucket_no] );
+		} else {
+			uint next_bucket_no = sorted_current->BucketNo() + 1;
+			sorted_current->SortBucket( &buckets_[next_bucket_no] );
+			hasMoreBuckets = next_bucket_no + 1 < buckets_.size() && buckets_[next_bucket_no+1].Count() > 0;
+			ShowStatistics( sorted_current.get() );
 		}
 
-		void SwitchNextBucket()
-		{
-			if( StartSorting() ) return; // for first bucket
+		if( !hasMoreBuckets ) std::cout << std::endl;
+	}
 
-			if( !hasMoreBuckets )
-				throw InvalidValueException( "Trying to sort bucket which does not exist." );
-
-
-			if( sorted_next ){
-				assert( sorted_next->BucketNo() == sorted_current->BucketNo() + 1 );
-				assert( !sorted_current->WaitForSorted() ); // sort on current should be finished at this point
-
-				ShowStatistics();
-
-				sorted_current.swap( sorted_next ); // bring sorted to front
-
-				uint next_bucket_no = sorted_current->BucketNo() + 1;
-				hasMoreBuckets = next_bucket_no < buckets_.size() && buckets_[next_bucket_no].Count() > 0;
-				if( hasMoreBuckets )
-					sorted_next->StartSorting( next_bucket_no, sorted_current->EndPosition(), &buckets_[next_bucket_no], num_background_threads, num_read_threads );
-			} else {
-				uint next_bucket_no = sorted_current->BucketNo() + 1;
-				sorted_current->SortBucket( &buckets_[next_bucket_no], num_background_threads, num_read_threads );
-				hasMoreBuckets = next_bucket_no + 1 < buckets_.size() && buckets_[next_bucket_no+1].Count() > 0;
-				ShowStatistics();
-			}
-
-			if( !hasMoreBuckets ) std::cout << std::endl;
-		}
+	friend void ShowStats( const SortManager* sort_mngr, const SortedBucketBuffer *sbuf );
 };
+
+void ShowStats( const SortManager* sort_mngr, const SortedBucketBuffer *sbuf ){
+	sort_mngr->ShowStatistics( sbuf );
+}
 
 #endif  // SRC_CPP_FAST_SORT_ON_DISK_HPP_

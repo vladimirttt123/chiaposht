@@ -61,6 +61,7 @@ inline void ScanTable( IReadDiskStream *disk, int16_t const &entry_size,
 															(IReadDiskStream *disk, int64_t *read_cursor, const bitfield * current_bitfield, bitfield *next_bitfield){
 			std::unique_ptr<uint8_t[]> buffer( Util::NewSafeBuffer(read_bufsize) );
 			bitfieldReader cur_bitfield( *current_bitfield );
+			const auto proc5_size = current_bitfield->size()/20;
 			int64_t buf_size = 0, buf_start = 0;
 #ifndef __GNUC__
 			auto writer = bitfield::ThreadWriter( *next_bitfield );
@@ -80,6 +81,9 @@ inline void ScanTable( IReadDiskStream *disk, int16_t const &entry_size,
 					cur_bitfield.setLimits( buf_start/entry_size, buf_size/entry_size );
 					if( current_bitfield->is_readonly() ) read_mutex[1].unlock();
 				}
+
+				if( read_bufsize < proc5_size && buf_start > 0 && buf_start/proc5_size != (buf_start-read_bufsize)/proc5_size )
+					std::cout << (((buf_start/proc5_size)%5) == 0 ? "*" : "-" ) << std::flush;
 
 
 				// Convert buffer to numbers in final bitfield
@@ -127,6 +131,8 @@ inline void SortRegularTableThread( IReadDiskStream * disk, const uint64_t &tabl
 	uint64_t buf_size = (BUF_SIZE/entry_size)*entry_size;
 	std::unique_ptr<uint8_t[]> buffer( Util::NewSafeBuffer(buf_size) );
 	SortManager::ThreadWriter writer = SortManager::ThreadWriter( *sort_manager );
+	uint64_t proc5_size = current_bitfield->size()/20;
+	if( buf_size < proc5_size ) proc5_size = 0; // do not show counters
 
 	bitfieldReader cur_bitfield = bitfieldReader( *current_bitfield );
 	uint64_t write_counter = 0;
@@ -143,6 +149,9 @@ inline void SortRegularTableThread( IReadDiskStream * disk, const uint64_t &tabl
 			write_counter = *global_write_counter;
 			*global_write_counter += cur_bitfield.count( 0, buf_size/entry_size );
 		}
+
+		if( buf_size < proc5_size && *read_position > 0 && *read_position/proc5_size != (*read_position-buf_size)/proc5_size )
+			std::cout << (((*read_position/proc5_size)%5) == 0 ? "*" : "-" ) << std::flush;
 
 		for( uint64_t buf_ptr = 0; buf_ptr < buf_size; buf_ptr += entry_size ){
 
