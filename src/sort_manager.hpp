@@ -31,32 +31,39 @@ using namespace std::chrono_literals; // for operator""ns;
 #include "sorting_bucket.hpp"
 
 const uint32_t CacheBucketSize = 256; // mesured in number of entries
+
 // Small bucket used in thread writings
 struct CacheBucket{
 	explicit CacheBucket( SortingBucket &cacheFor )
-		: entries( CacheBucketSize*cacheFor.EntrySize() )
-		, entry_size( cacheFor.EntrySize() )
-		, parent( cacheFor )
+			: entries( CacheBucketSize*cacheFor.EntrySize() )
+			, entry_size( cacheFor.EntrySize() )
+			, limit_size( entries.size()*0.8 )
+			, parent( cacheFor )
 	{	}
 
 	inline void Add( const uint8_t *entry, const uint32_t &stats ){
-		if( entries.isFull() ) Flush();
-		statistics[entries.used()/entry_size] = stats;
+		parent.addStat( stats );
+
+		if( entries.used() > limit_size ){
+			if( parent.TryAddEntriesTS( entries ) )
+				entries.setUsed( 0 );
+			else if( entries.isFull() ) Flush();
+		}
 		entries.add( entry, entry_size );
 	}
 
 	inline void Flush(){
 		if( entries.used() > 0 ){
-			parent.AddBulkTS( entries, statistics );
+			parent.AddEntriesTS( entries );
 			entries.setUsed( 0 );
 		}
 	}
 
 	~CacheBucket(){Flush();}
 private:
-	uint32_t statistics[CacheBucketSize];
 	StreamBuffer entries;
 	const uint16_t entry_size;
+	const uint32_t limit_size;
 	SortingBucket &parent;
 };
 

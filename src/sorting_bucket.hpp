@@ -63,21 +63,7 @@ struct SortingBucket{
 		disk->Write( entry );
 	}
 
-	inline void AddBulkTS( StreamBuffer & entries, const uint32_t * stats ){
 
-		std::lock_guard<std::mutex> lk( *addMutex.get() );
-
-		auto count = entries.used() / entry_size_;
-
-		// Adding to statistics
-		for( uint32_t i = 0; i < count; i++ )	{
-			assert( Util::ExtractNum( entries.get() + i*entry_size_, entry_size_, begin_bits_, bucket_bits_count_ ) == stats[i] );
-			statistics[stats[i]].fetch_add( 1, std::memory_order_relaxed );
-		}
-
-		disk->Write( entries );
-		entries_count += count;
-	}
 
 	// Flush current buffer to disk
 	// It should be at end of writting.
@@ -322,6 +308,39 @@ private:
 		}
 	}
 
+
+	// This function in particular for CachBucket
+	inline void addStat( const uint32_t &stat ){
+		assert( statistics );
+		assert( stat < (1<<bucket_bits_count_) );
+
+		statistics[stat].fetch_add( 1, std::memory_order_relaxed );
+	}
+
+	// This function in particular for CachBucket
+	inline bool TryAddEntriesTS( StreamBuffer & entries ){
+
+		if( !addMutex->try_lock() ) return false;
+		assert( disk ); // Check not closed
+
+		entries_count += entries.used() / entry_size_;
+		disk->Write( entries );
+
+		addMutex->unlock();
+		return true;
+	}
+
+	// This function in particular for CachBucket
+	inline void AddEntriesTS( StreamBuffer & entries ){
+
+		std::lock_guard<std::mutex> lk( *addMutex.get() );
+		assert( disk ); // Check not closed
+
+		entries_count += entries.used() / entry_size_;
+		disk->Write( entries );
+	}
+
+	friend struct CacheBucket;
 };
 
 #endif // SRC_CPP_SORTING_BUCKET_HPP_
