@@ -168,8 +168,8 @@ class SortManager : public Disk, IReadDiskStream {
 public:
 	SortManager(
 			MemoryManager &memory_manager,
-			uint32_t const num_buckets,
-			uint32_t const log_num_buckets,
+			uint32_t  num_buckets,
+			uint32_t log_num_buckets_not_used,
 			uint16_t const entry_size,
 			const std::string &tmp_dirname,
 			const std::string &filename,
@@ -182,15 +182,33 @@ public:
 			: memory_manager(memory_manager)
 			, entry_size_(entry_size)
 			, begin_bits_(begin_bits)
-			, log_num_buckets_(log_num_buckets)
 			, prev_bucket_buf_size(
 					2 * (stripe_size + 10 * (kBC / pow(2, kExtraBits))) * entry_size)
 			, num_threads( num_threads )
-			, subbucket_bits( std::min( (uint8_t)(32-log_num_buckets), std::max( (uint8_t)2, (uint8_t)(k - log_num_buckets - kSubBucketBits) ) ) )
 			, k_(k), phase_(phase), table_index_(table_index)
-			, stats_mask( ( (uint64_t)1<<subbucket_bits)-1 )
 	{
+
+		uint64_t sorting_size = (1<<k)*entry_size;
+		auto expected_buckets = (uint64_t)(num_buckets*(phase_==1?1.0:0.8));
+		auto expected_bucket_size = sorting_size/expected_buckets;
+		auto memory_size = memory_manager.getTotalSize()/(phase_==1?1:2);
+		if( memory_size/expected_bucket_size < 2.1 ){
+			uint32_t need_buckets = num_buckets;
+			for( auto size = expected_bucket_size; memory_size/size < 2.1; size /= 2 )
+				need_buckets *= 2;
+			std::cout << std::setprecision(2)
+								<< "Expected bucket size " << (expected_bucket_size/1024/1024) << "MiB with " << num_buckets
+								<< " buckets is not suit twice in available buffer " << (memory_size>>20) << "MiB"
+								<< " number of buckets will be increase to " << need_buckets << std::endl;
+			num_buckets = need_buckets;
+		}
+
+		log_num_buckets_ = log2(num_buckets);
+		subbucket_bits = std::min( (uint8_t)(32-log_num_buckets_), std::max( (uint8_t)2, (uint8_t)(k - log_num_buckets_ - kSubBucketBits) ) );
+		stats_mask = ( (uint64_t)1<<subbucket_bits)-1;
+
 		assert( subbucket_bits > 0 );
+
 		// Cross platform way to concatenate paths, gulrak library.
 		std::vector<fs::path> bucket_filenames = std::vector<fs::path>();
 
@@ -211,7 +229,7 @@ public:
 					}
 				}
 				buckets_.emplace_back( SortingBucket( bucket_filename.string(), memory_manager, bucket_i, log_num_buckets_,
-																							entry_size, begin_bits_ + log_num_buckets, subbucket_bits,
+																							entry_size, begin_bits_ + log_num_buckets_, subbucket_bits,
 																							enable_compaction, sequence_start ) );
 		}
 	}
@@ -466,7 +484,7 @@ private:
 	// Bucket determined by the first "log_num_buckets" bits starting at "begin_bits"
 	const uint32_t begin_bits_;
 	// Log of the number of buckets; num bits to use to determine bucket
-	const uint32_t log_num_buckets_;
+	uint32_t log_num_buckets_;
 
 	std::vector<SortingBucket> buckets_;
 	bool hasMoreBuckets = true;
@@ -479,10 +497,10 @@ private:
 	std::mutex bucket_read_mutex;
 
 	uint32_t num_threads;
-	const uint8_t subbucket_bits;
+	uint8_t subbucket_bits;
 
 	const uint8_t k_, phase_, table_index_;
-	const uint32_t stats_mask;
+	uint32_t stats_mask;
 	//uint64_t time_total_wait = 0;
 
 	uint64_t stream_read_position = 0;

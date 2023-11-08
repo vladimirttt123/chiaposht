@@ -132,7 +132,7 @@ inline void SortRegularTableThread( IReadDiskStream * disk, const uint64_t &tabl
 	std::unique_ptr<uint8_t[]> buffer( Util::NewSafeBuffer(buf_size) );
 	SortManager::ThreadWriter writer = SortManager::ThreadWriter( *sort_manager );
 	uint64_t proc5_size = current_bitfield->size()/20;
-	if( buf_size < proc5_size ) proc5_size = 0; // do not show counters
+	if( buf_size > proc5_size ) proc5_size = 1; // do not show counters
 
 	bitfieldReader cur_bitfield = bitfieldReader( *current_bitfield );
 	uint64_t write_counter = 0;
