@@ -202,7 +202,7 @@ public:
 			std::cout << std::setprecision(2)
 								<< "Warning! Expected bucket size " << (expected_bucket_size/1024/1024) << "MiB for table "
 								<< (uint32_t)table_index_ << " with " << num_buckets
-								<< "buckets. Available buffer " << (memory_size>>20) << "MiB is too small for this size."
+								<< " buckets. Available buffer " << (memory_size>>20) << "MiB is too small for this size."
 								<< " Increase number of buckets to " << need_buckets << std::endl;
 			num_buckets = need_buckets;
 		}

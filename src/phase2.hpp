@@ -119,11 +119,11 @@ inline void ScanTable( IReadDiskStream *disk, int16_t const &entry_size,
 }
 
 inline void SortRegularTableThread( IReadDiskStream * disk, const uint64_t &table_size,
-																				const int16_t &entry_size, const int16_t &new_entry_size,
-																				uint64_t *read_position, uint64_t *global_write_counter,
-																				const bitfield *current_bitfield, const bitfield_index *index,
-																				SortManager * sort_manager, std::mutex *sync_mutex,
-																				const uint8_t &pos_offset_size, const uint8_t &k )
+																		const int16_t &entry_size, const int16_t &new_entry_size,
+																		uint64_t *read_position, uint64_t *global_write_counter,
+																		const bitfield *current_bitfield, const bitfield_index *index,
+																		SortManager * sort_manager, std::mutex *read_mutex, std::mutex * write_mutex,
+																		const uint8_t &pos_offset_size, const uint8_t &k )
 {
 	uint8_t const write_counter_shift = 128 - k;
 	uint8_t const pos_offset_shift = write_counter_shift - pos_offset_size;
@@ -138,27 +138,30 @@ inline void SortRegularTableThread( IReadDiskStream * disk, const uint64_t &tabl
 	uint64_t write_counter = 0;
 
 	while( true ){
-		{	// Read next buffer
-			const std::lock_guard<std::mutex> lk(*sync_mutex);
+		// Reading bucket
+		read_mutex->lock(); // Lock for reading
+		buf_size = disk->Read( buffer, buf_size );
+		if( buf_size == 0 ){ // nothing to read -> exit
+			read_mutex->unlock();
+			return;
+		}
+		{	// update writting variables
+			const std::lock_guard<std::mutex> lk(*write_mutex); // should be unlocked at this point
+			read_mutex->unlock(); // unlock after locking write to allow futher bucket reading but save sequence of write update after reading
 
-			buf_size = disk->Read( buffer, buf_size );
-			if( buf_size == 0 ) return;// nothing to read -> exit
-
-			cur_bitfield.setLimits( *read_position/entry_size, buf_size/entry_size );
+			cur_bitfield.setLimits( *read_position/entry_size, buf_size/entry_size ); // this can read from disk
 			*read_position += buf_size;
 			write_counter = *global_write_counter;
-			*global_write_counter += cur_bitfield.count( 0, buf_size/entry_size );
+			*global_write_counter += cur_bitfield.count( 0, buf_size/entry_size ); // this can consume CPU time
 		}
 
 		if( buf_size < proc5_size && *read_position > 0 && *read_position/proc5_size != (*read_position-buf_size)/proc5_size )
 			std::cout << (((*read_position/proc5_size)%5) == 0 ? "*" : "-" ) << std::flush;
 
-		for( uint64_t buf_ptr = 0; buf_ptr < buf_size; buf_ptr += entry_size ){
+		uint8_t const* entry = buffer.get();
+		for( uint64_t i = 0, up_to = buf_size/entry_size; i < up_to; i++, entry += entry_size ){
 
-			// skipping
-			if( !cur_bitfield.get( buf_ptr/entry_size ) ) continue;
-
-			uint8_t const* entry = buffer.get() + buf_ptr;
+			if( !cur_bitfield.get( i ) ) continue; // skipping
 
 			uint64_t entry_pos_offset = Util::SliceInt64FromBytes( entry, pos_offset_size );
 			uint64_t entry_pos = entry_pos_offset >> kOffsetSize;
@@ -323,7 +326,7 @@ Phase2Results RunPhase2(
 					(flags&NO_COMPACTION)==0 );
 
 			uint64_t read_position = 0, write_counter = 0;
-			std::mutex sort_mutext;
+			std::mutex read_mutext, write_mutex;
 			auto threads = std::make_unique<std::thread[]>( max_threads - 1 );
 
 			{	// scope for reader stream
@@ -333,11 +336,11 @@ Phase2Results RunPhase2(
 					threads[t] = std::thread(	SortRegularTableThread, &table_stream,
 																		table_size, entry_size, new_entry_size,
 																		&read_position, &write_counter, current_bitfield.get(),
-																		&index, sort_manager.get(), &sort_mutext, pos_offset_size, k );
+																		&index, sort_manager.get(), &read_mutext, &write_mutex, pos_offset_size, k );
 
 				SortRegularTableThread( &table_stream, table_size, entry_size, new_entry_size,
 																	 &read_position, &write_counter, current_bitfield.get(),
-																	 &index, sort_manager.get(), &sort_mutext, pos_offset_size, k );
+																	 &index, sort_manager.get(), &read_mutext, &write_mutex, pos_offset_size, k );
 
 				for( uint64_t t = 0; t < max_threads - 1; t++ )
 					threads[t].join();
