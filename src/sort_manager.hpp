@@ -43,25 +43,26 @@ struct CacheBucket{
 	{	}
 
 	inline void Add( const uint8_t *entry, const uint32_t &stats ){
-		parent.addStat( stats );
+		statistics[entries.used()/entry_size] = stats;
 		entries.add( entry, entry_size );
 
 		if( entries.used() > limit_size ){
-			if( parent.TryAddEntriesTS( entries ) )
+			if( parent.TryAddEntriesTS( entries, statistics ) )
 				entries.setUsed( 0 );
-			else if( entries.isFull() ) Flush();
+			else if( entries.isFull() ) {
+				parent.AddEntriesTS( entries, statistics );
+				entries.setUsed( 0 );
+			}
 		}
 	}
 
-	inline void Flush(){
-		if( entries.used() > 0 ){
-			parent.AddEntriesTS( entries );
-			entries.setUsed( 0 );
-		}
+	~CacheBucket(){
+		if( entries.used() > 0 )
+			parent.AddEntriesTS( entries, statistics );
 	}
 
-	~CacheBucket(){Flush();}
 private:
+	uint32_t statistics[CacheBucketSize];
 	StreamBuffer entries;
 	const uint16_t entry_size;
 	const uint32_t limit_size;
@@ -276,12 +277,6 @@ public:
 				Add( bytes );
 			}
 
-			inline void Flush(){
-				for( uint32_t i = 0; i < parent_.buckets_.size(); i++ )
-					buckets_cache[i]->Flush();
-			}
-
-			~ThreadWriter(){Flush();}
 		private:
 			SortManager &parent_;
 			std::unique_ptr<std::unique_ptr<CacheBucket>[]> buckets_cache;
