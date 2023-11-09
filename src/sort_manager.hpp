@@ -587,11 +587,9 @@ private:
 			std::cout<< ", waits: " << stats_of->WiatsCount();
 		std::cout << std::flush;
 
-#ifndef NDBUG
-		std::cout << std::endl;
-#endif
-
+#ifdef NDEBUG
 		if( !hasMoreBuckets || buckets_[stats_of->BucketNo()+1].Size() == 0 )
+#endif
 			std::cout << std::endl;
 	}
 
