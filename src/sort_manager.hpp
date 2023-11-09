@@ -557,7 +557,7 @@ private:
 	}
 
 	// checks if this sort is single in total process
-	inline bool isSingleSort() const { return phase_ == 1 || phase_ == 3; }
+	inline bool isSingleSort() const { return phase_ == 1 || phase_ == 3 || (phase_ == 4 && table_index_ >= 6); }
 
 	void ShowStatistics( const SortedBucketBuffer *stats_of ) const {
 		double const total_ram = memory_manager.getTotalSize() / (1024.0 * 1024.0 * 1024.0);
