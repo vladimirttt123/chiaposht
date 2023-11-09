@@ -41,7 +41,7 @@ struct Phase2Results
 };
 
 
-inline void ScanTable( IReadDiskStream *disk, int16_t const &entry_size,
+inline void ScanTable( IReadDiskStream *disk, int64_t const table_size, int16_t const &entry_size,
 											 bitfield &current_bitfield, bitfield &next_bitfield,
 											 const uint32_t &num_threads, uint8_t const pos_offset_size ){
 	// next_bitfield.clear(); next_bitfield should be cleared outside!!!!
@@ -57,11 +57,11 @@ inline void ScanTable( IReadDiskStream *disk, int16_t const &entry_size,
 #endif // __GNUC__
 	// Run the threads
 	for( uint32_t i = 0; i < max_threads; i++ ){
-		threads[i] = std::thread( [ entry_size, pos_offset_size, read_bufsize, &read_mutex]
-															(IReadDiskStream *disk, int64_t *read_cursor, const bitfield * current_bitfield, bitfield *next_bitfield){
+		threads[i] = std::thread( [ entry_size, pos_offset_size, read_bufsize, &read_mutex, &table_size]
+													(IReadDiskStream *disk, int64_t *read_cursor, const bitfield * current_bitfield, bitfield *next_bitfield){
 			std::unique_ptr<uint8_t[]> buffer( Util::NewSafeBuffer(read_bufsize) );
 			bitfieldReader cur_bitfield( *current_bitfield );
-			const auto proc5_size = current_bitfield->size()/20;
+			const auto proc5_size = table_size/20;
 			int64_t buf_size = 0, buf_start = 0;
 #ifndef __GNUC__
 			auto writer = bitfield::ThreadWriter( *next_bitfield );
@@ -82,7 +82,7 @@ inline void ScanTable( IReadDiskStream *disk, int16_t const &entry_size,
 					if( current_bitfield->is_readonly() ) read_mutex[1].unlock();
 				}
 
-				if( read_bufsize < proc5_size && buf_start > 0 && buf_start/proc5_size != (buf_start-read_bufsize)/proc5_size )
+				if( read_bufsize < proc5_size && buf_start > 0 && buf_start/proc5_size != (buf_start-buf_size)/proc5_size )
 					std::cout << (((buf_start/proc5_size)%5) == 0 ? "*" : "-" ) << std::flush;
 
 
@@ -131,7 +131,7 @@ inline void SortRegularTableThread( IReadDiskStream * disk, const uint64_t &tabl
 	uint64_t buf_size = (BUF_SIZE/entry_size)*entry_size;
 	std::unique_ptr<uint8_t[]> buffer( Util::NewSafeBuffer(buf_size) );
 	SortManager::ThreadWriter writer = SortManager::ThreadWriter( *sort_manager );
-	uint64_t proc5_size = current_bitfield->size()/20;
+	uint64_t proc5_size = table_size/20;
 	if( buf_size > proc5_size ) proc5_size = 1; // do not show counters
 
 	bitfieldReader cur_bitfield = bitfieldReader( *current_bitfield );
@@ -286,7 +286,7 @@ Phase2Results RunPhase2(
 					std::cout << "\ttable " << table_index << ": scan " << std::flush;
 
 					auto table_reader = ReadFileStream( &tmp_1_disks[table_index], table_size * entry_size );
-					ScanTable( &table_reader, entry_size, *current_bitfield.get(), *next_bitfield.get(),
+					ScanTable( &table_reader, table_size, entry_size, *current_bitfield.get(), *next_bitfield.get(),
 										 max_threads, pos_offset_size );
 
 					scan_timer.PrintElapsed( "time =" );

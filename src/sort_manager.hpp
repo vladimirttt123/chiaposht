@@ -30,26 +30,27 @@ using namespace std::chrono_literals; // for operator""ns;
 #include "exceptions.hpp"
 #include "sorting_bucket.hpp"
 
-const uint32_t CacheBucketSize = 256; // mesured in number of entries
+const inline uint32_t CacheBucketSize = 256; // mesured in number of entries
+const inline uint32_t CacheBucketSizeLimit = 250; // mesured in number of entries
 
 // Small bucket used in thread writings
 struct CacheBucket{
 	explicit CacheBucket( SortingBucket &cacheFor )
 			: entries( CacheBucketSize*cacheFor.EntrySize() )
 			, entry_size( cacheFor.EntrySize() )
-			, limit_size( entries.size()*0.8 )
+			, limit_size( CacheBucketSizeLimit*cacheFor.EntrySize() )
 			, parent( cacheFor )
 	{	}
 
 	inline void Add( const uint8_t *entry, const uint32_t &stats ){
 		parent.addStat( stats );
+		entries.add( entry, entry_size );
 
 		if( entries.used() > limit_size ){
 			if( parent.TryAddEntriesTS( entries ) )
 				entries.setUsed( 0 );
 			else if( entries.isFull() ) Flush();
 		}
-		entries.add( entry, entry_size );
 	}
 
 	inline void Flush(){
