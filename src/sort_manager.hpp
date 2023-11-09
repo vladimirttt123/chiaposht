@@ -198,7 +198,7 @@ public:
 	{
 
 		uint64_t sorting_size = (1ULL<<k)*entry_size;
-		double expected_buckets_no = num_buckets*((phase_==1 || phase==4)?1.0:( phase_==3?0.64:0.8 ) );
+		double expected_buckets_no = num_buckets*( phase_==1 ?1.0:( phase_==3?0.64:0.8 ) );
 		const auto expected_bucket_size = sorting_size/(double)expected_buckets_no;
 		const auto memory_size = memory_manager.getTotalSize()/(isSingleSort()?1:2);
 		const double buckets_in_ram = num_threads > 1 ? 2.1 : 1.05;
