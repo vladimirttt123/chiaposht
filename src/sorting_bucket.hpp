@@ -312,7 +312,7 @@ private:
 	// This function in particular for CachBucket
 	inline void addStat( const uint32_t &stat ){
 		assert( statistics );
-		assert( stat < (1<<bucket_bits_count_) );
+		assert( stat < (1U<<bucket_bits_count_) );
 
 		statistics[stat].fetch_add( 1, std::memory_order_relaxed );
 	}

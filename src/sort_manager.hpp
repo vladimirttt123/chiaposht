@@ -197,9 +197,9 @@ public:
 	{
 
 		uint64_t sorting_size = (1<<k)*entry_size;
-		auto expected_buckets = (uint64_t)(num_buckets*(phase_==1?1.0:0.8));
-		const auto expected_bucket_size = sorting_size/(double)expected_buckets;
-		const auto memory_size = memory_manager.getTotalSize()/(phase_==1?1:2);
+		double expected_buckets_no = num_buckets*(phase_==1?1.0:( phase_==3?0.64:0.8 ) );
+		const auto expected_bucket_size = sorting_size/(double)expected_buckets_no;
+		const auto memory_size = memory_manager.getTotalSize()/(isSingleSort()?1:2);
 		const double buckets_in_ram = num_threads > 1 ? 2.1 : 1.05;
 
 		if( memory_size/expected_bucket_size < buckets_in_ram ){
@@ -536,8 +536,8 @@ private:
 			memory_manager.requier( reserved_buffer_size );
 		}
 
-		uint32_t num_background_threads = std::max( num_threads>1?2U:1U, num_threads/( ( phase_ == 1 || table_index_ == 1 ) ? 1 : 2) )
-				, num_read_threads = std::max( num_threads>1?2U:1U, num_threads/( ( phase_ == 1 || table_index_ == 1 ) ? 2 : 3)  );
+		uint32_t num_background_threads = std::max( num_threads>1?2U:1U, num_threads/( isSingleSort() ? 1 : 2) )
+				, num_read_threads = std::max( num_threads>1?2U:1U, num_threads/( isSingleSort() ? 2 : 3)  );
 
 		sorted_current.reset( new SortedBucketBuffer( this, reserved_buffer_size, &bucket_read_mutex, num_background_threads, num_read_threads ) ); // reserve for current bucket
 		sorted_current->SortBucket( &buckets_[0] ); // first one always sync sort
@@ -555,6 +555,9 @@ private:
 
 		return true;
 	}
+
+	// checks if this sort is single in total process
+	inline bool isSingleSort() const { return phase_ == 1 || phase_ == 3; }
 
 	void ShowStatistics( const SortedBucketBuffer *stats_of ) const {
 		double const total_ram = memory_manager.getTotalSize() / (1024.0 * 1024.0 * 1024.0);
