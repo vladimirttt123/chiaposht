@@ -197,11 +197,16 @@ public:
 			, k_(k), phase_(phase), table_index_(table_index)
 	{
 
-		uint64_t sorting_size = (1<<k)*entry_size;
-		double expected_buckets_no = num_buckets*(phase_==1?1.0:( phase_==3?0.64:0.8 ) );
+		uint64_t sorting_size = (1ULL<<k)*entry_size;
+		double expected_buckets_no = num_buckets*((phase_==1 || phase==4)?1.0:( phase_==3?0.64:0.8 ) );
 		const auto expected_bucket_size = sorting_size/(double)expected_buckets_no;
 		const auto memory_size = memory_manager.getTotalSize()/(isSingleSort()?1:2);
 		const double buckets_in_ram = num_threads > 1 ? 2.1 : 1.05;
+
+//		std::cout << "Estimation by k: " << (int)k << ", entry_size: " << entry_size
+//							<< ", size: " << sorting_size << ", buckets_no: " << expected_buckets_no
+//							<< ", bucket_size: " << (expected_bucket_size/1024/1024) << "MiB, memory size: " << memory_size
+//							<< ", num buckets in ram: " << buckets_in_ram << std::endl;
 
 		if( memory_size/expected_bucket_size < buckets_in_ram ){
 			uint32_t need_buckets = num_buckets;
