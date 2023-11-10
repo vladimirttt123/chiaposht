@@ -582,17 +582,25 @@ private:
 							<< std::setprecision( free_ram > 10 ? 1:( free_ram>1? 2 : 3) ) << free_ram << "GiB"
 							<< std::flush;
 
+		auto showTime = [](double time){
+			bool isMin = time > 600;
+			std::cout << std::setprecision( isMin ? 0 : 2 ) << ( time /(isMin ? 60 : 1) )
+								<< (isMin ? "m":"s" );
+		};
 
 		auto read_time = (stats_of->Bucket()->read_time)/1000.0;
 		auto total_time = (stats_of->Bucket()->sort_time)/1000.0;
 		auto passed_time = (std::chrono::high_resolution_clock::now() - start_sorting_time)/std::chrono::milliseconds(1)/1000.0;
-		auto estimated_time = passed_time/(stats_of->BucketNo()+1) * max_bucket - passed_time;
+		auto estimated_time = ( stats_of->BucketNo() == 0 ? passed_time : (passed_time-total_time)/stats_of->BucketNo() )
+																													 * max_bucket - passed_time;
 
 		std::cout << std::setprecision( std::min( read_time, total_time ) < 10 ? 2 : 1 )
 							<< ", times: ( read: " << read_time << "s, bucket: "
-							<< total_time << "s, total: " << passed_time <<"s, est. left: "
-							<< (estimated_time < 600 ? estimated_time : (estimated_time/60) )
-							<< (estimated_time < 600 ? "s" : "m") << " )";
+							<< total_time << "s, total: ";
+		showTime( passed_time );
+		std::cout <<", est. left: ";
+		showTime( estimated_time );
+		std::cout << " )";
 		if( stats_of->WiatsCount() > 0 )
 			std::cout<< ", waits: " << stats_of->WiatsCount();
 		std::cout << std::flush;
