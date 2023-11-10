@@ -34,12 +34,11 @@ struct SortingBucket{
 		, bucket_bits_count_(bucket_bits_count)
 		, entry_size_(entry_size)
 		, begin_bits_(begin_bits)
-		, statistics( new std::atomic_uint32_t[1<<bucket_bits_count] )
+		, statistics( new uint32_t[1<<bucket_bits_count] )
 		, memory_manager(memory_manager)
 	{
 		// clear statistics
-		for( int64_t i = (1<<bucket_bits_count)-1; i >= 0; i-- )
-			statistics[i].store( 0, std::memory_order_relaxed );
+		memset( statistics.get(), 0, sizeof(uint32_t)<<bucket_bits_count );
 	}
 
 	inline uint64_t SortedPosision() const { return sorted_pos; }
@@ -50,7 +49,7 @@ struct SortingBucket{
 	std::chrono::time_point<std::chrono::high_resolution_clock> start_time;
 	uint64_t prepare_time = 0, read_time = 0, sort_time = 0;
 
-	// Adds Entry to bucket
+	// Adds Entry to bucket - NOT THREADSAFE!!!
 	inline void AddEntry( StreamBuffer &entry, const uint32_t &statistics_bits ){
 		assert( disk ); // Check not closed
 		assert( entry.size() >= entry_size_ );
@@ -58,7 +57,7 @@ struct SortingBucket{
 		assert( statistics_bits < ((uint32_t)1<<bucket_bits_count_) );
 		assert( Util::ExtractNum( entry.get(), entry_size_, begin_bits_, bucket_bits_count_ ) == statistics_bits );
 
-		statistics[statistics_bits].fetch_add(1, std::memory_order_relaxed );
+		statistics[statistics_bits]++;
 		entries_count++;
 		disk->Write( entry );
 	}
@@ -75,13 +74,10 @@ struct SortingBucket{
 			if( entries_count > 0 ){
 				// Save statistics to file
 				statistics_file.reset( CreateFileStream( disk->getFileName() + ".statistics.tmp", memory_manager ) );
-				StreamBuffer buf(sizeof(uint32_t)<<bucket_bits_count_);
-				for( int64_t i = (1<<bucket_bits_count_)-1; i >= 0; i-- )
-					((uint32_t*)buf.get())[i] = statistics[i].load( std::memory_order_relaxed );
-				statistics.reset();
-				buf.setUsed( sizeof(uint32_t)<<bucket_bits_count_ );
+				StreamBuffer buf( (uint8_t*)statistics.get(), sizeof(uint32_t)<<bucket_bits_count_, sizeof(uint32_t)<<bucket_bits_count_ );
 				statistics_file->Write( buf );
 				((IBlockWriter*)statistics_file.get())->Close();
+				buf.release(); // to not delete bufer that is external for the buffer
 			}
 			statistics.reset();
 		} else {
@@ -114,21 +110,17 @@ struct SortingBucket{
 		}
 
 		start_time = std::chrono::high_resolution_clock::now();
-		uint32_t stats[1<<bucket_bits_count_];
+		uint32_t *stats = statistics.get();
 
 		if( !statistics ) {
 			assert( statistics_file );
+			statistics.reset( new uint32_t[1<<bucket_bits_count_] );
 			// Read statistics from file
-			StreamBuffer buf;
-			for( uint8_t* stat_pos = (uint8_t*)stats; statistics_file->Read( buf ) > 0; stat_pos += buf.used() )
-				memcpy( stat_pos, buf.get(), buf.used() );
+			uint8_t * stats_pntr = (uint8_t*)( stats = statistics.get() );
+			for( StreamBuffer buf; statistics_file->Read( buf ) > 0; stats_pntr += buf.used() )
+				memcpy( stats_pntr, buf.get(), buf.used() );
 
 			statistics_file->Remove();
-			statistics_file.reset();
-		}else { // copy from atomic to stack
-			for( int64_t i = (1<<bucket_bits_count_)-1; i >= 0; i-- )
-				stats[i] = statistics[i].load(std::memory_order_relaxed);
-			statistics.reset();
 		}
 
 		uint32_t buckets_count = 1<<bucket_bits_count_;
@@ -176,15 +168,14 @@ struct SortingBucket{
 				}
 			};
 
-			// Start threads
-			{
+			{	// Start threads
 				std::vector<std::thread> threads;
 				for( uint32_t t = 0; t < num_read_threads; t++ )
 					threads.emplace_back( thread_func );
 
 				for (auto& t : threads) t.join();
 
-				if( read_mutex != NULL ) read_mutex->unlock();
+				if( read_mutex != NULL ) read_mutex->unlock(); // for external purposes mark end of reading.
 			}
 
 #ifndef NDEBUG
@@ -258,6 +249,7 @@ struct SortingBucket{
 		}
 
 		sorted_pos = entries_count*entry_size_; // mark finished sort
+		statistics.reset(); // clear ram
 
 		sort_time = (std::chrono::high_resolution_clock::now() - start_time)/std::chrono::milliseconds(1);
 #ifndef NDEBUG
@@ -281,7 +273,7 @@ private:
 	const uint16_t entry_size_;
 	const uint16_t begin_bits_;
 	// this is the number of entries for each subbucket
-	std::unique_ptr<std::atomic_uint32_t[]> statistics;
+	std::unique_ptr<uint32_t[]> statistics;
 	std::unique_ptr<IBlockWriterReader> statistics_file;
 	uint64_t entries_count = 0;
 	uint64_t sorted_pos = 0;
@@ -310,11 +302,7 @@ private:
 
 
 	// This function in particular for CachBucket
-
-	// This function in particular for CachBucket
-	inline bool TryAddEntriesTS( StreamBuffer & entries, const uint32_t * stats ){
-
-		if( !addMutex->try_lock() ) return false;
+	inline void BulkAdd( StreamBuffer & entries, const uint32_t * stats ){
 		assert( disk ); // Check not closed
 
 		auto count = entries.used() / entry_size_;
@@ -322,30 +310,27 @@ private:
 		// Adding to statistics
 		for( uint32_t i = 0; i < count; i++ )	{
 			assert( Util::ExtractNum( entries.get() + i*entry_size_, entry_size_, begin_bits_, bucket_bits_count_ ) == stats[i] );
-			statistics[stats[i]].fetch_add( 1, std::memory_order_relaxed );
+			statistics[stats[i]]++;
 		}
 
 		disk->Write( entries );
 		entries_count += count;
+	}
+
+	// This function in particular for CachBucket
+	inline bool TryAddEntriesTS( StreamBuffer & entries, const uint32_t * stats ){
+
+		if( !addMutex->try_lock() ) return false;
+
+		BulkAdd( entries, stats );
 
 		addMutex->unlock();
 		return true;
 	}
 
 	inline void AddEntriesTS( StreamBuffer & entries, const uint32_t * stats ){
-
 		std::lock_guard<std::mutex> lk( *addMutex.get() );
-
-		auto count = entries.used() / entry_size_;
-
-		// Adding to statistics
-		for( uint32_t i = 0; i < count; i++ )	{
-			assert( Util::ExtractNum( entries.get() + i*entry_size_, entry_size_, begin_bits_, bucket_bits_count_ ) == stats[i] );
-			statistics[stats[i]].fetch_add( 1, std::memory_order_relaxed );
-		}
-
-		disk->Write( entries );
-		entries_count += count;
+		BulkAdd( entries, stats );
 	}
 	friend struct CacheBucket;
 };
