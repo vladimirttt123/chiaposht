@@ -514,6 +514,7 @@ private:
 	const uint8_t k_, phase_, table_index_;
 	uint32_t stats_mask;
 	//uint64_t time_total_wait = 0;
+	std::chrono::time_point<std::chrono::high_resolution_clock> start_sorting_time;
 
 	uint64_t stream_read_position = 0;
 
@@ -525,6 +526,8 @@ private:
 		if( sorted_current ) return false;
 
 		assert( buckets_.size() > 0 );
+
+		start_sorting_time = std::chrono::high_resolution_clock::now();
 
 		// find biggerst bucket and reserv ram to sort it
 		uint64_t reserved_buffer_size  = BiggestBucketSize();
@@ -579,11 +582,17 @@ private:
 							<< std::setprecision( free_ram > 10 ? 1:( free_ram>1? 2 : 3) ) << free_ram << "GiB"
 							<< std::flush;
 
+
 		auto read_time = (stats_of->Bucket()->read_time)/1000.0;
 		auto total_time = (stats_of->Bucket()->sort_time)/1000.0;
+		auto passed_time = (std::chrono::high_resolution_clock::now() - start_sorting_time)/std::chrono::milliseconds(1)/1000.0;
+		auto estimated_time = passed_time/(stats_of->BucketNo()+1) * max_bucket - passed_time;
+
 		std::cout << std::setprecision( std::min( read_time, total_time ) < 10 ? 2 : 1 )
-							<< ", times: ( read:" << read_time << "s, total: "
-							<< total_time << "s )";
+							<< ", times: ( read: " << read_time << "s, bucket: "
+							<< total_time << "s, total: " << passed_time <<"s, est. left: "
+							<< (estimated_time < 600 ? estimated_time : (estimated_time/60) )
+							<< (estimated_time < 600 ? "s" : "m") << " )";
 		if( stats_of->WiatsCount() > 0 )
 			std::cout<< ", waits: " << stats_of->WiatsCount();
 		std::cout << std::flush;
