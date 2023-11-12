@@ -555,7 +555,7 @@ private:
 
 		sorted_current.reset( new SortedBucketBuffer( this, reserved_buffer_size, &bucket_read_mutex, num_background_threads, num_read_threads ) ); // reserve for current bucket
 		sorted_current->SortBucket( &buckets_[0] ); // first one always sync sort
-
+		sorted_current->num_read_threads = 1;
 
 		if( num_threads > 1 && buckets_.size() > 1 ){
 			if( memory_manager.request( reserved_buffer_size, true ) ){
@@ -637,11 +637,15 @@ private:
 
 			sorted_current.swap( sorted_next ); // bring sorted to front
 
-
 			uint next_bucket_no = sorted_current->BucketNo() + 1;
 			hasMoreBuckets = next_bucket_no < buckets_.size() && buckets_[next_bucket_no].Count() > 0;
-			if( hasMoreBuckets )
+			if( hasMoreBuckets ){
+				// define number of threads for next sort - it could be not accurate because this numbers changed in threads... but it is ok.
+				sorted_next->num_background_threads = std::max( sorted_current->num_background_threads, sorted_next->num_background_threads );
+				sorted_next->num_read_threads = std::max( sorted_current->num_read_threads, sorted_next->num_read_threads );
+
 				sorted_next->StartSorting( next_bucket_no, sorted_current->EndPosition(), &buckets_[next_bucket_no] );
+			}
 		} else {
 			uint next_bucket_no = sorted_current->BucketNo() + 1;
 			sorted_current->SortBucket( &buckets_[next_bucket_no] );
