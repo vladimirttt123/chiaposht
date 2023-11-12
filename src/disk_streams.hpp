@@ -841,7 +841,7 @@ IBlockWriterReader * CreateFileStream( const fs::path &fileName, MemoryManager &
 // This stream not garantee same read order as write order
 struct BucketStream{
 	BucketStream( std::string fileName, MemoryManager &memory_manager, uint16_t bucket_no, uint8_t log_num_buckets,
-								uint16_t entry_size, uint16_t begin_bits, bool compact = true, int8_t sequence_start_bit = -1 )
+								uint16_t entry_size, uint16_t begin_bits, bool compact = true, int16_t sequence_start_bit = -1 )
 		: fileName(fileName)
 		, memory_manager( memory_manager )
 		, bucket_no_( bucket_no )
@@ -972,7 +972,7 @@ private:
 	std::unique_ptr<std::thread> disk_io_thread;
 	const uint16_t entry_size_;
 	const uint16_t begin_bits_;
-	const int8_t sequence_start_bit;
+	const int16_t sequence_start_bit;
 	std::mutex sync_mutex;
 
 	const bool compact;

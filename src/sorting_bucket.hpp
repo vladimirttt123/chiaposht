@@ -24,7 +24,7 @@ enum sorting_bucket_status : uint8_t{ WRITING = 0, READING = 1, SORTING = 2, SOR
 // ==================================================================================================
 struct SortingBucket{
 	SortingBucket( const std::string &fileName, MemoryManager &memory_manager, uint16_t bucket_no, uint8_t log_num_buckets, uint16_t entry_size,
-								 uint32_t begin_bits, uint8_t bucket_bits_count, bool enable_compression = true, uint16_t sequence_start_bit = -1 )
+								 uint32_t begin_bits, uint8_t bucket_bits_count, bool enable_compression = true, int16_t sequence_start_bit = -1 )
 		:	disk( new BucketStream( fileName, memory_manager, bucket_no, log_num_buckets, entry_size, begin_bits, enable_compression, sequence_start_bit ) )
 
 #ifndef NDEBUG
@@ -149,25 +149,46 @@ struct SortingBucket{
 		} else { // Read by threads
 			if( num_read_threads < 6 ){
 				 // read in 2 directions one fills from start and second from back without synchronizations.
-				 auto subbucket_end_positions = std::make_unique<uint64_t[]>( subbuckets_count );
-				 // Calculate initial end subbuckets positions.
-				 for( uint32_t i = 0; i < subbuckets_count-1; i++ )
-					 subbucket_end_positions[i] = subbucket_positions[i+1] - entry_size_;
-				 subbucket_end_positions[subbuckets_count-1] = entry_size_*entries_count - entry_size_;
+				auto subbucket_end_positions = std::make_unique<uint64_t[]>( subbuckets_count );
+				// Calculate initial end subbuckets positions.
+				for( uint32_t i = 0; i < subbuckets_count-1; i++ )
+					subbucket_end_positions[i] = subbucket_positions[i+1] - entry_size_;
+				subbucket_end_positions[subbuckets_count-1] = entry_size_*entries_count - entry_size_;
 
-				 auto thread_function = [this, &memory]( uint64_t * positions, int64_t direction){
-					 StreamBuffer buf( BUF_SIZE/entry_size_*entry_size_ );
-					 std::unique_ptr<IBlockReader> reader( disk->CreateReader() );
+				std::vector<std::thread> threads;
+				std::mutex forward_mutex, backward_mutex;
 
-					 while(  reader->Read( buf ) > 0 )
-						 FillBuckets( memory, buf.get(), buf.used(), positions, direction );
-				 };
-				 // start threads
-				 std::thread forward_thread( thread_function, subbucket_positions.get(), entry_size_ );
-				 std::thread backward_thread( thread_function, subbucket_end_positions.get(), -entry_size_ );
+				if( num_read_threads == 2 ){ // in case of 2 threads it is possible to do without locks on memory
+					auto thread_function = [this, &memory]( uint64_t * positions, int64_t direction){
+						StreamBuffer buf( BUF_SIZE/entry_size_*entry_size_ );
+						std::unique_ptr<IBlockReader> reader( disk->CreateReader() );
 
-				 forward_thread.join();
-				 backward_thread.join();
+						while(  reader->Read( buf ) > 0 )
+							FillBuckets( memory, buf.get(), buf.used(), positions, direction );
+					};
+
+					// start threads
+					threads.emplace_back( thread_function, subbucket_positions.get(), entry_size_ );
+					threads.emplace_back( thread_function, subbucket_end_positions.get(), -entry_size_ );
+				 } else {
+					auto thread_function = [this, &memory]( uint64_t * positions, int64_t direction, std::mutex *mut ){
+						StreamBuffer buf( BUF_SIZE/entry_size_*entry_size_ );
+						std::unique_ptr<IBlockReader> reader( disk->CreateReader() );
+
+						while(  reader->Read( buf ) > 0 ){
+							std::lock_guard<std::mutex> lk(*mut);
+							FillBuckets( memory, buf.get(), buf.used(), positions, direction );
+						}
+					};
+
+					for( uint t = 0; t < num_read_threads; t++ )
+						if( (t&1) == 0 )
+							threads.emplace_back( thread_function, subbucket_positions.get(), entry_size_, &forward_mutex );
+						else
+							threads.emplace_back( thread_function, subbucket_end_positions.get(), -entry_size_, &backward_mutex );
+				 }
+
+				 for (auto& t : threads) t.join(); // wait for threads
 
 #ifndef NDEBUG
 				 // Chcek everything read as written.
@@ -212,19 +233,18 @@ struct SortingBucket{
 #endif
 			}
 
-			// Clean underling resources
-			if( read_mutex != NULL ) read_mutex->unlock(); // for external purposes mark end of reading.
-			disk->EndToRead();
-			total_reads = disk->getTotalReads(); // save reads statistics
-			instant_reads = disk->getInstantReads();// save reads statistics
-			disk.reset();
-
 			// Fix bucket_positions for sorting step in such way that bucket_positions[i] reprsents end position of subbucket.
 			subbucket_positions[0] = stats[0]*entry_size_;
 			for( uint32_t i = 1; i < subbuckets_count; i++ )
 				subbucket_positions[i] = subbucket_positions[i-1] + stats[i]*entry_size_;
-		}
+		} // end read by threads
 
+		// Clean underling resources
+		if( read_mutex != NULL ) read_mutex->unlock(); // for external purposes mark end of reading.
+		disk->EndToRead();
+		total_reads = disk->getTotalReads(); // save reads statistics
+		instant_reads = disk->getInstantReads();// save reads statistics
+		disk.reset();
 		read_time = (std::chrono::high_resolution_clock::now() - end_prepare_time)/std::chrono::milliseconds(1);
 
 		if( num_threads <= 1 ){

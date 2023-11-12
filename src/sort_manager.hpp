@@ -93,25 +93,31 @@ struct SortedBucketBuffer{
 	~SortedBucketBuffer(){ FinishSort(); }
 
 	inline uint64_t WiatsCount() const { return waits_count; }
+	inline uint64_t WiatsReadCount() const { return read_waits_count; }
+	inline double WiatsTimeSec() const { return wait_time; }
 
 	// returns true if current sort just finished.
 	inline void WaitForSortedTo( uint64_t position ){
 		assert( position >= start_position && position <= end_position );
 
 		if( sorting_thread.load( std::memory_order_relaxed ) != NULL && position >= start_position && position <= end_position ){
+			waits_count++;
+			if( bucket->SortedPosision() <= 0 ) read_waits_count++;
+
+			auto start_time = std::chrono::high_resolution_clock::now();
+
 			if( position == end_position ) FinishSort();
 			else {
 				while( sorting_thread.load( std::memory_order_relaxed ) != NULL && position >= start_position
 							 && (position - start_position) > bucket->SortedPosision() ){
-					waits_count++;
 					std::this_thread::sleep_for( 100us );
 				}
-
-				//if( wait_count ) std::cout << "";
 
 				if( bucket->SortedPosision() >= bucket->Size() )
 					FinishSort();
 			}
+
+			wait_time += (std::chrono::high_resolution_clock::now() - start_time)/std::chrono::milliseconds(1)/1000.0;
 		}
 	}
 
@@ -150,6 +156,9 @@ struct SortedBucketBuffer{
 												r_mutex->lock();
 												bucket->SortToMemory( buf, num_background_threads, num_read_threads, r_mutex );
 												ShowStats( this->sort_manager, this );
+												// adjust number of threads for next sorting?
+												if( read_waits_count > 0 && num_read_threads < num_background_threads )
+													num_read_threads++;
 											}, this->bucket, this->bucket_buffer.get(), this->read_mutex ) );
 	}
 private:
@@ -159,7 +168,8 @@ private:
 	SortingBucket *bucket = NULL;
 	std::atomic<std::thread*> sorting_thread = NULL;
 	std::mutex *read_mutex;
-	uint64_t waits_count = 0;
+	uint64_t waits_count = 0, read_waits_count = 0;
+	double wait_time = 0;
 
 
 	inline bool FinishSort( std::thread * newThread = NULL){
@@ -549,7 +559,7 @@ private:
 
 		if( num_threads > 1 && buckets_.size() > 1 ){
 			if( memory_manager.request( reserved_buffer_size, true ) ){
-				sorted_next.reset( new SortedBucketBuffer( this, reserved_buffer_size, &bucket_read_mutex, num_background_threads, num_read_threads ) ); // reserve for next bucket background sorting
+				sorted_next.reset( new SortedBucketBuffer( this, reserved_buffer_size, &bucket_read_mutex, num_background_threads, 1 /* num_read_threads */) ); // reserve for next bucket background sorting
 				sorted_next->StartSorting( 1, sorted_current->EndPosition(), &buckets_[1] ); // backgound sorting for next bucket
 			}
 			else
@@ -594,6 +604,7 @@ private:
 		auto estimated_time = ( stats_of->BucketNo() == 0 ? passed_time : (passed_time-total_time)/stats_of->BucketNo() )
 																													 * max_bucket - passed_time;
 
+		std::cout << ", thr: (r: " << stats_of->num_read_threads << ", srt: " << stats_of->num_background_threads << ")";
 		std::cout << std::setprecision( std::min( read_time, total_time ) < 10 ? 2 : 1 )
 							<< ", times: ( read: " << read_time << "s, bucket: "
 							<< total_time << "s, total: ";
@@ -602,7 +613,8 @@ private:
 		showTime( estimated_time );
 		std::cout << " )";
 		if( stats_of->WiatsCount() > 0 )
-			std::cout<< ", waits: " << stats_of->WiatsCount();
+			std::cout << ", waits: (cnt: " << stats_of->WiatsCount() << ", r_cnt: " << stats_of->WiatsReadCount() << ", time: "
+								<< std::setprecision(2) << stats_of->WiatsTimeSec() << "s)";
 		std::cout << std::flush;
 
 #ifdef NDEBUG
@@ -624,6 +636,7 @@ private:
 			assert( !sorted_current->WaitForSorted() ); // sort on current should be finished at this point
 
 			sorted_current.swap( sorted_next ); // bring sorted to front
+
 
 			uint next_bucket_no = sorted_current->BucketNo() + 1;
 			hasMoreBuckets = next_bucket_no < buckets_.size() && buckets_[next_bucket_no].Count() > 0;
