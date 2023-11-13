@@ -147,7 +147,7 @@ struct SortingBucket{
 			assert( subbucket_positions[0] == stats[0]*entry_size_ ); // check first bucket is full
 			assert( subbucket_positions[subbuckets_count-1]/entry_size_ == Count() ); // check last bucket is full
 		} else { // Read by threads
-			if( num_read_threads < 6 ){
+			if( num_read_threads <= 6 ){
 				 // read in 2 directions one fills from start and second from back without synchronizations.
 				auto subbucket_end_positions = std::make_unique<uint64_t[]>( subbuckets_count );
 				// Calculate initial end subbuckets positions.
