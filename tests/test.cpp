@@ -930,14 +930,15 @@ TEST_CASE("PlottingOne")
 }
 TEST_CASE("Plotting")
 {
-//		SECTION("Disk plot k22 small buffer single-thread")
+//		SECTION("First Plotting")
 //		{
-//				PlotAndTestProofOfSpace("cpp-test-plot.dat", 5000, 23, plot_id_3, 125 , 4853, 16384, 12, 256);
+//				PlotAndTestProofOfSpace("cpp-test-plot.dat", 5000, 22, plot_id_3, 28, 4932, 65536, 6, 16);
 //		}
-	SECTION("Disk plot k22 small buffer single-thread")
-	{
-			PlotAndTestProofOfSpace("cpp-test-plot.dat", 5000, 22, plot_id_3, 18 , 4932, 65536, 1, 16);
-	}
+
+		SECTION("Disk plot k22 small buffer single-thread")
+		{
+				PlotAndTestProofOfSpace("cpp-test-plot.dat", 5000, 22, plot_id_3, 18 , 4932, 65536, 1, 16);
+		}
 
 		SECTION("Disk plot k18")
     {

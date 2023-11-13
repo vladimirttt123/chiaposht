@@ -103,15 +103,20 @@ struct SortedBucketBuffer{
 		assert( position >= start_position && position <= end_position );
 
 		if( sorting_thread.load( std::memory_order_relaxed ) != NULL && position >= start_position && position <= end_position ){
-			waits_count++;
-			if( bucket->SortedPosision() <= 0 ) read_waits_count++;
 
 			auto start_time = std::chrono::high_resolution_clock::now();
 
-			if( position == end_position ) FinishSort();
+			if( position == end_position ){
+				waits_count++;
+				if( bucket->SortedPosision() <= 0 ) read_waits_count++;
+
+				FinishSort();
+			}
 			else {
 				while( sorting_thread.load( std::memory_order_relaxed ) != NULL && position >= start_position
 							 && (position - start_position) > bucket->SortedPosision() ){
+					waits_count++;
+					if( bucket->SortedPosision() <= 0 ) read_waits_count++;
 					std::this_thread::sleep_for( 100us );
 				}
 
