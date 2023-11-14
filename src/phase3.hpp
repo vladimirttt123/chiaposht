@@ -665,11 +665,12 @@ Phase3Results RunPhase3(
 				if( num_threads <= 1 )
 					parking_thread();
 				else {
-					std::unique_ptr<std::thread> threads[num_threads];
-					for( uint32_t t = 0; t < num_threads*2; t++ )
+					auto t_num = num_threads*2; // double the number of threads for this part
+					std::unique_ptr<std::thread> threads[t_num];
+					for( uint32_t t = 0; t < t_num; t++ )
 						threads[t].reset( new std::thread(parking_thread) );
 
-					for( uint32_t t = 0; t < num_threads; t++ )
+					for( uint32_t t = 0; t < t_num; t++ )
 						threads[t]->join();
 				}
 
