@@ -78,13 +78,14 @@ void SortDoneEvent( const SortManager* sort_mngr, const SortedBucketBuffer *sbuf
 struct SortedBucketBuffer{
 	const uint64_t buffer_size;
 	const SortManager *sort_manager;
-	const int max_threads;
+	const int max_threads, min_threads;
 	int num_background_threads, num_read_threads;
 
 	SortedBucketBuffer( const SortManager *sort_manager, uint64_t buffer_size, std::mutex *read_mutex, int num_background_threads, int num_read_threads )
 			: buffer_size( buffer_size )
 			, sort_manager( sort_manager )
 			, max_threads( num_background_threads )
+			, min_threads( std::max( max_threads > 1 ? 2 : 1 , max_threads/2 ) )
 			, num_background_threads(num_background_threads)
 			, num_read_threads( num_read_threads )
 			, bucket_buffer( Util::NewSafeBuffer( buffer_size ) )
@@ -168,7 +169,7 @@ struct SortedBucketBuffer{
 												// adjust number of threads for next sorting?
 												if( read_waits_count > 0 && num_read_threads < max_threads )
 													num_read_threads++;
-												if( num_background_threads > 2 && !isPrevWaited && waits_count == 0 )
+												if( num_background_threads > min_threads && !isPrevWaited && waits_count == 0 )
 													num_background_threads--;
 												else if( num_background_threads < max_threads && waits_count > 0 )
 													num_background_threads++;
