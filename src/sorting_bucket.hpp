@@ -19,7 +19,7 @@
 #include "quicksort.hpp"
 #include "disk_streams.hpp"
 
-enum sorting_bucket_status : uint8_t{ WRITING = 0, READING = 1, SORTING = 2, SORTED = 3 };
+#define STATS_UINT_TYPE uint16_t
 
 // ==================================================================================================
 struct SortingBucket{
@@ -34,11 +34,11 @@ struct SortingBucket{
 		, bucket_bits_count_(bucket_bits_count)
 		, entry_size_(entry_size)
 		, begin_bits_(begin_bits)
-		, statistics( new uint32_t[1<<bucket_bits_count] )
+		, statistics( new STATS_UINT_TYPE[1<<bucket_bits_count] )
 		, memory_manager(memory_manager)
 	{
 		// clear statistics
-		memset( statistics.get(), 0, sizeof(uint32_t)<<bucket_bits_count );
+		memset( statistics.get(), 0, sizeof(STATS_UINT_TYPE)<<bucket_bits_count );
 	}
 
 	inline uint64_t SortedPosision() const { return sorted_pos; }
@@ -74,7 +74,7 @@ struct SortingBucket{
 			if( entries_count > 0 ){
 				// Save statistics to file
 				statistics_file.reset( CreateFileStream( disk->getFileName() + ".statistics.tmp", memory_manager ) );
-				StreamBuffer buf( (uint8_t*)statistics.get(), sizeof(uint32_t)<<bucket_bits_count_, sizeof(uint32_t)<<bucket_bits_count_ );
+				StreamBuffer buf( (uint8_t*)statistics.get(), sizeof(STATS_UINT_TYPE)<<bucket_bits_count_, sizeof(STATS_UINT_TYPE)<<bucket_bits_count_ );
 				statistics_file->Write( buf );
 				((IBlockWriter*)statistics_file.get())->Close();
 				buf.release(); // to not delete bufer that is external for the buffer
@@ -110,29 +110,33 @@ struct SortingBucket{
 		}
 
 		start_time = std::chrono::high_resolution_clock::now();
-		uint32_t *stats = statistics.get();
+		const uint32_t subbuckets_count = 1<<bucket_bits_count_;
+		STATS_UINT_TYPE *stats = statistics.get();
 
 		if( !statistics ) {
 			assert( statistics_file );
-			statistics.reset( new uint32_t[1<<bucket_bits_count_] );
+			statistics.reset( new STATS_UINT_TYPE[1<<bucket_bits_count_] );
 			// Read statistics from file
 			uint8_t * stats_pntr = (uint8_t*)( stats = statistics.get() );
 			for( StreamBuffer buf; statistics_file->Read( buf ) > 0; stats_pntr += buf.used() )
 				memcpy( stats_pntr, buf.get(), buf.used() );
 
+			assert( (STATS_UINT_TYPE*)stats_pntr == stats + subbuckets_count ); // read all stats
+
 			statistics_file->Remove();
 		}
 
-		uint32_t subbuckets_count = 1<<bucket_bits_count_;
+
 		auto subbucket_positions = std::make_unique<uint64_t[]>( subbuckets_count );
 
 		// Calculate initial subbuckets positions.
 		subbucket_positions[0] = 0;
 		for( uint32_t i = 1; i < subbuckets_count; i++ )
-			subbucket_positions[i] = subbucket_positions[i-1] + (stats[i-1]*entry_size_);
+			subbucket_positions[i] = subbucket_positions[i-1] + (((uint64_t)stats[i-1])*entry_size_);
 
 		// Last position should end at count.
-		assert( subbucket_positions[subbuckets_count-1]/entry_size_ + stats[subbuckets_count-1] == Count() );
+		if( subbucket_positions[subbuckets_count-1]/entry_size_ + stats[subbuckets_count-1] != Count() )
+			throw InvalidValueException( "Sort statistics failed - may be some overflow happened. Try decrease subbucket bits number (-S parameter)." );
 
 
 		auto end_prepare_time = std::chrono::high_resolution_clock::now();
@@ -321,7 +325,7 @@ private:
 	const uint16_t entry_size_;
 	const uint16_t begin_bits_;
 	// this is the number of entries for each subbucket
-	std::unique_ptr<uint32_t[]> statistics;
+	std::unique_ptr<STATS_UINT_TYPE[]> statistics;
 	std::unique_ptr<IBlockWriterReader> statistics_file;
 	uint64_t entries_count = 0;
 	uint64_t sorted_pos = 0;

@@ -78,23 +78,10 @@ public:
             throw InvalidValueException("Plot size k= " + std::to_string(k) + " is invalid");
         }
 
-        uint32_t stripe_size, buf_megabytes, num_buckets;
-				uint16_t num_threads;
-        if (stripe_size_input != 0) {
-            stripe_size = stripe_size_input;
-        } else {
-            stripe_size = 65536;
-        }
-        if (num_threads_input != 0) {
-            num_threads = num_threads_input;
-        } else {
-            num_threads = 2;
-        }
-        if (buf_megabytes_input != 0) {
-            buf_megabytes = buf_megabytes_input;
-        } else {
-            buf_megabytes = 4608;
-        }
+				uint32_t stripe_size = stripe_size_input != 0 ? stripe_size_input : 65536;
+				uint32_t buf_megabytes = buf_megabytes_input != 0 ? buf_megabytes_input : 4608;
+				uint32_t num_buckets;
+				uint16_t num_threads = num_threads_input != 0 ? num_threads_input : 2;
 
         if (buf_megabytes < 10) {
             throw InsufficientMemoryException("Please provide at least 10MiB of ram");
@@ -103,7 +90,10 @@ public:
         // Subtract some ram to account for dynamic allocation through the code
         uint64_t thread_memory = num_threads * (2 * (stripe_size + 5000)) *
                                  EntrySizes::GetMaxEntrySize(k, 4, true) / (1024 * 1024);
-        uint64_t sub_mbytes = (5 + (int)std::min(buf_megabytes * 0.05, (double)50) + thread_memory);
+				uint64_t statistics_memory = (1 << (k+1-kSubBucketBits));
+				uint64_t sub_mbytes = (5 + (int)std::min(buf_megabytes * 0.05, (double)50) + thread_memory)
+															+ (statistics_memory>>20);
+
         if (sub_mbytes > buf_megabytes) {
             throw InsufficientMemoryException(
                 "Please provide more memory. At least " + std::to_string(sub_mbytes));
@@ -213,6 +203,7 @@ public:
 				std::cout << "Buffer size is: " << buf_megabytes << "MiB" << std::endl;
 				std::cout << "Per file buffer size is: " << (BUF_SIZE/1024) << "KiB" << std::endl;
 				std::cout << "Buckets number: " << num_buckets << std::endl;
+				std::cout << "Subbuckets bits number: " << ((uint)kSubBucketBits) << " (" << (statistics_memory>>20) << "MiB)" << std::endl;
 				std::cout << "Flags: " << ( phases_flags&ENABLE_BITFIELD ? " using bitfield" : " NO bitfield" )
 									<< ", " << (phases_flags&NO_COMPACTION ? "NO compaction" : "with compaction" )
 									<< ", " << (phases_flags&BUFFER_AS_CACHE ?"USE free buffer as cache" : "NO buffer as cache" );

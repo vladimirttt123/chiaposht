@@ -30,6 +30,9 @@ using namespace std::chrono_literals; // for operator""ns;
 #include "exceptions.hpp"
 #include "sorting_bucket.hpp"
 
+// The number of bits for bottom subbucket that sorted by quick sort
+uint8_t kSubBucketBits = 11;
+
 const inline uint32_t CacheBucketSize = 256; // mesured in number of entries
 const inline uint32_t CacheBucketSizeLimit = 250; // mesured in number of entries
 
@@ -242,7 +245,9 @@ public:
 		}
 
 		log_num_buckets_ = log2(num_buckets);
-		subbucket_bits = std::min( (uint8_t)(32-log_num_buckets_), std::max( (uint8_t)2, (uint8_t)(k - log_num_buckets_ - kSubBucketBits) ) );
+		// Total number of entries is around 2^k. Entries per bucket is around 2^(k-log_num_buckets_)
+		// We need such amount of subbuckets that per subbucket entries number will not overflow uint16_t
+		subbucket_bits = std::max( 3, ((int16_t)k) - log_num_buckets_ - kSubBucketBits );
 		stats_mask = ( (uint64_t)1<<subbucket_bits)-1;
 
 		assert( subbucket_bits > 0 );
@@ -516,7 +521,7 @@ private:
 	// Bucket determined by the first "log_num_buckets" bits starting at "begin_bits"
 	const uint32_t begin_bits_;
 	// Log of the number of buckets; num bits to use to determine bucket
-	uint32_t log_num_buckets_;
+	uint16_t log_num_buckets_;
 
 	std::vector<SortingBucket> buckets_;
 	bool hasMoreBuckets = true;

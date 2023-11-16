@@ -69,9 +69,6 @@ const double kC3BitsPerEntry = 2.4;
 // The number of bits in the stub is k minus this value
 const uint8_t kStubMinusBits = 3;
 
-// The number of bits for bottom subbucket that sorted by quick sort
-const uint8_t kSubBucketBits = 11;
-
 // The ANS encoding R values for the 7 final plot tables
 // Tweaking the R values might allow lowering of the max average deltas, and reducing final
 // plot size

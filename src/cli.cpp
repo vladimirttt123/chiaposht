@@ -91,11 +91,11 @@ int main(int argc, char *argv[]) try {
 		uint32_t filebufkb = 1024;
 
     options.allow_unrecognised_options().add_options()(
-            "k, size", "Plot size", cxxopts::value<uint8_t>(k))(
-            "r, threads", "Number of threads", cxxopts::value<uint8_t>(num_threads))(
-                "u, buckets", "Number of buckets", cxxopts::value<uint32_t>(num_buckets))(
-            "s, stripes", "Size of stripes", cxxopts::value<uint32_t>(num_stripes))(
-            "t, tempdir", "Temporary directory", cxxopts::value<string>(tempdir))(
+				"k, size", "Plot size", cxxopts::value<uint8_t>(k))(
+				"r, threads", "Number of threads", cxxopts::value<uint8_t>(num_threads))(
+						"u, buckets", "Number of buckets", cxxopts::value<uint32_t>(num_buckets))(
+				"s, stripes", "Size of stripes", cxxopts::value<uint32_t>(num_stripes))(
+				"t, tempdir", "Temporary directory", cxxopts::value<string>(tempdir))(
         "2, tempdir2", "Second Temporary directory", cxxopts::value<string>(tempdir2))(
         "d, finaldir", "Final directory", cxxopts::value<string>(finaldir))(
         "f, file", "Filename", cxxopts::value<string>(filename))(
@@ -105,15 +105,16 @@ int main(int argc, char *argv[]) try {
 				"c, nocompaction", "Disable IO compaction", cxxopts::value<bool>(nocompaction))(
 				"C, bufferascache", "Use free buffer as cache", cxxopts::value<bool>(buffer_as_cache))(
 				"7, fullscantable7", "Force full scan on table 7 (bitfield only)", cxxopts::value<bool>(full_scan_table_7))(
-				"b, buffer",
-        "Megabytes to be used as buffer for sorting and plotting",
-        cxxopts::value<uint32_t>(buffmegabytes))(
+				"b, buffer", "Megabytes to be used as buffer for sorting and plotting",
+						cxxopts::value<uint32_t>(buffmegabytes))(
 				"B, file-buffer", "Per file read/write buffer size in KiB",
-				cxxopts::value<uint32_t>(filebufkb)->default_value("256") )(
+						cxxopts::value<uint32_t>(filebufkb)->default_value("256") )(
+				"S, subbucket_bits", "Number of bit in subbucket. Bigger value use less RAM but slowdown the sorting. The ram usage is 2^(k+1-S) bytes i.e. for k32 and 11 it is 2^(32+1-11)=8MiB. This amount substracted from buffer size.",
+				cxxopts::value<uint8_t>(kSubBucketBits)->default_value("11") )(
         "p, progress", "Display progress percentage during plotting",
-        cxxopts::value<bool>(show_progress))(
+						cxxopts::value<bool>(show_progress))(
         "parallel_read", "Set to false to use sequential reads",
-        cxxopts::value<bool>(parallel_read)->default_value("true"))(
+						cxxopts::value<bool>(parallel_read)->default_value("true"))(
         "help", "Print help");
 
     auto result = options.parse(argc, argv);
@@ -160,11 +161,12 @@ int main(int argc, char *argv[]) try {
 				if( buffer_as_cache ){
 					phases_flags |= BUFFER_AS_CACHE;
 				}
-				BUF_SIZE = std::max( (uint64_t)64, (uint64_t)filebufkb ) << 10;
         if (show_progress) {
             phases_flags = phases_flags | SHOW_PROGRESS;
         }
-        plotter.CreatePlotDisk(
+				BUF_SIZE = std::max( (uint64_t)64, (uint64_t)filebufkb ) << 10;
+				if( kSubBucketBits > 15 ) kSubBucketBits = 15; // it can be increased if change statistics to int
+				plotter.CreatePlotDisk(
                 tempdir,
                 tempdir2,
                 finaldir,
