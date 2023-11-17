@@ -93,7 +93,7 @@ struct SortedBucketBuffer{
 			, min_threads( std::max( max_threads > 1 ? 2 : 1 , max_threads/2 ) )
 			, num_background_threads(num_background_threads)
 			, num_read_threads( num_read_threads )
-			, bucket_buffer( Util::NewSafeBuffer( buffer_size ) )
+			, bucket_buffer( Util::allocate<uint8_t>( buffer_size + 8 /* need as safe distance */ ) )
 			, read_mutex( read_mutex )
 	{
 	}
@@ -178,7 +178,7 @@ struct SortedBucketBuffer{
 											}, this->bucket, this->bucket_buffer.get(), this->read_mutex, isPrevWaited ) );
 	}
 private:
-	std::unique_ptr<uint8_t[]> bucket_buffer;
+	std::unique_ptr<uint8_t,void(*)(uint8_t*)> bucket_buffer;
 	int bucket_no = -1;
 	uint64_t start_position = 0, end_position = 0;
 	SortingBucket *bucket = NULL;

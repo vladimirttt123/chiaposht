@@ -22,6 +22,7 @@
 #include <iomanip>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <numeric>
 #include <queue>
 #include <random>
@@ -31,6 +32,7 @@
 #include <utility>
 #include <vector>
 #include <functional>
+
 
 template <typename Int, typename Int2>
 constexpr inline Int cdiv(Int a, Int2 b) { return (a + b - 1) / b; }
@@ -147,13 +149,54 @@ private:
 		uint64_t write_byte_start;
 };
 
+#ifndef __GNUC__
+#define NO_HUGE_PAGES
+#endif
+
+#ifndef NO_HUGE_PAGES
+#include <sys/mman.h> // mmap, munmap
+const uint64_t HUGE_MEM_PAGE_BITS = 21;
+const uint64_t HUGE_MEM_PAGE_SIZE = 1UL << HUGE_MEM_PAGE_BITS;
+#endif // NO_HUGE_PAGES
+
 namespace Util {
 
+	template <typename T>
+	inline std::unique_ptr<T, void(*)(T*)> allocate( uint64_t count ){
+#ifndef NO_HUGE_PAGES
+		auto size =  sizeof(T)*count;
+		if( size >= HUGE_MEM_PAGE_SIZE*0.9 ){
+			// Try to allocate huge pages
+			// std::cout << "allocate huge page" << std::endl;
+			uint64_t hsize = ((size + HUGE_MEM_PAGE_SIZE+7/*8bytes to save size*/)>>HUGE_MEM_PAGE_BITS) << HUGE_MEM_PAGE_BITS;
+			auto ptr = mmap(NULL, hsize , PROT_READ | PROT_WRITE,
+								 MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB,
+								 -1, 0);
+			if( ptr == MAP_FAILED ){
+				std::cout << "Cannot allocate " << (hsize >> HUGE_MEM_PAGE_BITS) << " huge pages: " <<  errno << " " <<::strerror(errno) << std::endl;
+				// Try to allocate THP
+				if( posix_memalign( &ptr, HUGE_MEM_PAGE_SIZE, hsize ) == 0 && ptr != nullptr ){
+					madvise( ptr, hsize, MADV_HUGEPAGE );
+					return std::unique_ptr<T, void(*)(T*)>( (T*)ptr, [](T* d){ std::free(d);} );
+				}
+			}
+			else {
+				((uint64_t*)ptr)[0] = hsize;
+				return std::unique_ptr<T, void(*)(T*)>( (T*)(((uint64_t*)ptr)+1), [](T* d){
+					uint64_t* pntr = ((uint64_t*)d)-1;
+					uint64_t size = pntr[0];
+					munmap( (void*)pntr, size );});
+			}
+
+		}
+#endif // NO_HUGE_PAGES
+
+		// std:: cout << "allocate regular page" << std::endl;
+		return std::unique_ptr<T, void(*)(T*)>( new T[count], [](T* d){delete[]d;});
+	}
+
     template <typename X>
-    inline X Mod(X i, X n)
-    {
-        return (i % n + n) % n;
-    }
+		inline X Mod(X i, X n) { return (i % n + n) % n; }
 
     inline uint32_t ByteAlign(uint32_t num_bits) { return (num_bits + (8 - ((num_bits) % 8)) % 8); }
 
@@ -187,34 +230,20 @@ namespace Util {
         return bswap_16(i);
     }
 
-    /*
-     * Converts a 64 bit int to bytes.
-     */
+		/* Converts a 64 bit int to bytes. */
     inline void IntToEightBytes(uint8_t *result, const uint64_t input)
     {
-//        uint64_t r = bswap_64(input);
-//        memcpy(result, &r, sizeof(r));
 			*((uint64_t*)result) = bswap_64( input );
     }
 
-    /*
-     * Converts a byte array to a 64 bit int.
-     */
+		/* Converts a byte array to a 64 bit int. */
     inline uint64_t EightBytesToInt(const uint8_t *bytes)
     {
-//        uint64_t i;
-//        memcpy(&i, bytes, sizeof(i));
-//        return bswap_64(i);
 			return bswap_64( *((const uint64_t*)bytes) );
     }
 
 		inline void IntTo16Bytes(uint8_t *result, const uint128_t input)
     {
-//        uint64_t r = bswap_64(input >> 64);
-//        memcpy(result, &r, sizeof(r));
-//        r = bswap_64((uint64_t)input);
-//        memcpy(result + 8, &r, sizeof(r));
-
 			// WARNING this implementation for BIGENDIANS only!!!
 			((uint64_t*)result)[0] = bswap_64( ((const uint64_t*)&input)[1] );
 			((uint64_t*)result)[1] = bswap_64( ((const uint64_t*)&input)[0] );
@@ -426,6 +455,6 @@ namespace Util {
         return __builtin_popcountl(n);
 #endif /* defined(_WIN32) ... defined(__x86_64__) */
     }
-}
+} // end of namespac Util
 
 #endif  // SRC_CPP_UTIL_HPP_

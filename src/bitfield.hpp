@@ -67,7 +67,7 @@ struct bitfield
 			void inline process( uint32_t idx ){
 				std::lock_guard<std::mutex> lk(src.thread_syncs[idx]);
 				for( uint64_t i = 0, ptr = idx*BUF_PER_MASK; i < counts[idx]; i++, ptr++ ){
-					src.buffer_[idxs[ptr]] |= masks[ptr];
+					src.buffer_.get()[idxs[ptr]] |= masks[ptr];
 				}
 			}
 		};
@@ -75,19 +75,21 @@ struct bitfield
 
 
 		explicit bitfield( int64_t size )
-        : buffer_(new uint64_t[(size + 63) / 64])
-				, size_((size + 63) / 64), allocated_size(size_)
-    {
-        clear();
+//				: buffer_(new uint64_t[(size + 63) / 64])
+				: size_((size + 63) / 64), allocated_size(size_)
+				, buffer_( Util::allocate<uint64_t>( size_ ) )
+		{
+			clear();
     }
 
 		explicit bitfield( int64_t size, int64_t table_7_max_entry )
-				: size_((size + 63) / 64), table_7_max_entry( table_7_max_entry )
+				: size_((size + 63) / 64), buffer_( NULL, [](uint64_t*d){delete[]d;} )
+				, table_7_max_entry( table_7_max_entry )
 		{}
 
 		// Restore from file
 		bitfield( int64_t size, const fs::path &filename, bool with_file_remove = true )
-			: size_((size + 63) / 64)
+				: size_((size + 63) / 64), buffer_( NULL, [](uint64_t*d){delete[]d;} )
 		{
 			file_.reset( new FileDisk( filename, false ) );
 			file_->Read( 0, (uint8_t*)(&table_7_max_entry), 8 );
@@ -103,7 +105,7 @@ struct bitfield
 
 		// copy partially from other
 		bitfield( const bitfield &other, int64_t start_bit, int64_t size )
-				: size_((size + 63) / 64)
+				: size_((size + 63) / 64), buffer_(NULL,[](uint64_t*d){delete[]d;})
 		{
 			assert((start_bit % 64) == 0);
 			assert( size >= 0 );
@@ -138,7 +140,7 @@ struct bitfield
 				assert( !b_file_ ); // not flushed to disk
 				assert( table_7_max_entry < 0 ); // not table_7 bitfield
 				assert(bit / 64 < size_);
-				buffer_[bit / 64] |= uint64_t(1) << (bit & 63);
+				buffer_.get()[bit / 64] |= uint64_t(1) << (bit & 63);
     }
 
 		inline void setTS( int64_t const bit )
@@ -152,7 +154,7 @@ struct bitfield
 				__atomic_fetch_or( buffer_.get() + (bit / 64), uint64_t(1) << (bit & 63), __ATOMIC_RELAXED );
 #else // __GNUC__
 				std::lock_guard<std::mutex> lk(single_set_sync);
-				buffer_[bit / 64] |= uint64_t(1) << (bit & 63);
+				buffer_.get()[bit / 64] |= uint64_t(1) << (bit & 63);
 #endif // __GNUC__
 		}
 
@@ -164,7 +166,7 @@ struct bitfield
 
 			const auto pos = bit >> 6;
 			assert( pos < size_);
-			return ( (b_file_ == nullptr ? buffer_[pos]:((uint64_t*)b_file_->Read( 8 + (pos<<3), 8))[0])
+			return ( (b_file_ == nullptr ? buffer_.get()[pos]:((uint64_t*)b_file_->Read( 8 + (pos<<3), 8))[0])
 							 & (uint64_t(1) << (bit % 64))) != 0;
     }
 
@@ -308,9 +310,9 @@ struct bitfield
 		inline bool is_readonly() const { return file_ != nullptr; }
 		inline bool is_table_7() const { return table_7_max_entry >= 0; }
 private:
-		std::unique_ptr<uint64_t[]> buffer_;
-    // number of 64-bit words
 		int64_t size_, allocated_size = 0;
+		std::unique_ptr<uint64_t,void(*)(uint64_t*)> buffer_;
+    // number of 64-bit words
 
 		std::unique_ptr<FileDisk> file_;
 		std::unique_ptr<BufferedDisk> b_file_;
