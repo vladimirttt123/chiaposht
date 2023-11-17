@@ -77,7 +77,9 @@ struct SortedBucketBuffer;
 // this function used to show statistics from thread when sorting is finished
 void SortDoneEvent( const SortManager* sort_mngr, const SortedBucketBuffer *sbuf );
 
-// ------------------------------------------------------------------
+// ---------------------------------------------------------------------
+// This class represents buffer for sorted or going to be sort bucket
+//----------------------------------------------------------------------
 struct SortedBucketBuffer{
 	const uint64_t buffer_size;
 	const SortManager *sort_manager;

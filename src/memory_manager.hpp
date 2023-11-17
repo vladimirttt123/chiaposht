@@ -37,43 +37,6 @@ struct ICacheConsumer{
 };
 
 
-struct BuffersStackMut{
-	const uint64_t max_buffers;
-
-	BuffersStackMut( uint64_t max_buffers )
-		: max_buffers(max_buffers), buffers( new uint8_t*[max_buffers] ),	count(0) {}
-
-	inline uint64_t size() const { return count; }
-
-	inline void put( uint8_t* buf ){
-		if( buf == nullptr ) return;
-		std::lock_guard lk(sync_mutes);
-		if( count < max_buffers )
-			buffers[count++] = buf;
-		else
-			delete [] buf;
-	}
-
-	inline uint8_t* get(){
-		if( count > 0 ){
-			std::lock_guard lk(sync_mutes);
-			if( count > 0 )
-				return buffers[--count];
-		}
-		return nullptr;
-	}
-
-	~BuffersStackMut(){
-		for( uint32_t i = 0; i < count; i++ )
-			delete [] buffers[i];
-	}
-private:
-	std::unique_ptr<uint8_t*[]> buffers;
-	uint64_t count;
-	std::mutex sync_mutes;
-};
-
-
 struct BuffersStack{
 	const uint64_t max_buffers;
 
@@ -119,41 +82,6 @@ private:
 	std::atomic_uint64_t min_idx, max_idx;
 };
 
-struct ConsumersArray{
-//	const uint32_t max_consumers;
-//	ConsumersArray( uint32_t max_consumers )
-//			: max_consumers(max_consumers), consumers(new std::atomic<ICacheConsumer*>[max_consumers])
-//			, min_idx(0), max_idx(0){
-//		for( uint32_t i = 0; i < max_consumers; i++ )
-//			consumers[i].store( nullptr );
-//	}
-
-//	uint32_t add( ICacheConsumer* val ){
-//		uint32_t res = max_idx.fetch_add( 1, std::memory_order_relaxed );
-//		if( res < max_consumers ){
-//			consumers[res].store( val, std::memory_order_relaxed );
-//			return res;
-//		}else return -1; // cant to put
-//	}
-
-//	ICacheConsumer* removeOne( bool isOlderst, uint32_t &idx ){
-//		ICacheConsumer* res = nullptr;
-//		if( isOlderst ){
-//			while( (idx = min_idx.load(std::memory_order_relaxed) ) < max_idx.load( std::memory_order_relaxed ) ){
-//				if( min_idx.compare_exchange_strong( idx, idx+1, std::memory_order_relaxed) ){
-//					res = consumers[]
-//				}
-//			}
-//		}
-
-//		return res;
-//	}
-
-//private:
-//	std::unique_ptr<std::atomic<ICacheConsumer*>[]> consumers;
-//	std::atomic_uint32_t min_idx, max_idx;
-};
-
 struct MemoryManager{
 	const bool CacheEnabled;
 
@@ -162,7 +90,6 @@ struct MemoryManager{
 		, regular_buffers( std::max( 0L, max_cache_size/(int64_t)BUF_SIZE ) ){}
 
 	inline uint64_t getTotalSize() const { return total_size; }
-
 
 	inline uint64_t getAccessibleRam() const {
 		return  total_size - used_ram + cleanable_ram;
