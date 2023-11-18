@@ -23,8 +23,9 @@
 
 // ==================================================================================================
 struct SortingBucket{
-	SortingBucket( const std::string &fileName, MemoryManager &memory_manager, uint16_t bucket_no, uint8_t log_num_buckets, uint16_t entry_size,
-								 uint32_t begin_bits, uint8_t bucket_bits_count, bool enable_compression = true, int16_t sequence_start_bit = -1 )
+	SortingBucket( const std::string &fileName, MemoryManager &memory_manager, STATS_UINT_TYPE* stats_mem,
+								uint16_t bucket_no, uint8_t log_num_buckets, uint16_t entry_size,
+								uint32_t begin_bits, uint8_t bucket_bits_count, bool enable_compression = true, int16_t sequence_start_bit = -1 )
 		:	disk( new BucketStream( fileName, memory_manager, bucket_no, log_num_buckets, entry_size, begin_bits, enable_compression, sequence_start_bit ) )
 
 #ifndef NDEBUG
@@ -34,11 +35,11 @@ struct SortingBucket{
 		, bucket_bits_count_(bucket_bits_count)
 		, entry_size_(entry_size)
 		, begin_bits_(begin_bits)
-		, statistics( new STATS_UINT_TYPE[1<<bucket_bits_count] )
+		, statistics( stats_mem )
 		, memory_manager(memory_manager)
 	{
 		// clear statistics
-		memset( statistics.get(), 0, sizeof(STATS_UINT_TYPE)<<bucket_bits_count );
+		memset( statistics, 0, sizeof(STATS_UINT_TYPE)<<bucket_bits_count );
 	}
 
 	inline uint64_t SortedPosision() const { return sorted_pos; }
@@ -74,12 +75,12 @@ struct SortingBucket{
 			if( entries_count > 0 ){
 				// Save statistics to file
 				statistics_file.reset( CreateFileStream( disk->getFileName() + ".statistics.tmp", memory_manager ) );
-				StreamBuffer buf( (uint8_t*)statistics.get(), sizeof(STATS_UINT_TYPE)<<bucket_bits_count_, sizeof(STATS_UINT_TYPE)<<bucket_bits_count_ );
+				StreamBuffer buf( (uint8_t*)statistics, sizeof(STATS_UINT_TYPE)<<bucket_bits_count_, sizeof(STATS_UINT_TYPE)<<bucket_bits_count_ );
 				statistics_file->Write( buf );
 				((IBlockWriter*)statistics_file.get())->Close();
 				buf.release(); // to not delete bufer that is external for the buffer
 			}
-			statistics.reset();
+			statistics = NULL; // no reset stats is external now
 		} else {
 			if( disk ) disk->Close(); // in case of cached enabled allow to clean for next buffer.
 		}
@@ -97,7 +98,7 @@ struct SortingBucket{
 		if( !disk ) return; // already removed
 		disk->EndToRead();
 		disk.reset();
-		statistics.reset();
+		statistics = NULL; // no reset stats is external now
 	}
 
 
@@ -111,13 +112,14 @@ struct SortingBucket{
 
 		start_time = std::chrono::high_resolution_clock::now();
 		const uint32_t subbuckets_count = 1<<bucket_bits_count_;
-		STATS_UINT_TYPE *stats = statistics.get();
+		STATS_UINT_TYPE *stats = statistics;
+		auto local_stats(Util::allocate<STATS_UINT_TYPE>(0));
 
-		if( !statistics ) {
+		if( statistics == NULL ) {
 			assert( statistics_file );
-			statistics.reset( new STATS_UINT_TYPE[1<<bucket_bits_count_] );
+			local_stats = Util::allocate<STATS_UINT_TYPE>( 1<<bucket_bits_count_ ); // TODO check if it is correct...
 			// Read statistics from file
-			uint8_t * stats_pntr = (uint8_t*)( stats = statistics.get() );
+			uint8_t * stats_pntr = (uint8_t*)( stats = local_stats.get() );
 			for( StreamBuffer buf; statistics_file->Read( buf ) > 0; stats_pntr += buf.used() )
 				memcpy( stats_pntr, buf.get(), buf.used() );
 
@@ -301,7 +303,7 @@ struct SortingBucket{
 		}
 
 		sorted_pos = entries_count*entry_size_; // mark finished sort
-		statistics.reset(); // clear ram
+		statistics = NULL; // clear ram - statistics is external no than no reset
 
 		sort_time = (std::chrono::high_resolution_clock::now() - start_time)/std::chrono::milliseconds(1);
 #ifndef NDEBUG
@@ -325,7 +327,7 @@ private:
 	const uint16_t entry_size_;
 	const uint16_t begin_bits_;
 	// this is the number of entries for each subbucket
-	std::unique_ptr<STATS_UINT_TYPE[]> statistics;
+	STATS_UINT_TYPE* statistics;
 	std::unique_ptr<IBlockWriterReader> statistics_file;
 	uint64_t entries_count = 0;
 	uint64_t sorted_pos = 0;

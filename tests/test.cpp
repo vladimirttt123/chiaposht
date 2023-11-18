@@ -49,6 +49,22 @@ vector<unsigned char> intToBytes(uint32_t paramInt, uint32_t numBytes)
 
 static uint128_t to_uint128(uint64_t hi, uint64_t lo) { return (uint128_t)hi << 64 | lo; }
 
+#include <sys/mman.h> // mmap, munmap
+
+//TEST_CASE( "MEMORY" ){
+//	SECTION("MMAP"){
+//		auto ptrR = Util::allocate<uint64_t>( 10 );
+//		auto ptrH = Util::allocate<uint64_t>( 1<<20 );
+//		//std::unique_ptr<uint64_t, void(*)(uint64_t*)> ptr( new uint64_t[10], [](uint64_t* d){delete []d; std::cout<<"custom local deleter" << std::endl;} );
+////		auto size = HUGE_MEM_PAGE_SIZE;
+////		void *ptr = mmap(NULL, size , PROT_READ | PROT_WRITE,
+////										 MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB,
+////										 -1, 0);
+////		std::unique_ptr<uint64_t, void(*)(uint64_t*)> mptr( (uint64_t*)ptr, [&size](uint64_t* d){ std::cout<<"custom huge deleter of size "<< size << std::endl;});
+
+//	}
+//}
+
 TEST_CASE( "DISK_STREAMS" ){
 
 	SECTION("BLOCK_READ_WRITE"){
@@ -1102,6 +1118,7 @@ TEST_CASE("Sort on disk")
 		SECTION("Lazy Sort Manager QS")
 		{
 				uint32_t iters = 250000;
+				const uint8_t k = std::log2(iters);
 				uint16_t const size = 32;
 				const uint32_t memory_len = 550000;
 				StreamBuffer entry_buf( size );
@@ -1109,7 +1126,8 @@ TEST_CASE("Sort on disk")
 				for( int threads_num = 0; threads_num < 8; threads_num++ ){
 					vector<Bits> input;
 					MemoryManager memory_manager = MemoryManager( memory_len );
-					SortManager manager(memory_manager, 16, 4, size, ".", "test-files", 0, 1, std::log2(iters), 1, 1, threads_num);
+					SortStatisticsStorage full_stats( k, 8, 16 );
+					SortManager manager(memory_manager, full_stats, 16, size, ".", "test-files", 0, 1, k, 1, 1, threads_num);
 					for (uint32_t i = 0; i < iters; i++) {
 							vector<unsigned char> hash_input = intToBytes(i, 4);
 							vector<unsigned char> hash(picosha2::k_digest_size);
@@ -1133,6 +1151,7 @@ TEST_CASE("Sort on disk")
 		SECTION("Lazy Sort Manager BSort")
     {
 				uint32_t iters = 350000;
+				uint8_t k = std::log2(iters);
 				uint16_t const size = 32;
         const uint32_t memory_len = 1000000;
 				StreamBuffer entry_buf( size );
@@ -1140,7 +1159,8 @@ TEST_CASE("Sort on disk")
 				for( int threads_num = 0; threads_num < 8; threads_num++ ){
 					vector<Bits> input;
 					MemoryManager memory_manager = MemoryManager( memory_len );
-					SortManager manager(memory_manager, 16, 4, size, ".", "test-files", 0, 1, std::log2(iters), 1, threads_num);
+					SortStatisticsStorage full_stats( k, 8, 16 );
+					SortManager manager(memory_manager, full_stats, 16, size, ".", "test-files", 0, 1, k, 1, threads_num);
 					for (uint32_t i = 0; i < iters; i++) {
 							vector<unsigned char> hash_input = intToBytes(i, 4);
 							vector<unsigned char> hash(picosha2::k_digest_size);
@@ -1165,12 +1185,14 @@ TEST_CASE("Sort on disk")
     {
         uint32_t iters = 120000;
 				uint16_t const size = 32;
+				const uint8_t k = std::log2(iters);
         vector<Bits> input;
         const uint32_t memory_len = 1000000;
 				StreamBuffer entry_buf( size );
 
 				MemoryManager memory_manager = MemoryManager( memory_len );
-				SortManager manager(memory_manager, 16, 4, size, ".", "test-files", 0, 1, std::log2(iters), 1, 1 );
+				SortStatisticsStorage full_stats( k, 8, 16);
+				SortManager manager(memory_manager, full_stats, 16, size, ".", "test-files", 0, 1, k, 1, 1 );
         for (uint32_t i = 0; i < iters; i++) {
             vector<unsigned char> hash_input = intToBytes(i, 4);
             vector<unsigned char> hash(picosha2::k_digest_size);
@@ -1271,6 +1293,7 @@ TEST_CASE("Sort on disk")
 TEST_CASE( "SortThreads" ){
 	const uint32_t num_buckets = 256;
 	const uint64_t iters = 50000000;
+	const uint8_t k = std::log2(iters);
 	const uint32_t entry_size = 10;
 	const uint32_t memory_len = 50*1024*1024;
 
@@ -1297,7 +1320,8 @@ TEST_CASE( "SortThreads" ){
 
 
 		MemoryManager memory_manager = MemoryManager( memory_len );
-		SortManager manager1( memory_manager, num_buckets, std::log2(num_buckets), entry_size, "." /*temp_dir*/, "test-files1" /*file name*/, 0, 1, std::log2(iters), threads_num, 1, threads_num );
+		SortStatisticsStorage full_stats( k, 11, num_buckets );
+		SortManager manager1( memory_manager, full_stats, num_buckets, entry_size, "." /*temp_dir*/, "test-files1" /*file name*/, 0, 1, k, threads_num, 1, threads_num );
 		auto threads = std::make_unique<std::thread[]>(threads_num);
 
 		Timer fill_timer1;

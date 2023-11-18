@@ -356,6 +356,7 @@ Phase3Results RunPhase3(
 		const std::string &filename,
 		uint32_t header_size,
 		MemoryManager &memory_manager,
+		std::unique_ptr<SortStatisticsStorage> full_stats[],
 		uint32_t num_buckets,
 		uint32_t log_num_buckets,
 		const uint8_t flags,
@@ -373,6 +374,7 @@ Phase3Results RunPhase3(
 
 		uint32_t new_pos_entry_size_bytes = 0;
 
+		uint32_t next_stats_idx = 0;
 		std::unique_ptr<SortManager> L_sort_manager;
 		std::unique_ptr<SortManager> R_sort_manager;
 
@@ -415,19 +417,17 @@ Phase3Results RunPhase3(
 				// We read only from this SortManager during the second pass, so all
 				// memory is available
 				R_sort_manager = std::make_unique<SortManager>(
-						memory_manager,
+						memory_manager,			*full_stats[next_stats_idx].get(),
 						num_buckets,
-						log_num_buckets,
 						right_entry_size_bytes,
-						tmp_dirname,
-						filename + ".p3.t" + std::to_string(table_index + 1),
-						0, // begin_bits
-						0, // stripe_size
-						k, // plot size
-						3, // Phase
+						tmp_dirname,				filename + ".p3.t" + std::to_string(table_index + 1),
+						0/* begin_bits */,	0/* stripe_size*/,
+						k/* plot size */,		3/* Phase */,
 						table_index,
 						num_threads,
 						(flags&NO_COMPACTION)==0 );
+				next_stats_idx = !full_stats[1] ? 0 : (next_stats_idx + 1)%2;
+
 				StreamBuffer entry_buffer( right_entry_size_bytes );
 
 				bool should_read_entry = true;
@@ -532,7 +532,7 @@ Phase3Results RunPhase3(
 				res2.table1.FreeMemory();
 
 				// Flush cache so all entries are written to buckets
-				R_sort_manager->FlushCache();
+				R_sort_manager->FlushCache( !full_stats[1] );
 				R_sort_manager->FreeMemory();
 
 				computation_pass_1_timer.PrintElapsed("\tFirst computation pass time:");
@@ -551,25 +551,17 @@ Phase3Results RunPhase3(
 				// entries.
 				new_pos_entry_size_bytes = cdiv(2 * k + (table_index == 6 ? 1 : 0), 8);
 
-				// For tables below 6 we can only use a half of memory_size since it
-				// will be sorted in the first pass of the next iteration together with
-				// the next table, which will use the other half of memory_size.
-				// Tables 6 and 7 will be sorted alone, so we use all memory for them.
 				L_sort_manager = std::make_unique<SortManager>(
-						//(table_index >= 5) ? memory_size : (memory_size / 2),
-						memory_manager,
+						memory_manager,		*full_stats[next_stats_idx].get(),
 						num_buckets,
-						log_num_buckets,
 						new_pos_entry_size_bytes,
-						tmp_dirname,
-						filename + ".p3s.t" + std::to_string(table_index + 1),
-						0, // bits_begin
-						0, // strip_size
-						k, // plot size
-						4, // Phase
+						tmp_dirname,					filename + ".p3s.t" + std::to_string(table_index + 1),
+						0/* bits_begin */,		0/* strip_size */,
+						k/* plot size */,			4/* Phase */,
 						table_index + 1,
 						num_threads,
 						(flags&NO_COMPACTION)==0 );
+				next_stats_idx = !full_stats[1] ? 0 : (next_stats_idx + 1)%2;
 
 				// Now we will write on of the final tables, since we have a table sorted by line point.
 				// The final table will simply store the deltas between each line_point, in fixed space
@@ -675,7 +667,7 @@ Phase3Results RunPhase3(
 				}
 
 				R_sort_manager.reset();
-				L_sort_manager->FlushCache();
+				L_sort_manager->FlushCache( table_index != 6 && !full_stats[1] );
 
 				computation_pass_2_timer.PrintElapsed("\tSecond computation pass time:");
 				std::cout << "\tWrote " << L_sort_manager->Count() << " entries" << std::endl;

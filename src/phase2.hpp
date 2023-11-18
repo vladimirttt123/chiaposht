@@ -198,6 +198,7 @@ Phase2Results RunPhase2(
     const std::string &tmp_dirname,
     const std::string &filename,
 		MemoryManager &memory_manager,
+		std::unique_ptr<SortStatisticsStorage> full_stats[],
     uint32_t const num_buckets,
     uint32_t const log_num_buckets,
 		uint8_t const flags,
@@ -261,62 +262,63 @@ Phase2Results RunPhase2(
     double progress_percent[] = {0.43, 0.48, 0.51, 0.55, 0.58, 0.61};
 		for (int table_index = 6; table_index > 1; --table_index) {
 
-				int64_t const table_size = table_sizes[table_index];
-				int16_t const entry_size = cdiv(k + kOffsetSize, 8);
+			int64_t const table_size = table_sizes[table_index];
+			int16_t const entry_size = cdiv(k + kOffsetSize, 8);
 
-				std::cout << "Backpropagating on table " << table_index << "  size: " << table_size <<  std::endl;
-				std::cout << "Progress update: "<< std::setprecision(2) << progress_percent[7 - table_index] << std::endl;
+			std::cout << "Backpropagating on table " << table_index << "  size: " << table_size <<  std::endl;
+			std::cout << "Progress update: "<< std::setprecision(2) << progress_percent[7 - table_index] << std::endl;
 
-				// 2 instances of bitfield can be larger than memory_size
-				// for example recomended minimum for k32 is 900MiB and
-				// it is acound 2^32 entries, that implice  2^29 bytes of bitfield, or around 512MiB
-				// that twice is 1GiB or larger than 900KiB
-				// in such case we can operate with one bitfield only and the current one write
-				// to disk and use FilteredDisk class
-				if( is_one_bitfield && !current_bitfield->is_table_7() ) {
-					std::cout << " Flush bitfield to disk " << std::endl;
-					current_bitfield->FlushToDisk( tmp_1_disks[table_index].GetFileName() + ".bitfield.tmp", next_bitfield.get() );
-				}
+			// 2 instances of bitfield can be larger than memory_size
+			// for example recomended minimum for k32 is 900MiB and
+			// it is acound 2^32 entries, that implice  2^29 bytes of bitfield, or around 512MiB
+			// that twice is 1GiB or larger than 900KiB
+			// in such case we can operate with one bitfield only and the current one write
+			// to disk and use FilteredDisk class
+			if( is_one_bitfield && !current_bitfield->is_table_7() ) {
+				std::cout << " Flush bitfield to disk " << std::endl;
+				current_bitfield->FlushToDisk( tmp_1_disks[table_index].GetFileName() + ".bitfield.tmp", next_bitfield.get() );
+			}
 
-				next_bitfield.get()->reset( max_table_size ); // this also cleans contnet
+			next_bitfield.get()->reset( max_table_size ); // this also cleans contnet
 
 
-				{ // Scope for reader
-					Timer scan_timer;
-					std::cout << "\ttable " << table_index << ": scan " << std::flush;
+			{ // Scope for reader
+				Timer scan_timer;
+				std::cout << "\ttable " << table_index << ": scan " << std::flush;
 
-					auto table_reader = ReadFileStream( &tmp_1_disks[table_index], table_size * entry_size );
-					ScanTable( &table_reader, table_size, entry_size, *current_bitfield.get(), *next_bitfield.get(),
-										 max_threads, pos_offset_size );
+				auto table_reader = ReadFileStream( &tmp_1_disks[table_index], table_size * entry_size );
+				ScanTable( &table_reader, table_size, entry_size, *current_bitfield.get(), *next_bitfield.get(),
+									 max_threads, pos_offset_size );
 
-					scan_timer.PrintElapsed( "time =" );
-				}
-				std::cout << "\ttable " << table_index << ": sort " << std::flush;
-        Timer sort_timer;
+				scan_timer.PrintElapsed( "time =" );
+			}
+			std::cout << "\ttable " << table_index << ": sort " << std::flush;
+			Timer sort_timer;
 
-        // read the same table again. This time we'll output it to new files:
-        // * add sort_key (just the index of the current entry)
-        // * update (pos, offset) to remain valid after table_index-1 has been
-        //   compacted.
-        // * sort by pos
-        //
-        // As we have to sort two adjacent tables at the same time in phase 3,
-        // we can use only a half of memory_size for SortManager. However,
-        // table 1 is already sorted, so we can use all memory for sorting
-        // table 2.
+			// read the same table again. This time we'll output it to new files:
+			// * add sort_key (just the index of the current entry)
+			// * update (pos, offset) to remain valid after table_index-1 has been
+			//   compacted.
+			// * sort by pos
+			//
+			// As we have to sort two adjacent tables at the same time in phase 3,
+			// we can use only a half of memory_size for SortManager. However,
+			// table 1 is already sorted, so we can use all memory for sorting
+			// table 2.
 
-				// as we scan the table for the second time, we'll also need to remap
-				// the positions and offsets based on the next_bitfield.
+			// as we scan the table for the second time, we'll also need to remap
+			// the positions and offsets based on the next_bitfield.
 
 			index.reinit( next_bitfield.get() );
 
+			int next_stats_idx = table_index-1;
+			if( !full_stats[next_stats_idx] ) next_stats_idx = 0;
+
 			auto sort_manager = std::make_unique<SortManager>(
-					memory_manager,
+					memory_manager,		*full_stats[next_stats_idx].get(),
 					num_buckets,
-					log_num_buckets,
 					new_entry_size,
-					tmp_dirname,
-					filename + ".p2.t" + std::to_string(table_index),
+					tmp_dirname,			filename + ".p2.t" + std::to_string(table_index),
 					uint32_t(k), // bits_begin
 					0, // strip_size
 					k,
@@ -354,7 +356,7 @@ Phase2Results RunPhase2(
 			// clear disk caches and memory
 			// TODO real flush by flag.
 			// Table 2 is used immediatly after in phase 3 than do not clean it caches fully.
-			sort_manager->FlushCache( table_index != 2 );  // close all files
+			sort_manager->FlushCache( next_stats_idx == 0 /*table_index != 2*/ );  // close all files & flush statisitcs
 			//sort_manager->FreeMemory(); // should do nothing at this point
 
 			output_files[table_index - 2] = std::move(sort_manager);

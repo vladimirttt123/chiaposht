@@ -163,6 +163,9 @@ namespace Util {
 
 	template <typename T>
 	inline std::unique_ptr<T, void(*)(T*)> allocate( uint64_t count ){
+		if( count == 0 )
+				return std::unique_ptr<T, void(*)(T*)>( NULL, [](T*d){ delete []d;} );
+
 #ifndef NO_HUGE_PAGES
 		auto size =  sizeof(T)*count;
 		if( size >= HUGE_MEM_PAGE_SIZE*0.9 ){

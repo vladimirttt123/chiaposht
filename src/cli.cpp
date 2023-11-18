@@ -89,6 +89,7 @@ int main(int argc, char *argv[]) try {
     bool parallel_read = true;
     uint32_t buffmegabytes = 0;
 		uint32_t filebufkb = 1024;
+		uint8_t kSubBucketBits = 11;
 
     options.allow_unrecognised_options().add_options()(
 				"k, size", "Plot size", cxxopts::value<uint8_t>(k))(
@@ -109,7 +110,7 @@ int main(int argc, char *argv[]) try {
 						cxxopts::value<uint32_t>(buffmegabytes))(
 				"B, file-buffer", "Per file read/write buffer size in KiB",
 						cxxopts::value<uint32_t>(filebufkb)->default_value("256") )(
-				"S, subbucket_bits", "Number of bit in subbucket. Bigger value use less RAM but slowdown the sorting. The ram usage is 2^(k+1-S) bytes i.e. for k32 and 11 it is 2^(32+1-11)=8MiB. This amount substracted from buffer size.",
+				"S, subbucket_bits", "Number of bit in subbucket. Bigger value use less RAM but slowdown the sorting. The ram usage is 2^(k+2-S) bytes i.e. for k32 and 11 it is 2^(32+2-11)=16MiB. This amount substracted from buffer size.",
 				cxxopts::value<uint8_t>(kSubBucketBits)->default_value("11") )(
         "p, progress", "Display progress percentage during plotting",
 						cxxopts::value<bool>(show_progress))(
@@ -166,21 +167,14 @@ int main(int argc, char *argv[]) try {
         }
 				BUF_SIZE = std::max( (uint64_t)64, (uint64_t)filebufkb ) << 10;
 				if( kSubBucketBits > 15 ) kSubBucketBits = 15; // it can be increased if change statistics to int
-				plotter.CreatePlotDisk(
-                tempdir,
-                tempdir2,
-                finaldir,
-                filename,
+				plotter.CreatePlotDiskAdv(
+								tempdir,			tempdir2,			finaldir,			filename,
                 k,
-                memo_bytes.data(),
-                memo_bytes.size(),
-                id_bytes.data(),
-                id_bytes.size(),
+								memo_bytes.data(),			memo_bytes.size(),
+								id_bytes.data(),				id_bytes.size(),
                 buffmegabytes,
-                num_buckets,
-                num_stripes,
-                num_threads,
-                phases_flags);
+								num_buckets,						num_stripes,				num_threads,
+								phases_flags, kSubBucketBits );
     } else if (operation == "prove") {
         if (argc < 3) {
             HelpAndQuit(options);

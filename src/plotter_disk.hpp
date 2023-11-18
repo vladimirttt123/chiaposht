@@ -54,26 +54,64 @@
 
 class DiskPlotter {
 public:
+	// This method exists to support chia source without any cahges.
+	void CreatePlotDisk(
+			std::string tmp_dirname,
+			std::string tmp2_dirname,
+			std::string final_dirname,
+			std::string filename,
+			uint8_t k,
+			const uint8_t* memo,
+			uint32_t memo_len,
+			const uint8_t* id,
+			uint32_t id_len,
+			uint32_t buf_megabytes_input = 0,
+			uint32_t num_buckets_input = 0,
+			uint64_t stripe_size_input = 0,
+			uint8_t num_threads_input = 0,
+			uint8_t phases_flags = ENABLE_BITFIELD )
+		{
+			// allow to provide no cache throw the chia without changing chia executable.
+			if( tmp_dirname.find( ":CACHE:") == 0 ){
+				phases_flags |= BUFFER_AS_CACHE;
+				tmp_dirname = tmp_dirname.substr(7);
+			}
+			if( tmp2_dirname.find( ":CACHE:") == 0 ){
+				phases_flags |= BUFFER_AS_CACHE;
+				tmp2_dirname = tmp2_dirname.substr(7);
+			}
+
+			CreatePlotDiskAdv( tmp_dirname, tmp2_dirname, final_dirname, filename,
+												k, memo, memo_len, id, id_len, buf_megabytes_input,
+												num_buckets_input, stripe_size_input,
+												num_threads_input, phases_flags );
+		}
+
     // This method creates a plot on disk with the filename. Many temporary files
     // (filename + ".table1.tmp", filename + ".p2.t3.sort_bucket_4.tmp", etc.) are created
     // and their total size will be larger than the final plot file. Temp files are deleted at the
     // end of the process.
-    void CreatePlotDisk(
-        std::string tmp_dirname,
-        std::string tmp2_dirname,
-        std::string final_dirname,
-        std::string filename,
-        uint8_t k,
-        const uint8_t* memo,
-        uint32_t memo_len,
-        const uint8_t* id,
-        uint32_t id_len,
-        uint32_t buf_megabytes_input = 0,
-        uint32_t num_buckets_input = 0,
-        uint64_t stripe_size_input = 0,
-        uint8_t num_threads_input = 0,
-				uint8_t phases_flags = ENABLE_BITFIELD )
-    {
+		void CreatePlotDiskAdv(
+				std::string tmp_dirname,
+				std::string tmp2_dirname,
+				std::string final_dirname,
+				std::string filename,
+				uint8_t k,
+				const uint8_t* memo,
+				uint32_t memo_len,
+				const uint8_t* id,
+				uint32_t id_len,
+				uint32_t buf_megabytes_input = 0,
+				uint32_t num_buckets_input = 0,
+				uint64_t stripe_size_input = 0,
+				uint8_t num_threads_input = 0,
+				uint8_t phases_flags = ENABLE_BITFIELD,
+				// The number of bits for bottom subbucket that sorted by quick sort
+				uint8_t kSubBucketBits = 11
+				)
+		{
+			uint8_t stats_mode = 2; // TODO parameter from this
+
         if (k < kMinPlotSize || k > kMaxPlotSize) {
             throw InvalidValueException("Plot size k= " + std::to_string(k) + " is invalid");
         }
@@ -90,7 +128,7 @@ public:
         // Subtract some ram to account for dynamic allocation through the code
         uint64_t thread_memory = num_threads * (2 * (stripe_size + 5000)) *
                                  EntrySizes::GetMaxEntrySize(k, 4, true) / (1024 * 1024);
-				uint64_t statistics_memory = (1 << (k+1-kSubBucketBits));
+				uint64_t statistics_memory = (sizeof(STATS_UINT_TYPE) << (uint64_t)(k-kSubBucketBits)) * stats_mode;
 				uint64_t sub_mbytes = (5 + (int)std::min(buf_megabytes * 0.05, (double)50) + thread_memory)
 															+ (statistics_memory>>20);
 
@@ -179,16 +217,6 @@ public:
 #endif /* defined(_WIN32) || defined(__x86_64__) */
 
 
-				// allow to provide no cache throw the chia without changing chia executable.
-				if( tmp_dirname.find( ":CACHE:") == 0 ){
-					phases_flags |= BUFFER_AS_CACHE;
-					tmp_dirname = tmp_dirname.substr(7);
-				}
-				if( tmp2_dirname.find( ":CACHE:") == 0 ){
-					phases_flags |= BUFFER_AS_CACHE;
-					tmp2_dirname = tmp2_dirname.substr(7);
-				}
-
 				// estimation done by formula: if num_buckets >= 512 than size of 2 bitfields in other case more...
 				uint64_t est_non_cache_use = (1L<<(k-3)) * ( log_num_buckets > 8 ? 2 : ( 3*(1L<<(8-log_num_buckets)) ) );
 				if( est_non_cache_use > memory_size )
@@ -257,8 +285,11 @@ public:
 
 
 				{ // Scope for FileDisk and memory manager
+						std::unique_ptr<SortStatisticsStorage> full_stats[6];
+						for( uint8_t i = 0; i < stats_mode; i++ )
+							full_stats[i].reset( new SortStatisticsStorage( k, kSubBucketBits, num_buckets ) );
 
-					MemoryManager memory_manager( memory_size, (phases_flags & BUFFER_AS_CACHE) == 0 ? -1 : (memory_size - est_non_cache_use) );
+						MemoryManager memory_manager( memory_size, (phases_flags & BUFFER_AS_CACHE) == 0 ? -1 : (memory_size - est_non_cache_use) );
 
 						std::vector<FileDisk> tmp_1_disks;
 						for (auto const& fname : tmp_1_filenames){
@@ -276,135 +307,133 @@ public:
 
             Timer p1;
             Timer all_phases;
-						std::vector<uint64_t> table_sizes = RunPhase1(
-                tmp_1_disks,
-                k,
-                id,
-                tmp_dirname,
-                filename,
-								memory_manager,
-                num_buckets,
-                log_num_buckets,
-                stripe_size,
-								num_threads,
-								phases_flags );
+						std::vector<uint64_t> table_sizes = RunPhase1( tmp_1_disks,
+								k,		id,		tmp_dirname,		filename,
+								memory_manager,			full_stats[0].get(),	full_stats[1].get(),
+								num_buckets,				stripe_size,
+								num_threads,		phases_flags );
             p1.PrintElapsed("Time for phase 1 =");
 
             uint64_t finalsize=0;
 
             if((phases_flags & ENABLE_BITFIELD) == 0)
-            {
-                // Memory to be used for sorting and buffers
-                std::unique_ptr<uint8_t[]> memory(new uint8_t[memory_size + 7]);
+						{
+							for( uint8_t i = 0; i < stats_mode; i++ )
+								full_stats[i].reset(); // no usage here
 
-                std::cout << std::endl
-                      << "Starting phase 2/4: Backpropagation without bitfield into tmp files... "
-                      << Timer::GetNow();
+							// Memory to be used for sorting and buffers
+							std::unique_ptr<uint8_t[]> memory(new uint8_t[memory_size + 7]);
 
-                Timer p2;
-                std::vector<uint64_t> backprop_table_sizes = b17RunPhase2(
-                    memory.get(),
-                    tmp_1_disks,
-                    table_sizes,
-                    k,
-                    id,
-                    tmp_dirname,
-                    filename,
-                    memory_size,
-                    num_buckets,
-                    log_num_buckets,
-										phases_flags,
-										num_threads);
-                p2.PrintElapsed("Time for phase 2 =");
+							std::cout << std::endl
+										<< "Starting phase 2/4: Backpropagation without bitfield into tmp files... "
+										<< Timer::GetNow();
 
-                // Now we open a new file, where the final contents of the plot will be stored.
-                uint32_t header_size = WriteHeader(tmp2_disk, k, id, memo, memo_len);
+							Timer p2;
+							std::vector<uint64_t> backprop_table_sizes = b17RunPhase2(
+									memory.get(),
+									tmp_1_disks,
+									table_sizes,
+									k,
+									id,
+									tmp_dirname,
+									filename,
+									memory_size,
+									num_buckets,
+									log_num_buckets,
+									phases_flags,
+									num_threads);
+							p2.PrintElapsed("Time for phase 2 =");
 
-                std::cout << std::endl
-                      << "Starting phase 3/4: Compression without bitfield from tmp files into " << tmp_2_filename
-                      << " ... " << Timer::GetNow();
-                Timer p3;
-                b17Phase3Results res = b17RunPhase3(
-                    memory.get(),
-                    k,
-                    tmp2_disk,
-                    tmp_1_disks,
-                    backprop_table_sizes,
-                    id,
-                    tmp_dirname,
-                    filename,
-                    header_size,
-                    memory_size,
-                    num_buckets,
-                    log_num_buckets,
-										phases_flags,
-										num_threads );
-                p3.PrintElapsed("Time for phase 3 =");
+							// Now we open a new file, where the final contents of the plot will be stored.
+							uint32_t header_size = WriteHeader(tmp2_disk, k, id, memo, memo_len);
 
-                std::cout << std::endl
-                      << "Starting phase 4/4: Write Checkpoint tables into " << tmp_2_filename
-                      << " ... " << Timer::GetNow();
-                Timer p4;
-                b17RunPhase4(k, k + 1, tmp2_disk, res, phases_flags, 16);
-                p4.PrintElapsed("Time for phase 4 =");
-                finalsize = res.final_table_begin_pointers[11];
-            }
-            else {
-                std::cout << std::endl
-                      << "Starting phase 2/4: Backpropagation into tmp files... "
-                      << Timer::GetNow();
+							std::cout << std::endl
+										<< "Starting phase 3/4: Compression without bitfield from tmp files into " << tmp_2_filename
+										<< " ... " << Timer::GetNow();
+							Timer p3;
+							b17Phase3Results res = b17RunPhase3(
+									memory.get(),
+									k,
+									tmp2_disk,
+									tmp_1_disks,
+									backprop_table_sizes,
+									id,
+									tmp_dirname,
+									filename,
+									header_size,
+									memory_size,
+									num_buckets,
+									log_num_buckets,
+									phases_flags,
+									num_threads );
+							p3.PrintElapsed("Time for phase 3 =");
 
-								// in phase 2 if not enought cache than discard old cache because it helps to use more cache in phase 3
-								memory_manager.SetMode( true, true );
+							std::cout << std::endl
+										<< "Starting phase 4/4: Write Checkpoint tables into " << tmp_2_filename
+										<< " ... " << Timer::GetNow();
+							Timer p4;
+							b17RunPhase4(k, k + 1, tmp2_disk, res, phases_flags, 16);
+							p4.PrintElapsed("Time for phase 4 =");
+							finalsize = res.final_table_begin_pointers[11];
+					}
+					else { // WITH bitfield
+							std::cout << std::endl
+										<< "Starting phase 2/4: Backpropagation into tmp files... "
+										<< Timer::GetNow();
 
-                Timer p2;
-                Phase2Results res2 = RunPhase2(
-                    tmp_1_disks,
-                    table_sizes,
-                    k,
-                    id,
-                    tmp_dirname,
-                    filename,
-										memory_manager,
-                    num_buckets,
-                    log_num_buckets,
-										phases_flags,
-										num_threads  );
+							// in phase 2 if not enought cache than discard old cache because it helps to use more cache in phase 3
+							memory_manager.SetMode( true, true );
 
-								// after phase 2 return default cache mode
-								memory_manager.SetMode( false, false );
-								p2.PrintElapsed("Time for phase 2 =");
+							Timer p2;
+							Phase2Results res2 = RunPhase2(
+									tmp_1_disks,
+									table_sizes,
+									k,
+									id,
+									tmp_dirname,
+									filename,
+									memory_manager,
+									full_stats,
+									num_buckets,
+									log_num_buckets,
+									phases_flags,
+									num_threads  );
 
-                // Now we open a new file, where the final contents of the plot will be stored.
-                uint32_t header_size = WriteHeader(tmp2_disk, k, id, memo, memo_len);
+							// after phase 2 return default cache mode
+							memory_manager.SetMode( false, false );
+							p2.PrintElapsed("Time for phase 2 =");
 
-                std::cout << std::endl
-                      << "Starting phase 3/4: Compression from tmp files into " << tmp_2_filename
-                      << " ... " << Timer::GetNow();
-                Timer p3;
-                Phase3Results res = RunPhase3(
-                    k,
-                    tmp2_disk,
-										res2,
-                    id,
-                    tmp_dirname,
-                    filename,
-                    header_size,
-										memory_manager,
-                    num_buckets,
-                    log_num_buckets,
-										phases_flags,
-										num_threads );
+							// Now we open a new file, where the final contents of the plot will be stored.
+							uint32_t header_size = WriteHeader(tmp2_disk, k, id, memo, memo_len);
 
-								p3.PrintElapsed("Time for phase 3 =");
+							std::cout << std::endl
+										<< "Starting phase 3/4: Compression from tmp files into " << tmp_2_filename
+										<< " ... " << Timer::GetNow();
+							Timer p3;
+							Phase3Results res = RunPhase3(
+									k,
+									tmp2_disk,
+									res2,
+									id,
+									tmp_dirname,
+									filename,
+									header_size,
+									memory_manager,
+									full_stats,
+									num_buckets,
+									log_num_buckets,
+									phases_flags,
+									num_threads );
 
-                std::cout << std::endl
-                      << "Starting phase 4/4: Write Checkpoint tables into " << tmp_2_filename
-                      << " ... " << Timer::GetNow();
-                Timer p4;
-                RunPhase4(k, k + 1, tmp2_disk, res, phases_flags, 16);
-                p4.PrintElapsed("Time for phase 4 =");
-                finalsize = res.final_table_begin_pointers[11];
+							p3.PrintElapsed("Time for phase 3 =");
+
+							std::cout << std::endl
+										<< "Starting phase 4/4: Write Checkpoint tables into " << tmp_2_filename
+										<< " ... " << Timer::GetNow();
+							Timer p4;
+							RunPhase4(k, k + 1, tmp2_disk, res, phases_flags, 16);
+							p4.PrintElapsed("Time for phase 4 =");
+							finalsize = res.final_table_begin_pointers[11];
             }
 
 						assert( (int64_t)memory_size == memory_manager.getFreeRam() ); // all ram should be free now

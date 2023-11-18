@@ -592,8 +592,9 @@ std::vector<uint64_t> RunPhase1(
     std::string const tmp_dirname,
     std::string const filename,
 		MemoryManager &memory_manager,
+		SortStatisticsStorage *full_stats,
+		SortStatisticsStorage *full_stats_next,
     uint32_t const num_buckets,
-    uint32_t const log_num_buckets,
     uint32_t const stripe_size,
 		uint16_t const num_threads,
 		uint8_t const flags )
@@ -609,19 +610,16 @@ std::vector<uint64_t> RunPhase1(
     uint32_t const t1_entry_size_bytes = EntrySizes::GetMaxEntrySize(k, 1, true);
     globals.L_sort_manager = std::make_unique<SortManager>(
 				memory_manager,
+				*full_stats,
         num_buckets,
-        log_num_buckets,
         t1_entry_size_bytes,
         tmp_dirname,
         filename + ".p1.t1",
         0,
 				globals.stripe_size,
-				k,
-				1, // Phase
-				2, // table
+				k, 1 /* Phase */, 2 /* table */,
 				num_threads,
 				(flags&NO_COMPACTION)==0);
-
 
     // These are used for sorting on disk. The sort on disk code needs to know how
     // many elements are in each bucket.
@@ -640,7 +638,7 @@ std::vector<uint64_t> RunPhase1(
 
     uint64_t prevtableentries = 1ULL << k;
     f1_start_time.PrintElapsed("F1 complete, time:");
-    globals.L_sort_manager->FlushCache();
+		globals.L_sort_manager->FlushCache( full_stats_next == NULL ); // full flush if only one stats in ram
     table_sizes[1] = x + 1;
 
     // Store positions to previous tables, in k bits.
@@ -693,15 +691,14 @@ std::vector<uint64_t> RunPhase1(
 
         globals.R_sort_manager = std::make_unique<SortManager>(
 						memory_manager,
+						*((full_stats_next != NULL && (table_index%2)==1)?full_stats_next:full_stats),
             num_buckets,
-            log_num_buckets,
             right_entry_size_bytes,
             tmp_dirname,
             filename + ".p1.t" + std::to_string(table_index + 1),
             0,
 						globals.stripe_size,
-						k,
-						1, // Phase
+						k, 1, // Phase
 						table_index+2,
 						num_threads,
 						(flags&NO_COMPACTION)==0 );
@@ -759,7 +756,7 @@ std::vector<uint64_t> RunPhase1(
         tmp_1_disks[table_index].Truncate(globals.left_writer);
 				globals.L_sort_manager.reset();
 				if (table_index < 6) {
-            globals.R_sort_manager->FlushCache();
+						globals.R_sort_manager->FlushCache( full_stats_next == NULL );
             globals.L_sort_manager = std::move(globals.R_sort_manager);
         } else {
 						globals.table7->Close();

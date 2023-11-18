@@ -30,9 +30,6 @@ using namespace std::chrono_literals; // for operator""ns;
 #include "exceptions.hpp"
 #include "sorting_bucket.hpp"
 
-// The number of bits for bottom subbucket that sorted by quick sort
-uint8_t kSubBucketBits = 11;
-
 const inline uint32_t CacheBucketSize = 256; // mesured in number of entries
 const inline uint32_t CacheBucketSizeLimit = 250; // mesured in number of entries
 
@@ -70,6 +67,42 @@ private:
 	const uint16_t entry_size;
 	const uint32_t limit_size;
 	SortingBucket &parent;
+};
+
+
+struct SortStatisticsStorage {
+	const uint8_t k, kSubBucketBits;
+	const uint64_t size;
+
+	SortStatisticsStorage( const uint8_t k, const uint8_t kSubBucketBits, const uint32_t num_buckets )
+			: k(k), kSubBucketBits(kSubBucketBits), size( 1UL << (k-kSubBucketBits) )
+			, log_num_bueckets( log2(num_buckets) )
+			, full_stats( Util::allocate<STATS_UINT_TYPE>( size ) )
+	{	}
+
+	inline void setNumBuckets( uint32_t num_buckets ) {
+		log_num_bueckets = log2(num_buckets);
+
+		assert( num_buckets == getNumBuckets() );
+
+		if( log_num_bueckets + kSubBucketBits > k )
+			throw InvalidValueException( "too many bukets" );
+
+	}
+	inline uint32_t getNumBuckets() const { return 1 << log_num_bueckets; }
+
+	STATS_UINT_TYPE* forBucket( uint32_t bucket_no ){
+		assert( !!full_stats );
+		assert( bucket_no < getNumBuckets() );
+		assert( (bucket_no << (k - kSubBucketBits - log_num_bueckets) ) < size );
+
+		return full_stats.get() + (bucket_no << (k - kSubBucketBits - log_num_bueckets) );
+	}
+
+	void FreeMemory(){ full_stats.reset(); }
+private:
+	uint16_t log_num_bueckets;
+	std::unique_ptr<STATS_UINT_TYPE, void(*)(STATS_UINT_TYPE*)> full_stats;
 };
 
 class SortManager;
@@ -203,8 +236,8 @@ class SortManager : public Disk, IReadDiskStream {
 public:
 	SortManager(
 			MemoryManager &memory_manager,
+			SortStatisticsStorage &full_statistics,
 			uint32_t  num_buckets,
-			uint32_t log_num_buckets_not_used,
 			uint16_t const entry_size,
 			const std::string &tmp_dirname,
 			const std::string &filename,
@@ -249,8 +282,11 @@ public:
 		log_num_buckets_ = log2(num_buckets);
 		// Total number of entries is around 2^k. Entries per bucket is around 2^(k-log_num_buckets_)
 		// We need such amount of subbuckets that per subbucket entries number will not overflow uint16_t
-		subbucket_bits = std::max( 3, ((int16_t)k) - log_num_buckets_ - kSubBucketBits );
+		subbucket_bits = ((int16_t)k) - log_num_buckets_ - full_statistics.kSubBucketBits;
+		if( subbucket_bits < 3 )
+			throw InvalidValueException( "too many buckets to set statistics" );
 		stats_mask = ( (uint64_t)1<<subbucket_bits)-1;
+		full_statistics.setNumBuckets( num_buckets );
 
 		assert( subbucket_bits > 0 );
 
@@ -273,7 +309,8 @@ public:
 						case 4: sequence_start = k; break;
 					}
 				}
-				buckets_.emplace_back( SortingBucket( bucket_filename.string(), memory_manager, bucket_i, log_num_buckets_,
+				buckets_.emplace_back( SortingBucket( bucket_filename.string(), memory_manager, full_statistics.forBucket( bucket_i ),
+																							bucket_i, log_num_buckets_,
 																							entry_size, begin_bits_ + log_num_buckets_, subbucket_bits,
 																							enable_compaction, sequence_start ) );
 		}
@@ -356,9 +393,6 @@ public:
 
     void FreeMemory() override
     {
-//			for (auto& b : buckets_)
-//				b.FreeMemory();
-
 			prev_bucket_buf_.reset();
 
 			if( sorted_current ){
