@@ -229,10 +229,11 @@ public:
         std::cout << "ID: " << Util::HexStr(id, id_len) << std::endl;
 				std::cout << "Memo: " << Util::HexStr( memo, memo_len ) << std:: endl;
         std::cout << "Plot size is: " << static_cast<int>(k) << std::endl;
+				std::cout << "Threads number: " << num_threads << std::endl;
 				std::cout << "Buffer size is: " << buf_megabytes << "MiB" << std::endl;
 				std::cout << "Per file buffer size is: " << (BUF_SIZE/1024) << "KiB" << std::endl;
 				std::cout << "Buckets number: " << num_buckets << std::endl;
-				std::cout << "Subbuckets bits number: " << ((uint)kSubBucketBits) << " (" << ((uint)stats_in_mem) << "x" << (statistics_memory>>20) << "MiB)" << std::endl;
+				std::cout << "Subbuckets bits number: " << ((uint)kSubBucketBits) << " (" << ((uint)stats_in_mem) << "x" << ((statistics_memory>>20)/stats_in_mem) << "MiB)" << std::endl;
 				std::cout << "Flags: " << ( phases_flags&ENABLE_BITFIELD ? " using bitfield" : " NO bitfield" )
 									<< ", " << (phases_flags&NO_COMPACTION ? "NO compaction" : "with compaction" )
 									<< ", " << (phases_flags&BUFFER_AS_CACHE ?"USE free buffer as cache" : "NO buffer as cache" );
