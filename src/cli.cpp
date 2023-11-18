@@ -89,7 +89,7 @@ int main(int argc, char *argv[]) try {
     bool parallel_read = true;
     uint32_t buffmegabytes = 0;
 		uint32_t filebufkb = 1024;
-		uint8_t kSubBucketBits = 11;
+		uint8_t kSubBucketBits = 11, stats_in_ram = 2;
 
     options.allow_unrecognised_options().add_options()(
 				"k, size", "Plot size", cxxopts::value<uint8_t>(k))(
@@ -110,8 +110,10 @@ int main(int argc, char *argv[]) try {
 						cxxopts::value<uint32_t>(buffmegabytes))(
 				"B, file-buffer", "Per file read/write buffer size in KiB",
 						cxxopts::value<uint32_t>(filebufkb)->default_value("256") )(
-				"S, subbucket_bits", "Number of bit in subbucket. Bigger value use less RAM but slowdown the sorting. The ram usage is 2^(k+2-S) bytes i.e. for k32 and 11 it is 2^(32+2-11)=16MiB. This amount substracted from buffer size.",
-				cxxopts::value<uint8_t>(kSubBucketBits)->default_value("11") )(
+				"S, subbucket_bits", "Number of bit in subbucket. Bigger value use less RAM but slowdown the sorting. The ram usage is 2^(k+1-S) bytes i.e. for k32 and 11 it is 2^(32+1-11)=8MiB. This amount substracted from buffer size.",
+						cxxopts::value<uint8_t>(kSubBucketBits)->default_value("11") )(
+				"stats_in_ram", "Number of sort statistics in ram from 1 to 6.",
+						cxxopts::value<uint8_t>(stats_in_ram)->default_value("2") )(
         "p, progress", "Display progress percentage during plotting",
 						cxxopts::value<bool>(show_progress))(
         "parallel_read", "Set to false to use sequential reads",
@@ -174,7 +176,7 @@ int main(int argc, char *argv[]) try {
 								id_bytes.data(),				id_bytes.size(),
                 buffmegabytes,
 								num_buckets,						num_stripes,				num_threads,
-								phases_flags, kSubBucketBits );
+								phases_flags,						kSubBucketBits,			stats_in_ram );
     } else if (operation == "prove") {
         if (argc < 3) {
             HelpAndQuit(options);

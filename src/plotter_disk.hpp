@@ -107,10 +107,11 @@ public:
 				uint8_t num_threads_input = 0,
 				uint8_t phases_flags = ENABLE_BITFIELD,
 				// The number of bits for bottom subbucket that sorted by quick sort
-				uint8_t kSubBucketBits = 11
-				)
+				uint8_t kSubBucketBits = 11,
+				uint8_t stats_in_mem = 2 // TODO parameter from this
+			)
 		{
-			uint8_t stats_mode = 2; // TODO parameter from this
+				stats_in_mem = std::min( std::max( (uint8_t)1, stats_in_mem ), (uint8_t)6 );
 
         if (k < kMinPlotSize || k > kMaxPlotSize) {
             throw InvalidValueException("Plot size k= " + std::to_string(k) + " is invalid");
@@ -128,7 +129,7 @@ public:
         // Subtract some ram to account for dynamic allocation through the code
         uint64_t thread_memory = num_threads * (2 * (stripe_size + 5000)) *
                                  EntrySizes::GetMaxEntrySize(k, 4, true) / (1024 * 1024);
-				uint64_t statistics_memory = (sizeof(STATS_UINT_TYPE) << (uint64_t)(k-kSubBucketBits)) * stats_mode;
+				uint64_t statistics_memory = (sizeof(STATS_UINT_TYPE) << (uint64_t)(k-kSubBucketBits)) * stats_in_mem;
 				uint64_t sub_mbytes = (5 + (int)std::min(buf_megabytes * 0.05, (double)50) + thread_memory)
 															+ (statistics_memory>>20);
 
@@ -231,7 +232,7 @@ public:
 				std::cout << "Buffer size is: " << buf_megabytes << "MiB" << std::endl;
 				std::cout << "Per file buffer size is: " << (BUF_SIZE/1024) << "KiB" << std::endl;
 				std::cout << "Buckets number: " << num_buckets << std::endl;
-				std::cout << "Subbuckets bits number: " << ((uint)kSubBucketBits) << " (" << (statistics_memory>>20) << "MiB)" << std::endl;
+				std::cout << "Subbuckets bits number: " << ((uint)kSubBucketBits) << " (" << ((uint)stats_in_mem) << "x" << (statistics_memory>>20) << "MiB)" << std::endl;
 				std::cout << "Flags: " << ( phases_flags&ENABLE_BITFIELD ? " using bitfield" : " NO bitfield" )
 									<< ", " << (phases_flags&NO_COMPACTION ? "NO compaction" : "with compaction" )
 									<< ", " << (phases_flags&BUFFER_AS_CACHE ?"USE free buffer as cache" : "NO buffer as cache" );
@@ -286,7 +287,7 @@ public:
 
 				{ // Scope for FileDisk and memory manager
 						std::unique_ptr<SortStatisticsStorage> full_stats[6];
-						for( uint8_t i = 0; i < stats_mode; i++ )
+						for( uint8_t i = 0; i < stats_in_mem; i++ )
 							full_stats[i].reset( new SortStatisticsStorage( k, kSubBucketBits, num_buckets ) );
 
 						MemoryManager memory_manager( memory_size, (phases_flags & BUFFER_AS_CACHE) == 0 ? -1 : (memory_size - est_non_cache_use) );
@@ -318,7 +319,7 @@ public:
 
             if((phases_flags & ENABLE_BITFIELD) == 0)
 						{
-							for( uint8_t i = 0; i < stats_mode; i++ )
+							for( uint8_t i = 0; i < stats_in_mem; i++ )
 								full_stats[i].reset(); // no usage here
 
 							// Memory to be used for sorting and buffers

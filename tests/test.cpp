@@ -51,20 +51,6 @@ static uint128_t to_uint128(uint64_t hi, uint64_t lo) { return (uint128_t)hi << 
 
 #include <sys/mman.h> // mmap, munmap
 
-//TEST_CASE( "MEMORY" ){
-//	SECTION("MMAP"){
-//		auto ptrR = Util::allocate<uint64_t>( 10 );
-//		auto ptrH = Util::allocate<uint64_t>( 1<<20 );
-//		//std::unique_ptr<uint64_t, void(*)(uint64_t*)> ptr( new uint64_t[10], [](uint64_t* d){delete []d; std::cout<<"custom local deleter" << std::endl;} );
-////		auto size = HUGE_MEM_PAGE_SIZE;
-////		void *ptr = mmap(NULL, size , PROT_READ | PROT_WRITE,
-////										 MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB,
-////										 -1, 0);
-////		std::unique_ptr<uint64_t, void(*)(uint64_t*)> mptr( (uint64_t*)ptr, [&size](uint64_t* d){ std::cout<<"custom huge deleter of size "<< size << std::endl;});
-
-//	}
-//}
-
 TEST_CASE( "DISK_STREAMS" ){
 
 	SECTION("BLOCK_READ_WRITE"){
@@ -925,13 +911,15 @@ void PlotAndTestProofOfSpace(
     uint32_t stripe_size,
 		uint8_t num_threads,
 		uint32_t num_buckets = 0,
-		uint8_t phase_flags = ENABLE_BITFIELD
+		uint8_t phase_flags = ENABLE_BITFIELD,
+		uint8_t subbuckets_bits = 11,
+		uint8_t stats_in_mem = 2
 		)
 {
     DiskPlotter plotter = DiskPlotter();
     uint8_t memo[5] = {1, 2, 3, 4, 5};
-		plotter.CreatePlotDisk( ".", ".", ".", filename, k, memo, 5, plot_id, 32,
-														buffer, num_buckets, stripe_size, num_threads, phase_flags );
+		plotter.CreatePlotDiskAdv( ".", ".", ".", filename, k, memo, 5, plot_id, 32,
+														buffer, num_buckets, stripe_size, num_threads, phase_flags, subbuckets_bits, stats_in_mem );
     TestProofOfSpace(filename, iterations, k, plot_id, num_proofs);
     REQUIRE(remove(filename.c_str()) == 0);
 }
@@ -950,6 +938,26 @@ TEST_CASE("Plotting")
 //		{
 //				PlotAndTestProofOfSpace("cpp-test-plot.dat", 5000, 22, plot_id_3, 28, 4932, 65536, 6, 16);
 //		}
+		SECTION("Subbukets sizes")
+		{
+				PlotAndTestProofOfSpace("cpp-test-plot.dat", 100, 18, plot_id_1, 11, 95, 4000, 2,
+																16/*num_buckets*/, ENABLE_BITFIELD, 0, 2 );
+				PlotAndTestProofOfSpace("cpp-test-plot.dat", 100, 18, plot_id_1, 11, 95, 4000, 2,
+																16/*num_buckets*/, ENABLE_BITFIELD, 5, 2 );
+				PlotAndTestProofOfSpace("cpp-test-plot.dat", 100, 18, plot_id_1, 11, 95, 4000, 2,
+																16/*num_buckets*/, ENABLE_BITFIELD, 8, 2 );
+				PlotAndTestProofOfSpace("cpp-test-plot.dat", 500, 20, plot_id_3, 100, 469, 16000, 2,
+																16/*num_buckets*/, ENABLE_BITFIELD, 13, 2 );
+		}
+
+		SECTION("Different stats in memory")
+		{
+			for( uint8_t i = 1; i < 7; i++ )
+				PlotAndTestProofOfSpace("cpp-test-plot.dat", 100, 18, plot_id_1, 11, 95, 4000, 1,
+																		0/*num_buckets*/, ENABLE_BITFIELD, 11, i );
+		}
+
+
 
 		SECTION("Disk plot k22 small buffer single-thread")
 		{
