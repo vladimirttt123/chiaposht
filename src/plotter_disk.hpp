@@ -229,7 +229,6 @@ public:
         std::cout << "ID: " << Util::HexStr(id, id_len) << std::endl;
 				std::cout << "Memo: " << Util::HexStr( memo, memo_len ) << std:: endl;
         std::cout << "Plot size is: " << static_cast<int>(k) << std::endl;
-				std::cout << "Threads number: " << num_threads << std::endl;
 				std::cout << "Buffer size is: " << buf_megabytes << "MiB" << std::endl;
 				std::cout << "Per file buffer size is: " << (BUF_SIZE/1024) << "KiB" << std::endl;
 				std::cout << "Buckets number: " << num_buckets << std::endl;
