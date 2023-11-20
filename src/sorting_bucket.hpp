@@ -126,7 +126,7 @@ struct SortingBucket{
 
 		if( statistics == NULL ) {
 			assert( statistics_file );
-			local_stats = Util::allocate<STATS_UINT_TYPE>( 1<<bucket_bits_count_ ); // TODO check if it is correct...
+			local_stats = Util::allocate<STATS_UINT_TYPE>( subbuckets_count ); // TODO check if it is correct...
 			// Read statistics from file
 			uint8_t * stats_pntr = (uint8_t*)( stats = local_stats.get() );
 			for( StreamBuffer buf; statistics_file->Read( buf ) > 0; stats_pntr += buf.used() )
@@ -138,7 +138,8 @@ struct SortingBucket{
 		}
 
 
-		auto subbucket_positions = std::make_unique<uint64_t[]>( subbuckets_count );
+		auto subbucket_positions_ptr = Util::allocate<uint64_t>( subbuckets_count );
+		auto subbucket_positions = subbucket_positions_ptr.get();
 
 		// Calculate initial subbuckets positions.
 		subbucket_positions[0] = 0;
@@ -157,7 +158,7 @@ struct SortingBucket{
 		if( num_read_threads <= 1 || /*read_size*/ Size() < 1024*entry_size_ ){
 
 			for( StreamBuffer buf; disk->Read( buf ) > 0; )
-				 FillBuckets( memory, buf.get(), buf.used(), subbucket_positions.get(), entry_size_ );
+				 FillBuckets( memory, buf.get(), buf.used(), subbucket_positions, entry_size_ );
 
 			assert( subbucket_positions[0] == stats[0]*entry_size_ ); // check first bucket is full
 			assert( subbucket_positions[subbuckets_count-1]/entry_size_ == Count() ); // check last bucket is full
@@ -183,7 +184,7 @@ struct SortingBucket{
 					};
 
 					// start threads
-					threads.emplace_back( thread_function, subbucket_positions.get(), entry_size_ );
+					threads.emplace_back( thread_function, subbucket_positions, entry_size_ );
 					threads.emplace_back( thread_function, subbucket_end_positions.get(), -entry_size_ );
 				 } else {
 					auto thread_function = [this, &memory]( uint64_t * positions, int64_t direction, std::mutex *mut ){
@@ -198,7 +199,7 @@ struct SortingBucket{
 
 					for( uint t = 0; t < num_read_threads; t++ )
 						if( (t&1) == 0 )
-							threads.emplace_back( thread_function, subbucket_positions.get(), entry_size_, &forward_mutex );
+							threads.emplace_back( thread_function, subbucket_positions, entry_size_, &forward_mutex );
 						else
 							threads.emplace_back( thread_function, subbucket_end_positions.get(), -entry_size_, &backward_mutex );
 				 }
@@ -211,7 +212,8 @@ struct SortingBucket{
 					 assert( subbucket_positions[i] == subbucket_end_positions[i] + entry_size_ );
 #endif
 			} else {
-				auto a_subbucket_positions = std::make_unique<std::atomic_uint64_t[]>( subbuckets_count );
+				auto a_subbucket_positions_ptr = std::make_unique<std::atomic_uint64_t>( subbuckets_count );
+				auto a_subbucket_positions = a_subbucket_positions_ptr.get();
 				for( uint32_t i = 0; i < subbuckets_count - 1; i++ ){
 					a_subbucket_positions[i].store( subbucket_positions[i], std::memory_order_relaxed );
 				}

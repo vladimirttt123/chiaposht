@@ -171,7 +171,7 @@ namespace Util {
 		if( size >= HUGE_MEM_PAGE_SIZE*0.9 ){
 			// Try to allocate huge pages
 			// std::cout << "allocate huge page" << std::endl;
-			uint64_t hsize = ((size + HUGE_MEM_PAGE_SIZE+7/*8bytes to save size*/)>>HUGE_MEM_PAGE_BITS) << HUGE_MEM_PAGE_BITS;
+			uint64_t hsize = ((size + HUGE_MEM_PAGE_SIZE+3/*4bytes to save size*/)>>HUGE_MEM_PAGE_BITS) << HUGE_MEM_PAGE_BITS;
 			auto ptr = mmap(NULL, hsize , PROT_READ | PROT_WRITE,
 								 MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB,
 								 -1, 0);
@@ -184,13 +184,12 @@ namespace Util {
 				}
 			}
 			else {
-				((uint64_t*)ptr)[0] = hsize;
-				return std::unique_ptr<T, void(*)(T*)>( (T*)(((uint64_t*)ptr)+1), [](T* d){
-					uint64_t* pntr = ((uint64_t*)d)-1;
-					uint64_t size = pntr[0];
+				((uint32_t*)ptr)[0] = hsize >> HUGE_MEM_PAGE_BITS;
+				return std::unique_ptr<T, void(*)(T*)>( (T*)(((uint32_t*)ptr)+1), [](T* d){
+					uint32_t* pntr = ((uint32_t*)d)-1;
+					uint64_t size = ((uint64_t)pntr[0])<<HUGE_MEM_PAGE_BITS;
 					munmap( (void*)pntr, size );});
 			}
-
 		}
 #endif // NO_HUGE_PAGES
 
