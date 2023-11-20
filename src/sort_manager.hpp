@@ -422,7 +422,7 @@ public:
 		// endregion }
 
 		// region IReadStream implementation {
-		uint32_t Read( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) override {
+		uint32_t Read( uint8_t* buf, const uint32_t buf_size ) override {
 			EnsureSortingStarted();
 
 			for( uint32_t buf_start = 0; buf_start < buf_size; ){
@@ -437,7 +437,7 @@ public:
 				assert( to_copy >= 0 );
 
 				if( to_copy == 0 ) {
-					assert( checkSort( buf.get(), buf_start ) );
+					assert( checkSort( buf, buf_start ) );
 					return buf_start; // is it possible case?
 				}
 
@@ -449,12 +449,12 @@ public:
 				assert(  (stream_read_position + to_copy) <= ( sorted_current->Bucket()->SortedPosision() +  sorted_current->StartPosition() ) );
 				assert( sorted_current->EndPosition() - sorted_current->StartPosition() <= sorted_current->buffer_size );
 
-				memcpy( buf.get() + buf_start, memory_start() + stream_read_position - sorted_current->StartPosition(), to_copy );
+				memcpy( buf + buf_start, memory_start() + stream_read_position - sorted_current->StartPosition(), to_copy );
 				buf_start += to_copy;
 				stream_read_position += to_copy;
 			}
 
-			assert( checkSort( buf.get(), buf_size ) );
+			assert( checkSort( buf, buf_size ) );
 
 			return buf_size;
 		};

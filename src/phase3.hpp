@@ -600,7 +600,7 @@ Phase3Results RunPhase3(
 							{
 								std::lock_guard<std::mutex> lk(read_mutex);
 								index = R_sort_manager->GetReadPosition()/right_entry_size_bytes;
-								sort_buf_size = R_sort_manager->Read( sort_buf, sort_buf_size );
+								sort_buf_size = R_sort_manager->Read( sort_buf.get(), sort_buf_size );
 								if( sort_buf_size == 0 ) return;
 								last_line_point = global_last_line_point;
 								global_last_line_point = Util::SliceInt128FromBytes(

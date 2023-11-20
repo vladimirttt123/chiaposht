@@ -50,7 +50,7 @@ inline void ScanTable( IReadDiskStream *disk, int64_t const table_size, int16_t 
 	const auto max_threads = std::max((uint32_t)1, num_threads);
 	auto threads = std::make_unique<std::thread[]>( max_threads );
 	std::mutex read_mutex[2];
-	const int64_t read_bufsize = (BUF_SIZE/entry_size)*entry_size; // allign size to entry length
+	const int64_t read_bufsize = ((HUGE_MEM_PAGE_SIZE-1)/entry_size)*entry_size; // allign size to entry length
 
 #ifndef __GNUC__
 	next_bitfield.PrepareToThreads( max_threads );
@@ -59,7 +59,7 @@ inline void ScanTable( IReadDiskStream *disk, int64_t const table_size, int16_t 
 	for( uint32_t i = 0; i < max_threads; i++ ){
 		threads[i] = std::thread( [ entry_size, pos_offset_size, read_bufsize, &read_mutex, &table_size]
 													(IReadDiskStream *disk, int64_t *read_cursor, const bitfield * current_bitfield, bitfield *next_bitfield){
-			std::unique_ptr<uint8_t[]> buffer( Util::NewSafeBuffer(read_bufsize) );
+			auto buffer( Util::allocate<uint8_t>(read_bufsize) );
 			bitfieldReader cur_bitfield( *current_bitfield );
 			const auto proc5_size = table_size*entry_size/20;
 			int64_t buf_size = 0, buf_start = 0;
@@ -71,7 +71,7 @@ inline void ScanTable( IReadDiskStream *disk, int64_t const table_size, int16_t 
 				{	// Read next buffer
 					const std::lock_guard<std::mutex> lk(read_mutex[0]);
 					buf_start = *read_cursor;
-					buf_size = disk->Read( buffer, read_bufsize );
+					buf_size = disk->Read( buffer.get(), read_bufsize );
 					if( buf_size == 0 ) return;// nothing to read -> exit
 
 					*read_cursor += buf_size;
@@ -128,8 +128,8 @@ inline void SortRegularTableThread( IReadDiskStream * disk, const uint64_t &tabl
 	uint8_t const write_counter_shift = 128 - k;
 	uint8_t const pos_offset_shift = write_counter_shift - pos_offset_size;
 
-	uint64_t buf_size = (BUF_SIZE/entry_size)*entry_size;
-	std::unique_ptr<uint8_t[]> buffer( Util::NewSafeBuffer(buf_size) );
+	uint64_t buf_size = ((HUGE_MEM_PAGE_SIZE-1)/entry_size)*entry_size;
+	auto buffer( Util::allocate<uint8_t>( buf_size ) );
 	SortManager::ThreadWriter writer = SortManager::ThreadWriter( *sort_manager );
 	uint64_t proc5_size = table_size*entry_size/20;
 	if( buf_size > proc5_size ) proc5_size = 1; // do not show counters
@@ -140,7 +140,7 @@ inline void SortRegularTableThread( IReadDiskStream * disk, const uint64_t &tabl
 	while( true ){
 		// Reading bucket
 		read_mutex->lock(); // Lock for reading
-		buf_size = disk->Read( buffer, buf_size );
+		buf_size = disk->Read( buffer.get(), buf_size );
 		if( buf_size == 0 ){ // nothing to read -> exit
 			read_mutex->unlock();
 			return;

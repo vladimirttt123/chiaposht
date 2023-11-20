@@ -757,7 +757,7 @@ struct IWriteDiskStream{
 };
 
 struct IReadDiskStream{
-	virtual uint32_t Read( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) = 0;
+	virtual uint32_t Read( uint8_t* buf, const uint32_t buf_size ) = 0;
 	virtual bool atEnd() const = 0;
 	virtual void Close() = 0;
 	virtual ~IReadDiskStream() = default;
@@ -804,9 +804,9 @@ struct ReadFileStream : public IReadDiskStream{
 
 	const uint64_t file_size;
 
-	uint32_t Read( std::unique_ptr<uint8_t[]> &buf, const uint32_t &buf_size ) override {
+	uint32_t Read( uint8_t* buf, const uint32_t buf_size ) override {
 		uint32_t to_read = std::min( (uint64_t)buf_size, file_size - read_position );
-		disk->Read( read_position, buf.get(), to_read );
+		disk->Read( read_position, buf, to_read );
 		read_position += to_read;
 		return to_read;
 	};
