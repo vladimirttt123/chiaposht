@@ -43,6 +43,15 @@ struct SortingBucket{
 	}
 
 	inline uint64_t SortedPosision() const { return sorted_pos; }
+	inline uint32_t SortedPositionWait( uint64_t min_position ){
+		uint32_t wait_times = 0;
+		do{
+			uint64_t current = sorted_pos.load(std::memory_order::relaxed);
+			if( current >= min_position ) return wait_times;
+			wait_times++;
+			sorted_pos.wait( current, std::memory_order::relaxed );
+		} while( true );
+	}
 	inline uint64_t Size() const { return entry_size_*entries_count; }
 	inline uint64_t Count() const { return entries_count; }
 	inline uint16_t EntrySize() const { return entry_size_; }
@@ -292,7 +301,8 @@ struct SortingBucket{
 								if( isMin ){
 									assert( minVal >= sorted_pos );
 
-									sorted_pos = minVal;
+									sorted_pos.store( minVal, std::memory_order::relaxed );
+									sorted_pos.notify_all();
 								}
 							}
 						}
@@ -303,6 +313,8 @@ struct SortingBucket{
 		}
 
 		sorted_pos = entries_count*entry_size_; // mark finished sort
+		sorted_pos.notify_all();
+
 		statistics = NULL; // clear ram - statistics is external no than no reset
 
 		sort_time = (std::chrono::high_resolution_clock::now() - start_time)/std::chrono::milliseconds(1);
@@ -330,7 +342,7 @@ private:
 	STATS_UINT_TYPE* statistics;
 	std::unique_ptr<IBlockWriterReader> statistics_file;
 	uint64_t entries_count = 0;
-	uint64_t sorted_pos = 0;
+	std::atomic_uint64_t sorted_pos = 0;
 	MemoryManager &memory_manager;
 
 	uint64_t total_reads = 0, instant_reads = 0;

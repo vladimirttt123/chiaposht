@@ -17,6 +17,7 @@
 
 #include <utility>
 #include <vector>
+#include "../lib/include/picosha2.hpp"
 
 #include "calculate_bucket.hpp"
 
@@ -49,8 +50,8 @@ public:
         // Hashes two of the x values, based on the quality index
         std::vector<unsigned char> hash_input(32 + Util::ByteAlign(2 * k) / 8, 0);
         memcpy(hash_input.data(), challenge, 32);
-        proof.Slice(k * quality_index, k * (quality_index + 2)).ToBytes(hash_input.data() + 32);
-        std::vector<unsigned char> hash(picosha2::k_digest_size);
+				proof.Slice(k * quality_index, k * (quality_index + 2)).ToBytes(hash_input.data() + 32);
+				std::vector<unsigned char> hash(picosha2::k_digest_size);
         picosha2::hash256(hash_input.begin(), hash_input.end(), hash.begin(), hash.end());
         return LargeBits(hash.data(), 32, 256);
     }

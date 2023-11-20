@@ -133,7 +133,7 @@ struct SortedBucketBuffer{
 
 	~SortedBucketBuffer(){ FinishSort(); }
 
-	inline uint64_t WaitsCount() const { return wait_events_count; }
+	inline uint64_t WaitsCount() const { return waits_count; }
 	inline uint64_t WaitsReadCount() const { return read_waits_count; }
 	inline double WaitsTimeSec() const { return waits_count/10000.0; }
 
@@ -142,21 +142,22 @@ struct SortedBucketBuffer{
 		assert( position >= start_position && position <= end_position );
 
 		if( sorting_thread.load( std::memory_order_relaxed ) != NULL && position >= start_position && position <= end_position ){
-			wait_events_count++;
 
 			if( position == end_position ){
-				if( bucket->SortedPosision() <= 0 ) read_waits_count++;
-
+				if( bucket->SortedPosision() <= 0 ){
+					waits_count++;
+					read_waits_count++;
+				}
 				FinishSort();
 			}
 			else {
-				while( sorting_thread.load( std::memory_order_relaxed ) != NULL && position >= start_position
-							 && (position - start_position) > bucket->SortedPosision() ){
-					waits_count++;
-					if( bucket->SortedPosision() <= 0 ) read_waits_count++;
-					std::this_thread::sleep_for( 100us );
-				}
-
+//				while( sorting_thread.load( std::memory_order_relaxed ) != NULL && position >= start_position
+//							 && (position - start_position) > bucket->SortedPosision() ){
+//					waits_count++;
+//					if( bucket->SortedPosision() <= 0 ) read_waits_count++;
+//					std::this_thread::sleep_for( 100us );
+//				}
+				waits_count += bucket->SortedPositionWait( position - start_position );
 				if( bucket->SortedPosision() >= bucket->Size() )
 					FinishSort();
 			}
@@ -193,7 +194,7 @@ struct SortedBucketBuffer{
 		this->end_position = start_position + bucket->Size();
 
 		bool isPrevWaited = waits_count > 0;
-		wait_events_count = read_waits_count = waits_count = 0;
+		read_waits_count = waits_count = 0;
 		FinishSort( new std::thread(
 										[this]( SortingBucket* bucket, uint8_t* buf, std::mutex *r_mutex, bool isPrevWaited ){
 												r_mutex->lock();
@@ -217,7 +218,7 @@ private:
 	SortingBucket *bucket = NULL;
 	std::atomic<std::thread*> sorting_thread = NULL;
 	std::mutex *read_mutex;
-	std::atomic_int_fast32_t wait_events_count = 0, waits_count = 0, read_waits_count = 0;
+	std::atomic_int_fast32_t waits_count = 0, read_waits_count = 0;
 
 
 	inline bool FinishSort( std::thread * newThread = NULL){
@@ -293,7 +294,9 @@ public:
 		// Cross platform way to concatenate paths, gulrak library.
 		std::vector<fs::path> bucket_filenames = std::vector<fs::path>();
 
-		buckets_.reserve(num_buckets);
+		this->num_buckets = num_buckets;
+		buckets_ = std::make_unique<std::unique_ptr<SortingBucket>[]>(num_buckets);
+
 		for (size_t bucket_i = 0; bucket_i < num_buckets; bucket_i++) {
 				std::ostringstream bucket_number_padded;
 				bucket_number_padded << std::internal << std::setfill('0') << std::setw(3) << bucket_i;
@@ -309,7 +312,7 @@ public:
 						case 4: sequence_start = k; break;
 					}
 				}
-				buckets_.emplace_back( SortingBucket( bucket_filename.string(), memory_manager, full_statistics.forBucket( bucket_i ),
+				buckets_[bucket_i].reset( new SortingBucket( bucket_filename.string(), memory_manager, full_statistics.forBucket( bucket_i ),
 																							bucket_i, log_num_buckets_,
 																							entry_size, begin_bits_ + log_num_buckets_, subbucket_bits,
 																							enable_compaction, sequence_start ) );
@@ -319,12 +322,12 @@ public:
 		// Class to support writing to sort cache by threads in safe way
 		struct ThreadWriter{
 			explicit ThreadWriter( SortManager &parent ) : parent_(parent)
-						, buckets_cache(new std::unique_ptr<CacheBucket>[parent.buckets_.size()])
+						, buckets_cache(new std::unique_ptr<CacheBucket>[parent.num_buckets])
 //						, begin_bytes( parent.begin_bits_/8 ), begin_bits( parent.begin_bits_&7 )
 //						, bits_shift( 32 - parent.log_num_buckets_ - parent.subbucket_bits )
 			{
-				for( uint32_t i = 0; i < parent.buckets_.size(); i++ )
-					buckets_cache[i].reset( new CacheBucket( parent.buckets_[i] ) );
+				for( uint32_t i = 0; i < parent.num_buckets; i++ )
+					buckets_cache[i].reset( new CacheBucket( *parent.buckets_[i].get() ) );
 			}
 
 			inline void Add( const uint8_t *entry ){
@@ -352,17 +355,17 @@ public:
 		// returned number of entries
 		inline uint64_t Count() const {
 			uint64_t res = 0;
-			for( auto &b : buckets_ )
-				res += b.Count();
+			for( uint i = 0; i < num_buckets; i++ )
+				res += buckets_[i]->Count();
 			return res;
 		}
 
 
 		inline void AddToCache( StreamBuffer &entry )
     {
-        uint64_t const bucket_index =
+			uint64_t const bucket_index =
 						Util::ExtractNum64( entry.get(), begin_bits_, log_num_buckets_ + subbucket_bits );
-				buckets_[bucket_index>>subbucket_bits].AddEntry( entry, bucket_index & stats_mask );
+			buckets_[bucket_index>>subbucket_bits]->AddEntry( entry, bucket_index & stats_mask );
 		}
 
 		// region Disk inheritance implementaion {
@@ -450,7 +453,7 @@ public:
 		}
 
 		bool atEnd() const override{
-			return !hasMoreBuckets && sorted_current && (uint32_t)sorted_current->BucketNo() >= buckets_.size()
+			return !hasMoreBuckets && sorted_current && (uint32_t)sorted_current->BucketNo() >= num_buckets
 						 && stream_read_position >= sorted_current->EndPosition();
 		};
 		void Close() override { FreeMemory(); };
@@ -527,14 +530,14 @@ public:
 
 		void FlushCache( bool isFull = false )
 		{
-			for (auto& b : buckets_)
-				 b.Flush( isFull );
+			for( uint i = 0; i < num_buckets; i++ )
+				buckets_[i]->Flush( isFull );
     }
 
 		inline uint64_t BiggestBucketSize() const {
 			uint64_t res = 0;
-			for( auto &b : buckets_ )
-				if( b.Size() > res ) res = b.Size();
+			for( uint i = 0; i < num_buckets; i++ )
+				if( buckets_[i]->Size() > res ) res = buckets_[i]->Size();
 			return res;
 		}
 
@@ -544,8 +547,8 @@ public:
 				memory_manager.release( sorted_current->buffer_size * (sorted_next? 2 : 1) ); // release current and next bucket's memory
 
 			// Close and delete files in case we exit without doing the sort
-			for (auto& b : buckets_)
-				b.Remove(); // remove buckets files
+			for( uint i = 0; i < num_buckets; i++ )
+				buckets_[i]->Remove(); // remove buckets files
     }
 
 private:
@@ -559,7 +562,8 @@ private:
 	// Log of the number of buckets; num bits to use to determine bucket
 	uint16_t log_num_buckets_;
 
-	std::vector<SortingBucket> buckets_;
+	uint32_t num_buckets;
+	std::unique_ptr<std::unique_ptr<SortingBucket>[]> buckets_;
 	bool hasMoreBuckets = true;
 
 	const uint64_t prev_bucket_buf_size;
@@ -586,7 +590,7 @@ private:
 	bool StartSorting(){
 		if( sorted_current ) return false;
 
-		assert( buckets_.size() > 0 );
+		assert( num_buckets > 0 );
 
 		start_sorting_time = std::chrono::high_resolution_clock::now();
 
@@ -605,13 +609,13 @@ private:
 				, num_read_threads = std::max( num_threads>1?2U:1U, num_threads/( isSingleSort() ? 2 : 3)  );
 
 		sorted_current.reset( new SortedBucketBuffer( this, reserved_buffer_size, &bucket_read_mutex, num_background_threads, num_read_threads ) ); // reserve for current bucket
-		sorted_current->SortBucket( &buckets_[0] ); // first one always sync sort -> TODO improve it to wait reading only
+		sorted_current->SortBucket( buckets_[0].get() ); // first one always sync sort -> TODO improve it to wait reading only
 		sorted_current->num_read_threads = num_read_threads > 1 ? 2 : 1;
 
-		if( num_threads > 1 && buckets_.size() > 1 ){
+		if( num_threads > 1 && num_buckets > 1 ){
 			if( memory_manager.request( reserved_buffer_size, true ) ){
 				sorted_next.reset( new SortedBucketBuffer( this, reserved_buffer_size, &bucket_read_mutex, num_background_threads, sorted_current->num_read_threads ) ); // reserve for next bucket background sorting
-				sorted_next->StartSorting( 1, sorted_current->EndPosition(), &buckets_[1] ); // backgound sorting for next bucket
+				sorted_next->StartSorting( 1, sorted_current->EndPosition(), buckets_[1].get() ); // backgound sorting for next bucket
 			}
 			else
 				std::cout << "Warning buffer is too small to allow background sorting, the performance may be slower." << std::endl
@@ -640,18 +644,18 @@ private:
 			sorted_current.swap( sorted_next ); // bring sorted to front
 
 			uint next_bucket_no = sorted_current->BucketNo() + 1;
-			hasMoreBuckets = next_bucket_no < buckets_.size() && buckets_[next_bucket_no].Count() > 0;
+			hasMoreBuckets = next_bucket_no < num_buckets && buckets_[next_bucket_no]->Count() > 0;
 			if( hasMoreBuckets ){
 				// define number of threads for next sort - it could be not accurate because this numbers changed in threads... but it is ok.
 //				sorted_next->num_background_threads = std::max( sorted_current->num_background_threads, sorted_next->num_background_threads );
 //				sorted_next->num_read_threads = std::max( sorted_current->num_read_threads, sorted_next->num_read_threads );
 
-				sorted_next->StartSorting( next_bucket_no, sorted_current->EndPosition(), &buckets_[next_bucket_no] );
+				sorted_next->StartSorting( next_bucket_no, sorted_current->EndPosition(), buckets_[next_bucket_no].get() );
 			}
 		} else {
 			uint next_bucket_no = sorted_current->BucketNo() + 1;
-			sorted_current->SortBucket( &buckets_[next_bucket_no] );
-			hasMoreBuckets = next_bucket_no + 1 < buckets_.size() && buckets_[next_bucket_no+1].Count() > 0;
+			sorted_current->SortBucket( buckets_[next_bucket_no].get() );
+			hasMoreBuckets = next_bucket_no + 1 < num_buckets && buckets_[next_bucket_no+1]->Count() > 0;
 		}
 
 		if( !hasMoreBuckets ) std::cout << std::endl;
@@ -662,8 +666,8 @@ private:
 		// double const cache_ram = memory_manager.getAccessibleRam() / (1024.0 * 1024.0 * 1024.0);
 		double const free_ram = memory_manager.getFreeRam() / (1024.0 * 1024.0 * 1024.0);
 		double const qs_ram = stats_of->Bucket()->Size() / (1024.0 * 1024.0 * 1024.0);
-		int max_bucket = buckets_.size();
-		while( max_bucket > 0 && buckets_[max_bucket-1].Count() == 0 ) max_bucket--;
+		int max_bucket = num_buckets;
+		while( max_bucket > 0 && buckets_[max_bucket-1]->Count() == 0 ) max_bucket--;
 		std::cout << "\r\tk" << (uint32_t)k_ << " p" << (uint32_t)phase_ << " t" << (uint32_t)table_index_
 							<< " Bucket " << (stats_of->BucketNo()+1) << "/" << max_bucket << " size: "
 							<< std::setprecision( qs_ram > 10 ? 1:( qs_ram>1? 2 : 3) ) <<  qs_ram << "GiB,"
@@ -702,7 +706,7 @@ private:
 		std::cout << std::flush;
 
 #ifdef NDEBUG
-		if( !hasMoreBuckets || buckets_[stats_of->BucketNo()+1].Size() == 0 )
+		if( (stats_of->BucketNo() + 1) >= num_buckets || buckets_[stats_of->BucketNo()+1]->Count() == 0 )
 #endif
 			std::cout << std::endl;
 	}
