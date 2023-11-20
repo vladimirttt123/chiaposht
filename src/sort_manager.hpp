@@ -135,13 +135,15 @@ struct SortedBucketBuffer{
 
 	inline uint64_t WaitsCount() const { return waits_count; }
 	inline uint64_t WaitsReadCount() const { return read_waits_count; }
-	inline double WaitsTimeSec() const { return waits_count/10000.0; }
+	inline double WaitsTimeSec() const { return wait_time/1000000.0; }
 
 	// returns true if current sort just finished.
 	inline void WaitForSortedTo( uint64_t position ){
 		assert( position >= start_position && position <= end_position );
 
 		if( sorting_thread.load( std::memory_order_relaxed ) != NULL && position >= start_position && position <= end_position ){
+
+			auto start_time = std::chrono::high_resolution_clock::now();
 
 			if( position == end_position ){
 				if( bucket->SortedPosision() <= 0 ){
@@ -161,6 +163,11 @@ struct SortedBucketBuffer{
 				if( bucket->SortedPosision() >= bucket->Size() )
 					FinishSort();
 			}
+
+			auto elapsed = std::chrono::high_resolution_clock::now() - start_time;
+			uint64_t microseconds = std::chrono::duration_cast<std::chrono::microseconds>(
+																	 elapsed).count();
+			wait_time.fetch_add( microseconds, std::memory_order::relaxed );
 		}
 	}
 
@@ -194,7 +201,7 @@ struct SortedBucketBuffer{
 		this->end_position = start_position + bucket->Size();
 
 		bool isPrevWaited = waits_count > 0;
-		read_waits_count = waits_count = 0;
+		wait_time = read_waits_count = waits_count = 0;
 		FinishSort( new std::thread(
 										[this]( SortingBucket* bucket, uint8_t* buf, std::mutex *r_mutex, bool isPrevWaited ){
 												r_mutex->lock();
@@ -202,13 +209,20 @@ struct SortedBucketBuffer{
 												SortDoneEvent( this->sort_manager, this );
 
 												// adjust number of threads for next sorting?
-												if( read_waits_count > 0 && num_read_threads < max_threads )
-													num_read_threads++;
-												if( num_background_threads > min_threads && !isPrevWaited && waits_count == 0 )
-													num_background_threads--;
-												else if( num_background_threads < max_threads && waits_count > 0 )
-													num_background_threads++;
-
+												if( !isPrevWaited && waits_count == 0 ){
+													if( num_background_threads > min_threads )
+														num_background_threads--;
+													else if( num_read_threads > min_threads )
+														num_read_threads--;
+												}
+												else if( waits_count > 0 ){
+													if( read_waits_count > 0 && num_read_threads < max_threads )
+														num_read_threads++;
+													if( num_background_threads < max_threads )
+														num_background_threads++;
+													else if( isPrevWaited && read_waits_count == 0 && num_read_threads < max_threads )
+														num_read_threads++; // if we cannot increase sorts threads increase read threads
+												}
 											}, this->bucket, this->bucket_buffer.get(), this->read_mutex, isPrevWaited ) );
 	}
 private:
@@ -219,6 +233,7 @@ private:
 	std::atomic<std::thread*> sorting_thread = NULL;
 	std::mutex *read_mutex;
 	std::atomic_int_fast32_t waits_count = 0, read_waits_count = 0;
+	std::atomic_uint_fast64_t wait_time = 0;
 
 
 	inline bool FinishSort( std::thread * newThread = NULL){
