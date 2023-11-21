@@ -205,7 +205,7 @@ Phase2Results RunPhase2(
 		uint32_t num_threads )
 {
 		num_threads = std::max((uint32_t)1,num_threads);
-		uint32_t max_threads = num_threads * ( num_threads > 1 ? 2 : 1); //double threads for phase 2.
+		const uint32_t max_threads = num_threads * ( num_threads > 1 ? 2 : 1); //double threads for phase 2.
     // After pruning each table will have 0.865 * 2^k or fewer entries on
     // average
     uint8_t const pos_size = k;
@@ -259,11 +259,12 @@ Phase2Results RunPhase2(
     // note that we don't iterate over table_index=1. That table is special
     // since it contains different data. We'll do an extra scan of table 1 at
     // the end, just to compact it.
-    double progress_percent[] = {0.43, 0.48, 0.51, 0.55, 0.58, 0.61};
+		double progress_percent[] = {0.43, 0.48, 0.51, 0.55, 0.58, 0.61};
+		int16_t const entry_size = cdiv(k + kOffsetSize, 8);
+
 		for (int table_index = 6; table_index > 1; --table_index) {
 
 			int64_t const table_size = table_sizes[table_index];
-			int16_t const entry_size = cdiv(k + kOffsetSize, 8);
 
 			std::cout << "Backpropagating on table " << table_index << "  size: " << table_size <<  std::endl;
 			std::cout << "Progress update: "<< std::setprecision(2) << progress_percent[7 - table_index] << std::endl;
@@ -388,7 +389,7 @@ Phase2Results RunPhase2(
 
     int const table_index = 1;
     int64_t const table_size = table_sizes[table_index];
-    int16_t const entry_size = EntrySizes::GetMaxEntrySize(k, table_index, false);
+		int16_t const entry_size_t1 = EntrySizes::GetMaxEntrySize(k, table_index, false);
 
     // at this point, table 1 still needs to be compacted, based on
     // current_bitfield. Instead of compacting it right now, defer it and read
@@ -407,7 +408,7 @@ Phase2Results RunPhase2(
 		tmp_1_disks[1].setClearAfterRead(); // next read is last read
 		// BufferedDisk disk_table1(&tmp_1_disks[1], table_size * entry_size);
 		return {
-				FilteredDisk( &tmp_1_disks[1], memory_manager, current_bitfield.release(), entry_size, table_size * entry_size )
+				FilteredDisk( &tmp_1_disks[1], memory_manager, current_bitfield.release(), entry_size_t1, table_size * entry_size_t1 )
 				, std::make_unique<LastTableReader>( &tmp_1_disks[7], k, new_entry_size,
 														new_table_sizes[7], (flags&NO_COMPACTION)==0, num_threads )
         , std::move(output_files)

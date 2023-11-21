@@ -698,6 +698,66 @@ private:
 
 // ============== Manager Streams =============================
 
+struct AsyncReader : IBlockReader {
+	// Thread safe means more than one thread reads from underlying stream
+	// It means not delete and no close for underlying stream
+	AsyncReader( IBlockReader *read_stream ) : rstream(read_stream)
+	{
+		sem_next_read = Sem::Create();
+		sem_ready = Sem::Create();
+
+		reading_thread.reset( new std::thread( [this](){
+			uint32_t last_read = 1;
+			while( isReading && last_read > 0 ){
+				Sem::Wait( &sem_next_read );
+				last_read = rstream->Read( next_buffer );
+				// std::cout << "read: " << last_read << std::endl;
+				Sem::Post( &sem_ready );
+			}
+			// std::cout << "exit thread " << isReading << ", " << last_read << std::endl;
+		}));
+	}
+
+	uint32_t Read( StreamBuffer & block ) override {
+		block.setUsed( 0 );
+		if( !reading_thread ) return 0;
+
+		if( !reading_started ){
+			Sem::Post( &sem_next_read );
+			reading_started = true;
+		}
+
+		Sem::Wait( &sem_ready );
+		next_buffer.swap( block );
+		Sem::Post( &sem_next_read );
+
+		return block.used();
+	}
+	bool atEnd() const override { return rstream->atEnd();};
+	void Close() override{
+		if( reading_thread ){
+			isReading = false;
+			Sem::Post( &sem_next_read );
+			Sem::Post( &sem_ready );
+			reading_thread->join();
+			reading_thread.reset();
+			Sem::Destroy( sem_next_read );
+			Sem::Destroy( sem_ready );
+			rstream->Close();
+		}
+	};
+
+	~AsyncReader(){Close();}
+
+private:
+	bool isReading = true, reading_started = false;
+	std::unique_ptr<std::thread> reading_thread;
+	StreamBuffer next_buffer;
+	Sem::type sem_next_read, sem_ready;
+
+	std::unique_ptr<IBlockReader> rstream;
+};
+
 struct BlockThreadSafeReader : IBlockReader{
 	// Thread safe means more than one thread reads from underlying stream
 	// It means not delete and no close for underlying stream
@@ -912,6 +972,7 @@ struct BucketStream{
 		else
 			fin = new BlockNotFreeingReader( fin );
 
+
 		if( compact ){
 			if( sequence_start_bit >= 0 ){
 				fin = (disk_output&&compacter) ? new BlockSequenceCompacterReader( fin, *compacter )
@@ -929,6 +990,8 @@ struct BucketStream{
 			fin = new BlockOneBuffer( fin, buf_writer->buffer );
 			buf_writer = nullptr;
 		}
+
+		fin = new AsyncReader( fin );
 
 		disk_output.reset();
 
