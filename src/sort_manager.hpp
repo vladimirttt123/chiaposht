@@ -721,7 +721,7 @@ private:
 		std::cout << std::flush;
 
 #ifdef NDEBUG
-		if( (stats_of->BucketNo() + 1) >= num_buckets || buckets_[stats_of->BucketNo()+1]->Count() == 0 )
+		if( (stats_of->BucketNo() + 1) >= (int32_t)num_buckets || buckets_[stats_of->BucketNo()+1]->Count() == 0 )
 #endif
 			std::cout << std::endl;
 	}
