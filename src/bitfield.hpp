@@ -183,7 +183,8 @@ struct bitfield
 			table_7_max_entry = -1; // clear table 7 bitfield
 			size_ = (new_size + 63) / 64; // set new size
 			if( size_ > allocated_size ) // reallocate mem if need
-				buffer_.reset( new uint64_t[ allocated_size = size_ ] );
+				//buffer_.reset( new uint64_t[ allocated_size = size_ ] );
+				Util::allocate<uint64_t>( allocated_size = size_).swap( buffer_ );
 
 			clear();
 		}
