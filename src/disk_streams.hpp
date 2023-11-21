@@ -972,6 +972,7 @@ struct BucketStream{
 		else
 			fin = new BlockNotFreeingReader( fin );
 
+		//fin = new AsyncReader( fin );
 
 		if( compact ){
 			if( sequence_start_bit >= 0 ){
@@ -991,7 +992,7 @@ struct BucketStream{
 			buf_writer = nullptr;
 		}
 
-		fin = new AsyncReader( fin );
+		//fin = new AsyncReader( fin );
 
 		disk_output.reset();
 
