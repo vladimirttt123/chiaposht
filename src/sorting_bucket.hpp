@@ -122,7 +122,7 @@ struct SortingBucket{
 		start_time = std::chrono::high_resolution_clock::now();
 		const uint32_t subbuckets_count = 1<<bucket_bits_count_;
 		STATS_UINT_TYPE *stats = statistics;
-		auto local_stats(Util::allocate<STATS_UINT_TYPE>(0));
+		auto local_stats( Util::allocate<STATS_UINT_TYPE>(0) ); // empty local stats
 
 		if( statistics == NULL ) {
 			assert( statistics_file );
@@ -139,7 +139,7 @@ struct SortingBucket{
 
 
 		auto subbucket_positions_ptr = Util::allocate<uint64_t>( subbuckets_count );
-		auto subbucket_positions = subbucket_positions_ptr.get();
+		uint64_t* subbucket_positions = subbucket_positions_ptr.get();
 
 		// Calculate initial subbuckets positions.
 		subbucket_positions[0] = 0;
@@ -167,15 +167,15 @@ struct SortingBucket{
 				 // read in 2 directions one fills from start and second from back without synchronizations.
 				auto subbucket_end_positions = std::make_unique<uint64_t[]>( subbuckets_count );
 				// Calculate initial end subbuckets positions.
-				for( uint32_t i = 0; i < subbuckets_count-1; i++ )
-					subbucket_end_positions[i] = subbucket_positions[i+1] - entry_size_;
+				for( uint32_t i = 1; i < subbuckets_count; i++ )
+					subbucket_end_positions[i-1] = subbucket_positions[i] - entry_size_;
 				subbucket_end_positions[subbuckets_count-1] = entry_size_*entries_count - entry_size_;
 
 				std::vector<std::thread> threads;
 				std::mutex forward_mutex, backward_mutex;
 
 				if( num_read_threads == 2 ){ // in case of 2 threads it is possible to do without locks on memory
-					auto thread_function = [this, &memory]( uint64_t * positions, int64_t direction){
+					auto thread_function = [this, &memory]( uint64_t * positions, int16_t const direction){
 						StreamBuffer buf( BUF_SIZE/entry_size_*entry_size_ );
 						std::unique_ptr<IBlockReader> reader( disk->CreateReader() );
 
@@ -187,7 +187,7 @@ struct SortingBucket{
 					threads.emplace_back( thread_function, subbucket_positions, entry_size_ );
 					threads.emplace_back( thread_function, subbucket_end_positions.get(), -entry_size_ );
 				 } else {
-					auto thread_function = [this, &memory]( uint64_t * positions, int64_t direction, std::mutex *mut ){
+					auto thread_function = [this, &memory]( uint64_t * positions, int16_t direction, std::mutex *mut ){
 						StreamBuffer buf( BUF_SIZE/entry_size_*entry_size_ );
 						std::unique_ptr<IBlockReader> reader( disk->CreateReader() );
 
@@ -212,12 +212,10 @@ struct SortingBucket{
 					 assert( subbucket_positions[i] == subbucket_end_positions[i] + entry_size_ );
 #endif
 			} else {
-				auto a_subbucket_positions_ptr = std::make_unique<std::atomic_uint64_t>( subbuckets_count );
+				auto a_subbucket_positions_ptr = Util::allocate<std::atomic_uint64_t>( subbuckets_count );
 				auto a_subbucket_positions = a_subbucket_positions_ptr.get();
-				for( uint32_t i = 0; i < subbuckets_count - 1; i++ ){
+				for( uint32_t i = 0; i < subbuckets_count; i++ )
 					a_subbucket_positions[i].store( subbucket_positions[i], std::memory_order_relaxed );
-				}
-				a_subbucket_positions[subbuckets_count-1].store( subbucket_positions[subbuckets_count-1], std::memory_order_relaxed );
 
 				// Define thread function
 				auto thread_func = [this, &memory, &a_subbucket_positions](){
