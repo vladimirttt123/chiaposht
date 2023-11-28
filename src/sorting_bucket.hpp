@@ -368,35 +368,37 @@ private:
 
 	#pragma region CacheBucket support {
 	// This function in particular for CachBucket
-	inline void BulkAdd( StreamBuffer & entries, const uint32_t * stats ){
+	inline void BulkAdd( uint8_t * entries, const uint32_t * stats, uint32_t count ){
 		assert( disk ); // Check not closed
-
-		auto count = entries.used() / entry_size_;
 
 		// Adding to statistics
 		for( uint32_t i = 0; i < count; i++ )	{
-			assert( Util::ExtractNum( entries.get() + i*entry_size_, entry_size_, begin_bits_, bucket_bits_count_ ) == stats[i] );
+			assert( Util::ExtractNum( entries + i*entry_size_, entry_size_, begin_bits_, bucket_bits_count_ ) == stats[i] );
 			statistics[stats[i]]++;
 		}
 
-		disk->Write( entries );
+		StreamBuffer buf( 0 );
+		// try to do without copy... may be need to change that write recieves const stream buffer
+		buf.reset( entries, count * entry_size_, count * entry_size_ );
+		disk->Write( buf );
+		buf.release();
 		entries_count += count;
 	}
 
 	// This function in particular for CachBucket
-	inline bool TryAddEntriesTS( StreamBuffer & entries, const uint32_t * stats ){
+	inline bool TryAddEntriesTS( uint8_t * entries, const uint32_t * stats, uint32_t count ){
 
 		if( !addMutex->try_lock() ) return false;
 
-		BulkAdd( entries, stats );
+		BulkAdd( entries, stats, count );
 
 		addMutex->unlock();
 		return true;
 	}
 
-	inline void AddEntriesTS( StreamBuffer & entries, const uint32_t * stats ){
+	inline void AddEntriesTS( uint8_t * entries, const uint32_t * stats, uint32_t count ){
 		std::lock_guard<std::mutex> lk( *addMutex.get() );
-		BulkAdd( entries, stats );
+		BulkAdd( entries, stats, count );
 	}
 	friend struct CacheBucket;
 	#pragma endregion CacheBucket support }

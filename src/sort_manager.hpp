@@ -35,37 +35,40 @@ const inline uint32_t CacheBucketSizeLimit = 250; // mesured in number of entrie
 
 // Small bucket used in thread writings
 struct CacheBucket{
-	explicit CacheBucket( SortingBucket &cacheFor )
-			: entries( CacheBucketSize*cacheFor.EntrySize() )
-			, entry_size( cacheFor.EntrySize() )
-			, limit_size( CacheBucketSizeLimit*cacheFor.EntrySize() )
-			, parent( cacheFor )
+	static uint32_t memNeed( uint16_t entry_size ) {
+		return (CacheBucketSize*entry_size + 7)/8*8 + CacheBucketSize*sizeof(uint32_t);
+	}
+
+	explicit CacheBucket( SortingBucket &cacheFor, uint8_t * memory )
+			: entries( memory ), statistics( (uint32_t*)(memory + (CacheBucketSize*cacheFor.EntrySize() + 7)/8*8) )
+			, count(0), parent( cacheFor )
 	{	}
 
 	inline void Add( const uint8_t *entry, const uint32_t &stats ){
-		statistics[entries.used()/entry_size] = stats;
-		entries.add( entry, entry_size );
+		assert( (entries + count*parent.EntrySize() + parent.EntrySize()) <= ((uint8_t*)statistics) );
 
-		if( entries.used() > limit_size ){
-			if( parent.TryAddEntriesTS( entries, statistics ) )
-				entries.setUsed( 0 );
-			else if( entries.isFull() ) {
-				parent.AddEntriesTS( entries, statistics );
-				entries.setUsed( 0 );
+		memcpy( entries + count*parent.EntrySize(), entry, parent.EntrySize() );
+		statistics[count++] = stats;
+
+		if( count > CacheBucketSizeLimit ){
+			if( parent.TryAddEntriesTS( entries, statistics, count ) )
+				count = 0;
+			else if( count >= CacheBucketSize ) {
+				parent.AddEntriesTS( entries, statistics, count );
+				count = 0;
 			}
 		}
 	}
 
 	~CacheBucket(){
-		if( entries.used() > 0 )
-			parent.AddEntriesTS( entries, statistics );
+		if( count > 0 )
+			parent.AddEntriesTS( entries, statistics, count );
 	}
 
 private:
-	uint32_t statistics[CacheBucketSize];
-	StreamBuffer entries;
-	const uint16_t entry_size;
-	const uint32_t limit_size;
+	uint8_t* entries;
+	uint32_t *statistics;
+	uint16_t count;
 	SortingBucket &parent;
 };
 
@@ -337,12 +340,14 @@ public:
 		// Class to support writing to sort cache by threads in safe way
 		struct ThreadWriter{
 			explicit ThreadWriter( SortManager &parent ) : parent_(parent)
-						, buckets_cache(new std::unique_ptr<CacheBucket>[parent.num_buckets])
+				, memory( Util::allocate<uint8_t>( (CacheBucket::memNeed( parent.entry_size_ )+7)/8*8 * parent.num_buckets ) )
+				, buckets_cache(new std::unique_ptr<CacheBucket>[parent.num_buckets])
 //						, begin_bytes( parent.begin_bits_/8 ), begin_bits( parent.begin_bits_&7 )
 //						, bits_shift( 32 - parent.log_num_buckets_ - parent.subbucket_bits )
 			{
+				uint64_t mem_per_bucket = (CacheBucket::memNeed( parent.entry_size_ )+7)/8*8;
 				for( uint32_t i = 0; i < parent.num_buckets; i++ )
-					buckets_cache[i].reset( new CacheBucket( *parent.buckets_[i].get() ) );
+					buckets_cache[i].reset( new CacheBucket( *parent.buckets_[i].get(), memory.get() + i*mem_per_bucket ) );
 			}
 
 			inline void Add( const uint8_t *entry ){
@@ -361,6 +366,7 @@ public:
 
 		private:
 			SortManager &parent_;
+			std::unique_ptr<uint8_t, void(*)(uint8_t*)> memory;
 			std::unique_ptr<std::unique_ptr<CacheBucket>[]> buckets_cache;
 //			const uint8_t begin_bytes;
 //			const uint8_t begin_bits;
