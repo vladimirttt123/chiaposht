@@ -73,6 +73,7 @@ private:
 };
 
 
+// This is storage for statistics from all buckets
 struct SortStatisticsStorage {
 	const uint8_t k, kSubBucketBits;
 	const uint64_t size;

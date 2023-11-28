@@ -137,10 +137,10 @@ void* phase1_thread(THREADDATA* ptd)
     // Streams to read and right to tables. We will have handles to two tables. We will
     // read through the left table, compute matches, and evaluate f for matching entries,
     // writing results to the right table.
-    uint64_t left_buf_entries = 5000 + (uint64_t)((1.1) * (globals.stripe_size));
-    uint64_t right_buf_entries = 5000 + (uint64_t)((1.1) * (globals.stripe_size));
-    std::unique_ptr<uint8_t[]> right_writer_buf(new uint8_t[right_buf_entries * right_entry_size_bytes + 7]);
-    std::unique_ptr<uint8_t[]> left_writer_buf(new uint8_t[left_buf_entries * compressed_entry_size_bytes + 7]);
+		const uint64_t left_buf_entries = 5000 + (uint64_t)((1.1) * (globals.stripe_size));
+		const uint64_t right_buf_entries = 5000 + (uint64_t)((1.1) * (globals.stripe_size));
+		auto right_writer_buf( Util::allocate<uint8_t>( right_buf_entries * right_entry_size_bytes + 7, 0.3 ) );
+		auto left_writer_buf( Util::allocate<uint8_t>( left_buf_entries * compressed_entry_size_bytes + 7, 0.3 ) );
 
     FxCalculator f(k, table_index + 1);
 

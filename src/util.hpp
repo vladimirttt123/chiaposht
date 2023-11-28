@@ -163,13 +163,13 @@ const uint64_t HUGE_MEM_PAGE_SIZE = 1UL << HUGE_MEM_PAGE_BITS;
 namespace Util {
 
 	template <typename T>
-	inline std::unique_ptr<T, void(*)(T*)> allocate( uint64_t count ){
+	inline std::unique_ptr<T, void(*)(T*)> allocate( uint64_t count, double huge_page_fraction = 0.8 ){
 		if( count == 0 )
 				return std::unique_ptr<T, void(*)(T*)>( NULL, [](T*d){ delete []d;} );
 
 #ifndef NO_HUGE_PAGES
 		auto size =  sizeof(T)*count;
-		if( size >= HUGE_MEM_PAGE_SIZE*0.9 ){
+		if( size >= HUGE_MEM_PAGE_SIZE*huge_page_fraction ){
 			// Try to allocate huge pages
 			// std::cout << "allocate huge page" << std::endl;
 			uint64_t hsize = ( size <= HUGE_MEM_PAGE_SIZE ? 1 : ((size + HUGE_MEM_PAGE_SIZE+7/*8bytes to save size*/)>>HUGE_MEM_PAGE_BITS) ) << HUGE_MEM_PAGE_BITS;
