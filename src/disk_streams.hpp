@@ -39,10 +39,12 @@ struct IBlockWriterReader : public IBlockWriter, IBlockReader {
 };
 
 // ============== File ========================
+struct BlockFileThreadReader;
+
 struct BlockedFileStream : public IBlockWriterReader {
-	const int32_t read_align_size;
+	const int32_t read_size;
 	BlockedFileStream( const std::string &fileName, uint32_t read_align_size = 1 )
-		: read_align_size(read_align_size), file_name(fileName)	{
+		: read_size(BUF_SIZE/read_align_size*read_align_size), file_name(fileName)	{
 		assert( read_align_size > 0 );
 	}
 
@@ -58,19 +60,9 @@ struct BlockedFileStream : public IBlockWriterReader {
 	}
 
 	uint32_t Read( StreamBuffer & block ) override {
-		uint32_t to_read = std::min( BUF_SIZE/read_align_size*read_align_size
-																 , write_position - read_position );
-		block.ensureSize( to_read ).setUsed( to_read );
-		if( to_read > 0 ){
-			assert( read_position < write_position );
-
-			disk->Read( read_position, block.get(), to_read );
-			read_position += to_read;
-			assert( read_position <= write_position );
-		}
-
-		return to_read;
+		return Read( block, disk.get() );
 	}
+
 
 	bool atEnd() const override{ return read_position >= write_position; };
 	void Flush() override { if( disk ) disk->Flush(); };
@@ -81,7 +73,37 @@ private:
 	std::unique_ptr<FileDisk> disk;
 	fs::path file_name;
 	uint64_t write_position = 0;
-	uint64_t read_position = 0;
+	std::atomic_uint64_t read_position = 0;
+
+
+	uint32_t Read( StreamBuffer & block, FileDisk * file ){
+		uint64_t read_from = read_position.fetch_add( read_size );
+		if( read_from >= write_position ) return block.setUsed(0).used(); // throw exception?
+
+		uint32_t to_read = std::min( (uint64_t)read_size, write_position - read_from );
+
+		assert( to_read > 0 );
+		block.ensureSize( to_read ).setUsed( to_read );
+		file->Read( read_from, block.get(), to_read );
+
+		return to_read;
+	}
+	friend struct BlockFileThreadReader;
+};
+
+struct BlockFileThreadReader : IBlockReader {
+	BlockFileThreadReader( BlockedFileStream *parent )
+			: parent(parent), disk( new FileDisk( parent->file_name, false ) )
+	{ 	}
+
+	uint32_t Read( StreamBuffer & block ) override {
+		return parent->Read( block, disk.get() );
+	}
+	bool atEnd() const override{ return parent->atEnd(); };
+	void Close() override { if( disk ) disk->Close(); };
+private:
+	BlockedFileStream *parent;
+	std::unique_ptr<FileDisk> disk;
 };
 
 
@@ -967,8 +989,14 @@ struct BucketStream{
 		if( !bucket_file ) return nullptr; // nothing to create...
 
 		IBlockReader* fin = bucket_file.get();
-		if( isThreadSafe )
-			fin = new BlockThreadSafeReader( fin, sync_mutex, &total_reads, &instant_reads );
+		if( isThreadSafe ){
+			if( memory_manager.CacheEnabled )
+				fin = new BlockThreadSafeReader( fin, sync_mutex, &total_reads, &instant_reads );
+			else{
+				((BlockedFileStream*)fin)->Flush();
+				fin = new BlockFileThreadReader( (BlockedFileStream*)fin );
+			}
+		}
 		else
 			fin = new BlockNotFreeingReader( fin );
 

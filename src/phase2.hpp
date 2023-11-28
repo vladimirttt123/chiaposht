@@ -41,81 +41,82 @@ struct Phase2Results
 };
 
 
-inline void ScanTable( IReadDiskStream *disk, int64_t const table_size, int16_t const &entry_size,
+inline void ScanTable( FileDisk *disk, int64_t const table_size, int16_t const &entry_size,
 											 bitfield &current_bitfield, bitfield &next_bitfield,
 											 const uint32_t &num_threads, uint8_t const pos_offset_size ){
 	// next_bitfield.clear(); next_bitfield should be cleared outside!!!!
 
-	int64_t read_cursor = 0;
+	std::atomic_uint64_t read_cursor = 0;
 	const auto max_threads = std::max((uint32_t)1, num_threads);
 	auto threads = std::make_unique<std::thread[]>( max_threads );
-	std::mutex read_mutex[2];
-	const int64_t read_bufsize = ((HUGE_MEM_PAGE_SIZE-1)/entry_size)*entry_size; // allign size to entry length
+	std::mutex read_mutex;
+	const uint64_t read_bufsize = ((HUGE_MEM_PAGE_SIZE-1)/entry_size)*entry_size; // allign size to entry length
+	const uint64_t to_read_size = table_size * entry_size;
 
 #ifndef __GNUC__
 	next_bitfield.PrepareToThreads( max_threads );
 #endif // __GNUC__
-	// Run the threads
-	for( uint32_t i = 0; i < max_threads; i++ ){
-		threads[i] = std::thread( [ entry_size, pos_offset_size, read_bufsize, &read_mutex, &table_size]
-													(IReadDiskStream *disk, int64_t *read_cursor, const bitfield * current_bitfield, bitfield *next_bitfield){
-			auto buffer( Util::allocate<uint8_t>(read_bufsize) );
-			bitfieldReader cur_bitfield( *current_bitfield );
-			const auto proc5_size = table_size*entry_size/20;
-			int64_t buf_size = 0, buf_start = 0;
+	auto thread_func = [ entry_size, pos_offset_size, read_bufsize, &read_mutex, &table_size, &to_read_size]
+			(FileDisk *src_disk, std::atomic_uint64_t *read_cursor, const bitfield * current_bitfield, bitfield *next_bitfield ){
+
+				auto buffer( Util::allocate<uint8_t>(read_bufsize) );
+				bitfieldReader cur_bitfield( *current_bitfield );
+				const uint64_t proc5_size = table_size*entry_size/20;
+				uint64_t buf_size = 0, buf_start = 0;
+				auto disk = std::make_unique<FileDisk>( src_disk->GetFileName(), false );
 #ifndef __GNUC__
-			auto writer = bitfield::ThreadWriter( *next_bitfield );
+				auto writer = bitfield::ThreadWriter( *next_bitfield );
 #endif // __GNUC__
 
-			while( true ){
-				{	// Read next buffer
-					const std::lock_guard<std::mutex> lk(read_mutex[0]);
-					buf_start = *read_cursor;
-					buf_size = disk->Read( buffer.get(), read_bufsize );
-					if( buf_size == 0 ) return;// nothing to read -> exit
+				while( true ){
+					// Read next buffer
+					buf_start = read_cursor->fetch_add( read_bufsize );
+					if( buf_start >= to_read_size ) return; // nothing to read -> exit
+					buf_size = std::min( read_bufsize, to_read_size - buf_start );
+					assert( (buf_size % entry_size) == 0 );
+					disk->Read( buf_start, buffer.get(), buf_size );
 
-					*read_cursor += buf_size;
-				}
-				{ // Setting limits could read data from file than need a mutex
-					if( current_bitfield->is_readonly() ) read_mutex[1].lock();
+					// Setting limits could read data from file than need a mutex
+					if( current_bitfield->is_readonly() ) read_mutex.lock();
 					cur_bitfield.setLimits( buf_start/entry_size, buf_size/entry_size );
-					if( current_bitfield->is_readonly() ) read_mutex[1].unlock();
-				}
+					if( current_bitfield->is_readonly() ) read_mutex.unlock();
 
-				if( read_bufsize < proc5_size && buf_start > 0 && buf_start/proc5_size != (buf_start-buf_size)/proc5_size )
-					std::cout << (((buf_start/proc5_size)%5) == 0 ? "*" : "-" ) << std::flush;
+					if( read_bufsize < proc5_size && buf_start > 0 && buf_start/proc5_size != (buf_start-buf_size)/proc5_size )
+						std::cout << (((buf_start/proc5_size)%5) == 0 ? "*" : "-" ) << std::flush;
 
 
-				// Convert buffer to numbers in final bitfield
-				for( int64_t buf_ptr = 0, entry_pos_offset = 0; buf_ptr < buf_size; buf_ptr += entry_size ){
-					if( !cur_bitfield.get( buf_ptr/entry_size ) )
-					{
+					// Convert buffer to numbers in final bitfield
+					for( uint64_t buf_ptr = 0, entry_pos_offset = 0; buf_ptr < buf_size; buf_ptr += entry_size ){
+						if( !cur_bitfield.get( buf_ptr/entry_size ) )
+						{
 							// This entry should be dropped.
 							continue;
-					}
-					entry_pos_offset = Util::SliceInt64FromBytes( buffer.get() + buf_ptr, pos_offset_size);
+						}
+						entry_pos_offset = Util::SliceInt64FromBytes( buffer.get() + buf_ptr, pos_offset_size);
 
-					uint64_t entry_pos = entry_pos_offset >> kOffsetSize;
-					uint64_t entry_offset = entry_pos_offset & ((1U << kOffsetSize) - 1);
+						uint64_t entry_pos = entry_pos_offset >> kOffsetSize;
+						uint64_t entry_offset = entry_pos_offset & ((1U << kOffsetSize) - 1);
 
-					// mark the two matching entries as used (pos and pos+offset)
+// mark the two matching entries as used (pos and pos+offset)
 #ifdef __GNUC__
-					next_bitfield->setTS( entry_pos );
-					next_bitfield->setTS( entry_pos + entry_offset );
+						next_bitfield->setTS( entry_pos );
+						next_bitfield->setTS( entry_pos + entry_offset );
 #else // __GNUC__
-					writer.set( entry_pos );
-					writer.set( entry_pos + entry_offset );
+						writer.set( entry_pos );
+						writer.set( entry_pos + entry_offset );
 #endif // __GNUC__
+					}
 				}
-			}
+	}; // end of thread function
 
-		}, disk, &read_cursor, &current_bitfield, &next_bitfield );
-	}
+	disk->Flush();
+	// Run the threads
+	for( uint32_t i = 0; i < max_threads; i++ )
+		threads[i] = std::thread( thread_func, disk, &read_cursor, &current_bitfield, &next_bitfield );
 
 	// Wait for job done
 	for( uint32_t i = 0; i < max_threads; i++ )
 		threads[i].join();
-
 }
 
 inline void SortRegularTableThread( IReadDiskStream * disk, const uint64_t &table_size,
@@ -287,8 +288,7 @@ Phase2Results RunPhase2(
 				Timer scan_timer;
 				std::cout << "\ttable " << table_index << ": scan " << std::flush;
 
-				auto table_reader = ReadFileStream( &tmp_1_disks[table_index], table_size * entry_size );
-				ScanTable( &table_reader, table_size, entry_size, *current_bitfield.get(), *next_bitfield.get(),
+				ScanTable( &tmp_1_disks[table_index], table_size, entry_size, *current_bitfield.get(), *next_bitfield.get(),
 									 max_threads, pos_offset_size );
 
 				scan_timer.PrintElapsed( "time =" );
