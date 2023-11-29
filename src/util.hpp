@@ -246,60 +246,6 @@ namespace Util {
 		return std::unique_ptr<T, Deleter<T>>( new T[count], Deleter<T>( 2 ));
 	}
 
-	template <typename T>
-	inline std::unique_ptr<T, void(*)(T*)> hallocate( uint64_t count, double huge_page_fraction = 0.8, double huge_1gb_page_min_use = 0.9 ){
-		if( count == 0 )
-				return std::unique_ptr<T, void(*)(T*)>( NULL, [](T*d){ delete []d;} );
-
-#ifndef NO_HUGE_PAGES
-		auto size =  sizeof(T)*count;
-		if( size >= HUGE_MEM_PAGE_SIZE*huge_page_fraction ){
-			// Try to allocate huge pages
-			uint64_t h1gb_size = (( size + HUGE_1GB_PAGE_SIZE + 7 /*8 bytes for store size */ )>>HUGE_1GB_PAGE_BITS)<<HUGE_1GB_PAGE_BITS;
-			if( (size / (double)h1gb_size ) > huge_1gb_page_min_use ){
-				auto ptr = mmap( NULL, h1gb_size , PROT_READ | PROT_WRITE,
-												MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | MAP_HUGE_1GB,
-												-1, 0);
-				if( ptr == MAP_FAILED )
-					std::cout << "Cannot allocate 1GiB " << (h1gb_size >> HUGE_1GB_PAGE_BITS) << " huge pages: " <<  errno << " " <<::strerror(errno) << std::endl;
-				else{
-					((uint64_t*)ptr)[0] = h1gb_size;
-					return std::unique_ptr<T, void(*)(T*)>( (T*)(((uint64_t*)ptr)+1), [](T* d){
-						uint64_t* pntr = ((uint64_t*)d)-1;
-						munmap( (void*)pntr, pntr[0] );});
-				}
-			}
-
-			uint64_t hsize = ( size <= HUGE_MEM_PAGE_SIZE ? 1 : ((size + HUGE_MEM_PAGE_SIZE+7/*8bytes to save size*/)>>HUGE_MEM_PAGE_BITS) ) << HUGE_MEM_PAGE_BITS;
-			auto ptr = mmap( NULL, hsize , PROT_READ | PROT_WRITE,
-												MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB,
-												-1, 0);
-			if( ptr != MAP_FAILED ){
-				if( hsize <= HUGE_MEM_PAGE_SIZE ){ // Single page allocation
-					return std::unique_ptr<T, void(*)(T*)>( (T*)ptr, [](T* d){
-										munmap( (void*)d, HUGE_MEM_PAGE_SIZE );} );
-				} else {  // multiple pages alloction
-					((uint64_t*)ptr)[0] = hsize;
-					return std::unique_ptr<T, void(*)(T*)>( (T*)(((uint64_t*)ptr)+1), [](T* d){
-						uint64_t* pntr = ((uint64_t*)d)-1;
-						munmap( (void*)pntr, pntr[0] );});
-				}
-			}
-			else {
-				std::cout << "Cannot allocate " << (hsize >> HUGE_MEM_PAGE_BITS) << " huge pages: " <<  errno << " " <<::strerror(errno) << std::endl;
-				// Try to allocate THP
-				if( posix_memalign( &ptr, HUGE_MEM_PAGE_SIZE, hsize ) == 0 && ptr != nullptr ){
-					madvise( ptr, hsize, MADV_HUGEPAGE );
-					return std::unique_ptr<T, void(*)(T*)>( (T*)ptr, [](T* d){ std::free(d);} );
-				}
-			}
-		}
-#endif // NO_HUGE_PAGES
-
-		// std:: cout << "allocate regular page" << std::endl;
-		return std::unique_ptr<T, void(*)(T*)>( new T[count], [](T* d){delete[]d;});
-	}
-
     template <typename X>
 		inline X Mod(X i, X n) { return (i % n + n) % n; }
 

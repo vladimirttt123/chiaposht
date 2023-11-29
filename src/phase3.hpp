@@ -405,10 +405,10 @@ Phase3Results RunPhase3(
 
 				const uint32_t p2_entry_size_bytes = EntrySizes::GetKeyPosOffsetSize(k);
 				const uint32_t right_entry_size_bytes = EntrySizes::GetMaxEntrySize(k, table_index + 1, false);
+				const uint64_t right_table_size = p2_entry_size_bytes * res2.table_sizes[table_index + 1];
 
 				uint64_t left_reader = 0;
 				uint64_t right_reader = 0;
-				uint64_t right_reader_count = 0;
 
 				if (table_index > 1) {
 						L_sort_manager->FreeMemory();
@@ -459,7 +459,7 @@ Phase3Results RunPhase3(
 						if (end_of_right_table || current_pos <= greatest_pos) {
 								while (!end_of_right_table) {
 										if (should_read_entry) {
-												if (right_reader_count == res2.table_sizes[table_index + 1]) {
+												if (right_reader == right_table_size) {
 														end_of_right_table = true;
 														end_of_table_pos = current_pos;
 														right_disk.FreeMemory();
@@ -468,7 +468,6 @@ Phase3Results RunPhase3(
 												// The right entries are in the format from backprop, (sort_key, pos, offset)
 												uint8_t const* right_entry_buf = right_disk.Read(right_reader, p2_entry_size_bytes);
 												right_reader += p2_entry_size_bytes;
-												right_reader_count++;
 
 												entry_sort_key =
 														Util::SliceInt64FromBytes(right_entry_buf, right_sort_key_size);

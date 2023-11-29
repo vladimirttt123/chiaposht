@@ -49,8 +49,6 @@ vector<unsigned char> intToBytes(uint32_t paramInt, uint32_t numBytes)
 
 static uint128_t to_uint128(uint64_t hi, uint64_t lo) { return (uint128_t)hi << 64 | lo; }
 
-#include <sys/mman.h> // mmap, munmap
-
 TEST_CASE( "DISK_STREAMS" ){
 
 	SECTION("BLOCK_READ_WRITE"){
