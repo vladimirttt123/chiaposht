@@ -83,13 +83,13 @@ struct bitfield
     }
 
 		explicit bitfield( int64_t size, int64_t table_7_max_entry )
-				: size_((size + 63) / 64), buffer_( NULL, [](uint64_t*d){delete[]d;} )
+				: size_((size + 63) / 64), buffer_( Util::allocate<uint64_t>(0) )
 				, table_7_max_entry( table_7_max_entry )
 		{}
 
 		// Restore from file
 		bitfield( int64_t size, const fs::path &filename, bool with_file_remove = true )
-				: size_((size + 63) / 64), buffer_( NULL, [](uint64_t*d){delete[]d;} )
+				: size_((size + 63) / 64), buffer_( Util::allocate<uint64_t>(0) )
 		{
 			file_.reset( new FileDisk( filename, false ) );
 			file_->Read( 0, (uint8_t*)(&table_7_max_entry), 8 );
@@ -105,7 +105,7 @@ struct bitfield
 
 		// copy partially from other
 		bitfield( const bitfield &other, int64_t start_bit, int64_t size )
-				: size_((size + 63) / 64), buffer_(NULL,[](uint64_t*d){delete[]d;})
+				: size_((size + 63) / 64), buffer_(Util::allocate<uint64_t>(0))
 		{
 			assert((start_bit % 64) == 0);
 			assert( size >= 0 );
@@ -312,7 +312,7 @@ struct bitfield
 		inline bool is_table_7() const { return table_7_max_entry >= 0; }
 private:
 		int64_t size_, allocated_size = 0;
-		std::unique_ptr<uint64_t,void(*)(uint64_t*)> buffer_;
+		std::unique_ptr<uint64_t,Util::Deleter<uint64_t>> buffer_;
     // number of 64-bit words
 
 		std::unique_ptr<FileDisk> file_;

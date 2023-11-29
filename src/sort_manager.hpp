@@ -106,7 +106,7 @@ struct SortStatisticsStorage {
 	void FreeMemory(){ full_stats.reset(); }
 private:
 	uint16_t log_num_bueckets;
-	std::unique_ptr<STATS_UINT_TYPE, void(*)(STATS_UINT_TYPE*)> full_stats;
+	std::unique_ptr<STATS_UINT_TYPE, Util::Deleter<STATS_UINT_TYPE>> full_stats;
 };
 
 class SortManager;
@@ -230,7 +230,7 @@ struct SortedBucketBuffer{
 											}, this->bucket, this->bucket_buffer.get(), this->read_mutex, isPrevWaited ) );
 	}
 private:
-	std::unique_ptr<uint8_t,void(*)(uint8_t*)> bucket_buffer;
+	std::unique_ptr<uint8_t, Util::Deleter<uint8_t>> bucket_buffer;
 	int bucket_no = -1;
 	uint64_t start_position = 0, end_position = 0;
 	SortingBucket *bucket = NULL;
@@ -367,7 +367,7 @@ public:
 
 		private:
 			SortManager &parent_;
-			std::unique_ptr<uint8_t, void(*)(uint8_t*)> memory;
+			std::unique_ptr<uint8_t, Util::Deleter<uint8_t>> memory;
 			std::unique_ptr<std::unique_ptr<CacheBucket>[]> buckets_cache;
 //			const uint8_t begin_bytes;
 //			const uint8_t begin_bits;

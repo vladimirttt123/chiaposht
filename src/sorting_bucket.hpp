@@ -122,11 +122,10 @@ struct SortingBucket{
 		start_time = std::chrono::high_resolution_clock::now();
 		const uint32_t subbuckets_count = 1<<bucket_bits_count_;
 		STATS_UINT_TYPE *stats = statistics;
-		auto local_stats( Util::allocate<STATS_UINT_TYPE>(0) ); // empty local stats
+		auto local_stats( Util::allocate<STATS_UINT_TYPE>(statistics?0:subbuckets_count) ); // empty local stats
 
 		if( statistics == NULL ) {
 			assert( statistics_file );
-			local_stats = Util::allocate<STATS_UINT_TYPE>( subbuckets_count ); // TODO check if it is correct...
 			// Read statistics from file
 			uint8_t * stats_pntr = (uint8_t*)( stats = local_stats.get() );
 			for( StreamBuffer buf; statistics_file->Read( buf ) > 0; stats_pntr += buf.used() )

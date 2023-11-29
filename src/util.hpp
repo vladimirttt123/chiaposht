@@ -155,15 +155,99 @@ private:
 #endif
 
 #ifndef NO_HUGE_PAGES
+#include <linux/mman.h> // MAP_HUGE_1GB
 #include <sys/mman.h> // mmap, munmap
 const uint64_t HUGE_MEM_PAGE_BITS = 21;
 const uint64_t HUGE_MEM_PAGE_SIZE = 1UL << HUGE_MEM_PAGE_BITS;
+const uint64_t HUGE_1GB_PAGE_BITS = 30;
+const uint64_t HUGE_1GB_PAGE_SIZE = 1UL << HUGE_1GB_PAGE_BITS;
+#else
+#define HUGE_MEM_PAGE_SIZE BUF_SIZE
 #endif // NO_HUGE_PAGES
 
 namespace Util {
 
 	template <typename T>
-	inline std::unique_ptr<T, void(*)(T*)> allocate( uint64_t count, double huge_page_fraction = 0.8 ){
+	struct Deleter{
+#ifdef NO_HUGE_PAGES
+		Deleter( uint8_t t = 0 ){};
+		void operator()(T *p){ delete [] p; }
+		void swap(Deleter<T>& other){}
+#else // NO_HUGE_PAGES
+
+		Deleter( uint8_t type = 255, uint64_t size = 0 )
+				: size(size), type(type){}
+
+		void operator()(T *p){
+			if( size == 0 || p == NULL ) return;
+			switch( type ) {
+			case 0:
+				//std::cout << "unmap" << std::endl;
+				munmap( (void*)p, size );
+				break;
+			case 1:
+				//std::cout << "free" << std::endl;
+				std::free( (void*)p );
+				break;
+			case 2:
+				//std::cout << "delete" << std::endl;
+				delete [] p;
+				break;
+			}
+		}
+		void swap(Deleter<T>& other)
+		{
+			auto t = other.type; other.type = type; type = t;
+			auto s = other.size; other.size = size; size = s;
+		}
+	private:
+		uint64_t size;
+		uint8_t type;
+#endif // else NO_HUGE_PAGES
+	};
+	template <typename T>
+	inline std::unique_ptr<T, Deleter<T>> allocate( uint64_t count, double huge_page_fraction = 0.8, double huge_1gb_page_min_use = 0.9 ){
+		if( count == 0 )
+			return std::unique_ptr<T, Deleter<T>>( NULL, Deleter<T>() );
+
+#ifndef NO_HUGE_PAGES
+		auto size =  sizeof(T)*count;
+		if( size >= HUGE_MEM_PAGE_SIZE*huge_page_fraction ){
+			// Try to allocate huge pages
+			uint64_t h1gb_size = (( size + HUGE_1GB_PAGE_SIZE - 1 )>>HUGE_1GB_PAGE_BITS)<<HUGE_1GB_PAGE_BITS;
+			if( (size / (double)h1gb_size ) > huge_1gb_page_min_use ){
+				auto ptr = mmap( NULL, h1gb_size , PROT_READ | PROT_WRITE,
+												MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | MAP_HUGE_1GB,
+												-1, 0);
+				if( ptr != MAP_FAILED )
+					return std::unique_ptr<T, Deleter<T>>( (T*)ptr, Deleter<T>( 0, h1gb_size ) );
+
+				std::cout << "Cannot allocate 1GiB " << (h1gb_size >> HUGE_1GB_PAGE_BITS) << " huge pages: " <<  errno << " " <<::strerror(errno) << std::endl;
+			}
+
+			uint64_t hsize = ( size <= HUGE_MEM_PAGE_SIZE ? 1 : ((size + HUGE_MEM_PAGE_SIZE-1)>>HUGE_MEM_PAGE_BITS) ) << HUGE_MEM_PAGE_BITS;
+			auto ptr = mmap( NULL, hsize , PROT_READ | PROT_WRITE,
+											MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB,
+											-1, 0);
+			if( ptr != MAP_FAILED )
+				return 	std::unique_ptr<T, Deleter<T>>( (T*)ptr, Deleter<T>( 0, hsize ) );
+
+			std::cout << "Cannot allocate " << (hsize >> HUGE_MEM_PAGE_BITS) << " huge pages: " <<  errno << " " <<::strerror(errno) << std::endl;
+
+			// Try to allocate THP
+			if( posix_memalign( &ptr, HUGE_MEM_PAGE_SIZE, hsize ) == 0 && ptr != nullptr ){
+				madvise( ptr, hsize, MADV_HUGEPAGE );
+				return std::unique_ptr<T, Deleter<T>>( (T*)ptr, Deleter<T>( 1, hsize ) );
+			}
+		}
+#endif // NO_HUGE_PAGES
+
+		// std:: cout << "allocate regular page" << std::endl;
+		return std::unique_ptr<T, Deleter<T>>( new T[count], Deleter<T>( 2 ));
+	}
+
+	template <typename T>
+	inline std::unique_ptr<T, void(*)(T*)> hallocate( uint64_t count, double huge_page_fraction = 0.8, double huge_1gb_page_min_use = 0.9 ){
 		if( count == 0 )
 				return std::unique_ptr<T, void(*)(T*)>( NULL, [](T*d){ delete []d;} );
 
@@ -171,11 +255,25 @@ namespace Util {
 		auto size =  sizeof(T)*count;
 		if( size >= HUGE_MEM_PAGE_SIZE*huge_page_fraction ){
 			// Try to allocate huge pages
-			// std::cout << "allocate huge page" << std::endl;
+			uint64_t h1gb_size = (( size + HUGE_1GB_PAGE_SIZE + 7 /*8 bytes for store size */ )>>HUGE_1GB_PAGE_BITS)<<HUGE_1GB_PAGE_BITS;
+			if( (size / (double)h1gb_size ) > huge_1gb_page_min_use ){
+				auto ptr = mmap( NULL, h1gb_size , PROT_READ | PROT_WRITE,
+												MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | MAP_HUGE_1GB,
+												-1, 0);
+				if( ptr == MAP_FAILED )
+					std::cout << "Cannot allocate 1GiB " << (h1gb_size >> HUGE_1GB_PAGE_BITS) << " huge pages: " <<  errno << " " <<::strerror(errno) << std::endl;
+				else{
+					((uint64_t*)ptr)[0] = h1gb_size;
+					return std::unique_ptr<T, void(*)(T*)>( (T*)(((uint64_t*)ptr)+1), [](T* d){
+						uint64_t* pntr = ((uint64_t*)d)-1;
+						munmap( (void*)pntr, pntr[0] );});
+				}
+			}
+
 			uint64_t hsize = ( size <= HUGE_MEM_PAGE_SIZE ? 1 : ((size + HUGE_MEM_PAGE_SIZE+7/*8bytes to save size*/)>>HUGE_MEM_PAGE_BITS) ) << HUGE_MEM_PAGE_BITS;
-			auto ptr = mmap(NULL, hsize , PROT_READ | PROT_WRITE,
-								 MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB,
-								 -1, 0);
+			auto ptr = mmap( NULL, hsize , PROT_READ | PROT_WRITE,
+												MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB,
+												-1, 0);
 			if( ptr != MAP_FAILED ){
 				if( hsize <= HUGE_MEM_PAGE_SIZE ){ // Single page allocation
 					return std::unique_ptr<T, void(*)(T*)>( (T*)ptr, [](T* d){
