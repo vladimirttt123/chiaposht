@@ -193,7 +193,7 @@ struct EntryAsynRewriter{
 		: k(k), num_threads( std::max( 1U, num_threads ) ), POSITION_LIMIT((uint64_t)1 << k)
 		, line_point_size(2 * k - 1), right_sort_key_size(k)
 		, right_entry_size_bytes(right_entry_size_bytes), sm(R_sort_manager)
-		, writer(*R_sort_manager), BATCH_SIZE( this->num_threads <= 1 ? 0 : (BUF_SIZE/sizeof(BatchEntry)) )
+		, writer(*R_sort_manager), BATCH_SIZE( this->num_threads <= 1 ? 0 : (HUGE_MEM_PAGE_SIZE/sizeof(BatchEntry)) )
 		, left_new_pos(left_new_pos), old_data(old_data) {
 
 		if( this->num_threads > 1 ){
@@ -240,7 +240,7 @@ struct EntryAsynRewriter{
 			finished = true;
 
 			for( uint32_t i = 0; i < next_batch->size; i++ )
-				processBatchEntry( writer, next_batch->entries[i]);
+				processBatchEntry( writer, next_batch->entries.get()[i] );
 
 			for( auto &t : processing_threads )
 				t.join();
@@ -263,13 +263,15 @@ private:
 		uint64_t old_sort_key;
 	};
 	struct Batch{
-		Batch( uint32_t batch_size ){ entries.reset( new BatchEntry[batch_size] ); }
-		std::unique_ptr<BatchEntry[]>entries;
+		Batch( uint32_t batch_size ) : entries(Util::allocate<BatchEntry>(batch_size)) {}
+		std::unique_ptr<BatchEntry,Util::Deleter<BatchEntry>>entries;
 		uint32_t size = 0;
 		inline void add( uint64_t pos_1, uint64_t pos_2, uint64_t key ){
-			entries[size].left_new_pos_1 = pos_1;
-			entries[size].left_new_pos_2 = pos_2;
-			entries[size++].old_sort_key = key;
+			auto e = entries.get() + size;
+			e->left_new_pos_1 = pos_1;
+			e->left_new_pos_2 = pos_2;
+			e->old_sort_key = key;
+			size++;
 		}
 	};
 
@@ -326,7 +328,7 @@ private:
 			else {
 				assert( batch->size == BATCH_SIZE ); // only full batches should be here
 				for( uint32_t i = 0; i < batch->size; i++ )
-					processBatchEntry( thread_writer, batch->entries[i] );
+					processBatchEntry( thread_writer, batch->entries.get()[i] );
 				batch->size = 0; // clear the batch
 			}
 		}
