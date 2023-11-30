@@ -49,6 +49,18 @@ vector<unsigned char> intToBytes(uint32_t paramInt, uint32_t numBytes)
 
 static uint128_t to_uint128(uint64_t hi, uint64_t lo) { return (uint128_t)hi << 64 | lo; }
 
+TEST_CASE( "HUGE_PAGES" ){
+		SECTION( "STATS"){
+			{
+				auto h1G = Util::allocate<uint8_t>( 1UL << 30 );
+				auto h2M = Util::allocate<uint8_t>( 1UL << 21 );
+				auto x = Util::allocate<uint8_t>( 1UL << 10 );
+				h2M = Util::allocate<uint8_t>( 1UL << 22 );
+			}
+			Util::MemAllocationStats.print();
+		}
+}
+
 TEST_CASE( "DISK_STREAMS" ){
 
 	SECTION("BLOCK_READ_WRITE"){

@@ -449,6 +449,7 @@ public:
 							std::cout << "GiB; Cache hit: " <<
 													 (memory_manager.getNotWritten()/1024.0/1024/1024) ;
 						std::cout<< "GiB" << std::endl;
+						Util::MemAllocationStats.print();
             all_phases.PrintElapsed("Total time =");
 
 						for( uint32_t i = 0; i < tmp_1_disks.size(); i++)

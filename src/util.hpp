@@ -166,33 +166,106 @@ const uint64_t HUGE_1GB_PAGE_SIZE = 1UL << HUGE_1GB_PAGE_BITS;
 #endif // NO_HUGE_PAGES
 
 namespace Util {
+enum class AllocationType : uint8_t { HUGE_1G, HUGE_2M_INSTEADOF_1G, HUGE_2M, THP_INSTEADOF_1G, THP, NORMAL, UNDEFINED };
+
+	struct {
+		std::atomic_uint64_t current_usage = 0, top_usage = 0,
+				current_usage_2M = 0, top_usage_2M = 0,
+				possible_usage_2M = 0, top_possible_usage_2M = 0,
+				current_usage_1G = 0, top_usage_1G = 0,
+				possible_usage_1G = 0, top_possible_usage_1G = 0;
+		void change( AllocationType type, int64_t size ){
+			switch (type) {
+				case AllocationType::NORMAL:
+					setMax( current_usage.fetch_add( size, std::memory_order::relaxed ) + size, top_usage );
+					break;
+				case AllocationType::HUGE_1G:
+					setMax( current_usage_1G.fetch_add( size, std::memory_order_relaxed ) + size, top_usage_1G );
+					break;
+				case AllocationType::HUGE_2M:
+					setMax( current_usage_2M.fetch_add( size, std::memory_order_relaxed ) + size, top_usage_2M );
+					break;
+				case AllocationType::HUGE_2M_INSTEADOF_1G:
+					setMax( current_usage_2M.fetch_add( size, std::memory_order_relaxed ) + size, top_usage_2M );
+					setMax( possible_usage_1G.fetch_add( size, std::memory_order_relaxed ) + size + current_usage_1G.load(std::memory_order::relaxed), top_possible_usage_1G );
+					break;
+				case AllocationType::THP_INSTEADOF_1G:
+					setMax( current_usage.fetch_add( size, std::memory_order_relaxed ) + size, top_usage );
+					setMax( possible_usage_1G.fetch_add( size, std::memory_order_relaxed ) + size + current_usage_1G.load(std::memory_order::relaxed), top_possible_usage_1G );
+					break;
+				case AllocationType::THP:
+					setMax( current_usage.fetch_add( size, std::memory_order_relaxed ) + size, top_usage );
+					setMax( possible_usage_2M.fetch_add( size, std::memory_order_relaxed ) + size + current_usage_2M.load(std::memory_order::relaxed), top_possible_usage_2M );
+					break;
+				case AllocationType::UNDEFINED: break;
+			}
+		}
+
+		inline void setMax( uint64_t cur, std::atomic_uint64_t&to ){
+			if( ((int64_t)cur) < 0 )
+					return;
+			uint64_t exp = to.load(std::memory_order::relaxed);
+			assert( ((int64_t)exp) >= 0 );
+			while( exp < cur && !to.compare_exchange_weak( exp, cur, std::memory_order::relaxed, std::memory_order::relaxed ) )
+				assert( ((int64_t)exp) >= 0 );
+		}
+
+		void print( bool withClear = true ){
+			std::cout << "Memory alloctions stats: top: " << top_usage
+#ifndef NO_HUGE_PAGES
+								<< "; top 1G pages: " << (top_usage_1G>>HUGE_1GB_PAGE_BITS);
+			if( top_possible_usage_1G > 0 )
+					std::cout << "; possible 1G pages: " << (top_possible_usage_1G>>HUGE_1GB_PAGE_BITS);
+			std::cout << "; top 2M pages: " << (top_usage_2M>>HUGE_MEM_PAGE_BITS);
+			if( top_possible_usage_2M > 0 )
+					std::cout << "; possible 2M pages: " << (top_possible_usage_2M>>HUGE_MEM_PAGE_BITS);
+			std::cout
+#endif
+								<< std::endl;
+			if( withClear ) clear();
+		}
+
+		void clear(){
+			current_usage = top_usage = current_usage_2M = top_usage_2M =
+				possible_usage_2M = top_possible_usage_2M = current_usage_1G =
+				top_usage_1G = possible_usage_1G = top_possible_usage_1G = 0;
+		}
+	} MemAllocationStats;
+
 
 	template <typename T>
 	struct Deleter{
 #ifdef NO_HUGE_PAGES
-		Deleter( uint8_t t = 0 ){};
+		Deleter( AllocationType t = AllocationType::UNDEFINED ){};
 		void operator()(T *p){ delete [] p; }
 		void swap(Deleter<T>& other){}
 #else // NO_HUGE_PAGES
 
-		Deleter( uint8_t type = 255, uint64_t size = 0 )
-				: size(size), type(type){}
+		Deleter( AllocationType type = AllocationType::UNDEFINED, uint64_t size = 0 )
+				: size(size), type(type) {
+			MemAllocationStats.change( type, size );
+		}
 
 		void operator()(T *p){
 			if( size == 0 || p == NULL ) return;
+			MemAllocationStats.change( type, -size );
 			switch( type ) {
-			case 0:
-				//std::cout << "unmap" << std::endl;
-				munmap( (void*)p, size );
-				break;
-			case 1:
-				//std::cout << "free" << std::endl;
-				std::free( (void*)p );
-				break;
-			case 2:
-				//std::cout << "delete" << std::endl;
-				delete [] p;
-				break;
+				case AllocationType::HUGE_1G:
+				case AllocationType::HUGE_2M_INSTEADOF_1G:
+				case AllocationType::HUGE_2M:
+					//std::cout << "unmap" << std::endl;
+					munmap( (void*)p, size );
+					break;
+				case AllocationType::THP_INSTEADOF_1G:
+				case AllocationType::THP:
+					//std::cout << "free" << std::endl;
+					std::free( (void*)p );
+					break;
+				case AllocationType::NORMAL:
+					//std::cout << "delete" << std::endl;
+					delete [] p;
+					break;
+				case AllocationType::UNDEFINED: break;
 			}
 		}
 		void swap(Deleter<T>& other)
@@ -202,7 +275,7 @@ namespace Util {
 		}
 	private:
 		uint64_t size;
-		uint8_t type;
+		AllocationType type;
 #endif // else NO_HUGE_PAGES
 	};
 	template <typename T>
@@ -215,14 +288,15 @@ namespace Util {
 		if( size >= HUGE_MEM_PAGE_SIZE*huge_page_fraction ){
 			// Try to allocate huge pages
 			uint64_t h1gb_size = (( size + HUGE_1GB_PAGE_SIZE - 1 )>>HUGE_1GB_PAGE_BITS)<<HUGE_1GB_PAGE_BITS;
-			if( (size / (double)h1gb_size ) > huge_1gb_page_min_use ){
+			bool suits_for_1G = (size / (double)h1gb_size ) > huge_1gb_page_min_use;
+			if( suits_for_1G ) {
 				auto ptr = mmap( NULL, h1gb_size , PROT_READ | PROT_WRITE,
 												MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | MAP_HUGE_1GB,
 												-1, 0);
 				if( ptr != MAP_FAILED )
-					return std::unique_ptr<T, Deleter<T>>( (T*)ptr, Deleter<T>( 0, h1gb_size ) );
+					return std::unique_ptr<T, Deleter<T>>( (T*)ptr, Deleter<T>( AllocationType::HUGE_1G, h1gb_size ) );
 
-				std::cout << "Cannot allocate 1GiB " << (h1gb_size >> HUGE_1GB_PAGE_BITS) << " huge pages: " <<  errno << " " <<::strerror(errno) << std::endl;
+				std::cout << "Cannot allocate 1GiB " << (h1gb_size >> HUGE_1GB_PAGE_BITS) << " huge pages ( currently allocated " << MemAllocationStats.current_usage_1G << " pages): " <<  errno << " " <<::strerror(errno) << std::endl;
 			}
 
 			uint64_t hsize = ( size <= HUGE_MEM_PAGE_SIZE ? 1 : ((size + HUGE_MEM_PAGE_SIZE-1)>>HUGE_MEM_PAGE_BITS) ) << HUGE_MEM_PAGE_BITS;
@@ -230,20 +304,29 @@ namespace Util {
 											MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB,
 											-1, 0);
 			if( ptr != MAP_FAILED )
-				return 	std::unique_ptr<T, Deleter<T>>( (T*)ptr, Deleter<T>( 0, hsize ) );
+				return 	std::unique_ptr<T, Deleter<T>>( (T*)ptr, Deleter<T>( suits_for_1G ? AllocationType::HUGE_2M_INSTEADOF_1G : AllocationType::HUGE_2M, hsize ) );
 
-			std::cout << "Cannot allocate " << (hsize >> HUGE_MEM_PAGE_BITS) << " huge pages: " <<  errno << " " <<::strerror(errno) << std::endl;
+			std::cout << "Cannot allocate " << (hsize >> HUGE_MEM_PAGE_BITS) << " huge pages ( currently allocated " << MemAllocationStats.current_usage_2M << " pages ): " <<  errno << " " <<::strerror(errno) << std::endl;
 
 			// Try to allocate THP
 			if( posix_memalign( &ptr, HUGE_MEM_PAGE_SIZE, hsize ) == 0 && ptr != nullptr ){
 				madvise( ptr, hsize, MADV_HUGEPAGE );
-				return std::unique_ptr<T, Deleter<T>>( (T*)ptr, Deleter<T>( 1, hsize ) );
+				return std::unique_ptr<T, Deleter<T>>( (T*)ptr, Deleter<T>( suits_for_1G ? AllocationType::THP_INSTEADOF_1G : AllocationType::THP, hsize ) );
 			}
 		}
 #endif // NO_HUGE_PAGES
 
 		// std:: cout << "allocate regular page" << std::endl;
-		return std::unique_ptr<T, Deleter<T>>( new T[count], Deleter<T>( 2 ));
+		return std::unique_ptr<T, Deleter<T>>( new T[count], Deleter<T>( AllocationType::NORMAL, sizeof(T)*count ));
+	}
+
+	// Converting and extracting bits of last element of buffer
+	// usually needs additional 7 bytes at the end.
+	// this funciton is adds and inits this bytes.
+	inline uint8_t * NewSafeBuffer( const uint64_t &size ){
+		auto res = new uint8_t[size+8];
+		((uint64_t*)(res + size))[0] = reinterpret_cast<std::uint64_t>(res);
+		return res;
 	}
 
     template <typename X>
@@ -313,14 +396,7 @@ namespace Util {
         return count;
     }
 
-		// Converting and extracting bits of last element of buffer
-		// usually needs additional 7 bytes at the end.
-		// this funciton is adds and inits this bytes.
-		inline uint8_t * NewSafeBuffer( const uint64_t &size ){
-			auto res = new uint8_t[size+8];
-			((uint64_t*)(res + size))[0] = reinterpret_cast<std::uint64_t>(res);
-			return res;
-		}
+
 
     // 'bytes' points to a big-endian 64 bit value (possibly truncated, if
     // (start_bit % 8 + num_bits > 64)). Returns the integer that starts at
