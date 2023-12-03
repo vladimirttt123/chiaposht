@@ -24,7 +24,8 @@ enum phase_flags : uint8_t {
     SHOW_PROGRESS = 1 << 1,
 		NO_COMPACTION = 1 << 2,
 		TABLE_7_FULL_SCAN = 1 << 3,
-		BUFFER_AS_CACHE = 1 << 4
+		BUFFER_AS_CACHE = 1 << 4,
+		PARALLEL_READ = 1 << 5
 };
 
 #endif  // SRC_CPP_PHASES_HPP

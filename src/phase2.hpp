@@ -43,43 +43,50 @@ struct Phase2Results
 
 inline void ScanTable( FileDisk *disk, int64_t const table_size, int16_t const &entry_size,
 											 bitfield &current_bitfield, bitfield &next_bitfield,
-											 const uint32_t &num_threads, uint8_t const pos_offset_size ){
+											 const uint32_t &num_threads, uint8_t const pos_offset_size, bool parallel_read ){
 	// next_bitfield.clear(); next_bitfield should be cleared outside!!!!
 
 	std::atomic_uint64_t read_cursor = 0;
 	const auto max_threads = std::max((uint32_t)1, num_threads);
 	auto threads = std::make_unique<std::thread[]>( max_threads );
-	std::mutex read_mutex;
+	std::mutex read_mutex[2];
 	const uint64_t read_bufsize = ((HUGE_MEM_PAGE_SIZE-1)/entry_size)*entry_size; // allign size to entry length
 	const uint64_t to_read_size = table_size * entry_size;
 
 #ifndef __GNUC__
 	next_bitfield.PrepareToThreads( max_threads );
 #endif // __GNUC__
-	auto thread_func = [ entry_size, pos_offset_size, read_bufsize, &read_mutex, &table_size, &to_read_size]
+	auto thread_func = [ entry_size, pos_offset_size, read_bufsize, &read_mutex, &table_size, &to_read_size, &parallel_read]
 			(FileDisk *src_disk, std::atomic_uint64_t *read_cursor, const bitfield * current_bitfield, bitfield *next_bitfield ){
 
 				auto buffer( Util::allocate<uint8_t>(read_bufsize) );
 				bitfieldReader cur_bitfield( *current_bitfield );
 				const uint64_t proc5_size = table_size*entry_size/20;
 				uint64_t buf_size = 0, buf_start = 0;
-				auto disk = std::make_unique<FileDisk>( src_disk->GetFileName(), false );
+				std::unique_ptr<FileDisk> pdisk;
+				if( parallel_read ) pdisk.reset( new FileDisk( src_disk->GetFileName(), false ) );
+				auto disk = parallel_read ?pdisk.get() : src_disk;
 #ifndef __GNUC__
 				auto writer = bitfield::ThreadWriter( *next_bitfield );
 #endif // __GNUC__
 
 				while( true ){
 					// Read next buffer
+					if( !parallel_read )read_mutex[0].lock();
 					buf_start = read_cursor->fetch_add( read_bufsize );
-					if( buf_start >= to_read_size ) return; // nothing to read -> exit
+					if( buf_start >= to_read_size ) {
+						if( !parallel_read )read_mutex[0].unlock();
+						return; // nothing to read -> exit
+					}
 					buf_size = std::min( read_bufsize, to_read_size - buf_start );
 					assert( (buf_size % entry_size) == 0 );
 					disk->Read( buf_start, buffer.get(), buf_size );
+					if( !parallel_read )read_mutex[0].unlock();
 
 					// Setting limits could read data from file than need a mutex
-					if( current_bitfield->is_readonly() ) read_mutex.lock();
+					if( current_bitfield->is_readonly() ) read_mutex[1].lock();
 					cur_bitfield.setLimits( buf_start/entry_size, buf_size/entry_size );
-					if( current_bitfield->is_readonly() ) read_mutex.unlock();
+					if( current_bitfield->is_readonly() ) read_mutex[1].unlock();
 
 					if( read_bufsize < proc5_size && buf_start > 0 && buf_start/proc5_size != (buf_start-buf_size)/proc5_size )
 						std::cout << (((buf_start/proc5_size)%5) == 0 ? "*" : "-" ) << std::flush;
@@ -289,7 +296,7 @@ Phase2Results RunPhase2(
 				std::cout << "\ttable " << table_index << ": scan " << std::flush;
 
 				ScanTable( &tmp_1_disks[table_index], table_size, entry_size, *current_bitfield.get(), *next_bitfield.get(),
-									 max_threads, pos_offset_size );
+									 max_threads, pos_offset_size, flags&PARALLEL_READ );
 
 				scan_timer.PrintElapsed( "time =" );
 			}
@@ -317,16 +324,11 @@ Phase2Results RunPhase2(
 
 			auto sort_manager = std::make_unique<SortManager>(
 					memory_manager,		*full_stats[next_stats_idx].get(),
-					num_buckets,
-					new_entry_size,
+					num_buckets,			new_entry_size,
 					tmp_dirname,			filename + ".p2.t" + std::to_string(table_index),
-					uint32_t(k), // bits_begin
-					0, // strip_size
-					k,
-					2, // Phase
-					table_index,
-					num_threads,
-					(flags&NO_COMPACTION)==0 );
+					uint32_t(k) /* bits_begin */, 0, // strip_size
+					k, 2/* Phase */, table_index,
+					num_threads, (flags&NO_COMPACTION)==0, (flags&PARALLEL_READ)!=0 );
 
 			uint64_t read_position = 0, write_counter = 0;
 			std::mutex read_mutext, write_mutex;

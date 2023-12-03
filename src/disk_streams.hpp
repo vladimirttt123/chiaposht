@@ -984,13 +984,13 @@ struct BucketStream{
 	}
 
 	// This is thread safe
-	IBlockReader * CreateReader( bool isThreadSafe = true ){
+	IBlockReader * CreateReader( bool isThreadSafe = true, bool parallel_read = true ){
 		std::lock_guard<std::mutex> lk( sync_mutex );
 		if( !bucket_file ) return nullptr; // nothing to create...
 
 		IBlockReader* fin = bucket_file.get();
 		if( isThreadSafe ){
-			if( memory_manager.CacheEnabled )
+			if( memory_manager.CacheEnabled || !parallel_read )
 				fin = new BlockThreadSafeReader( fin, sync_mutex, &total_reads, &instant_reads );
 			else{
 				((BlockedFileStream*)fin)->Flush();

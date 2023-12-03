@@ -425,9 +425,8 @@ Phase3Results RunPhase3(
 						tmp_dirname,				filename + ".p3.t" + std::to_string(table_index + 1),
 						0/* begin_bits */,	0/* stripe_size*/,
 						k/* plot size */,		3/* Phase */,
-						table_index,
-						num_threads,
-						(flags&NO_COMPACTION)==0 );
+						table_index,				num_threads,
+						(flags&NO_COMPACTION)==0, (flags&PARALLEL_READ)!=0 );
 				next_stats_idx = !full_stats[1] ? 0 : (next_stats_idx + 1)%2;
 
 				StreamBuffer entry_buffer( right_entry_size_bytes );
@@ -559,9 +558,8 @@ Phase3Results RunPhase3(
 						tmp_dirname,					filename + ".p3s.t" + std::to_string(table_index + 1),
 						0/* bits_begin */,		0/* strip_size */,
 						k/* plot size */,			4/* Phase */,
-						table_index + 1,
-						num_threads,
-						(flags&NO_COMPACTION)==0 );
+						table_index + 1,			num_threads,
+						(flags&NO_COMPACTION)==0, (flags&PARALLEL_READ)!=0 );
 				next_stats_idx = !full_stats[1] ? 0 : (next_stats_idx + 1)%2;
 
 				// Now we will write on of the final tables, since we have a table sorted by line point.

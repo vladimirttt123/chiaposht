@@ -921,7 +921,7 @@ void PlotAndTestProofOfSpace(
     uint32_t stripe_size,
 		uint8_t num_threads,
 		uint32_t num_buckets = 0,
-		uint8_t phase_flags = ENABLE_BITFIELD,
+		uint8_t phase_flags = ENABLE_BITFIELD|PARALLEL_READ,
 		uint8_t subbuckets_bits = 11,
 		uint8_t stats_in_mem = 2
 		)
@@ -994,7 +994,7 @@ TEST_CASE("Plotting")
 		}
     SECTION("Disk plot k21")
     {
-        PlotAndTestProofOfSpace("cpp-test-plot.dat", 5000, 21, plot_id_3, 100, 4945, 8192, 4);
+				PlotAndTestProofOfSpace("cpp-test-plot.dat", 5000, 21, plot_id_3, 100, 4945, 8192, 4, 0 );
     }
     // SECTION("Disk plot k24") { PlotAndTestProofOfSpace("cpp-test-plot.dat", 100, 24, plot_id_3,
     // 100, 107); }

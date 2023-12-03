@@ -265,11 +265,11 @@ public:
 			uint64_t const stripe_size,
 			uint8_t k, uint8_t phase, uint8_t table_index,
 			uint32_t num_threads = 2,
-			bool enable_compaction = true )
+			bool enable_compaction = true,
+			bool parallel_read = true )
 
 			: memory_manager(memory_manager)
-			, entry_size_(entry_size)
-			, begin_bits_(begin_bits)
+			, entry_size_(entry_size), begin_bits_(begin_bits)
 			, prev_bucket_buf_size(
 					2 * (stripe_size + 10 * (kBC / pow(2, kExtraBits))) * entry_size)
 			, num_threads( num_threads )
@@ -334,7 +334,7 @@ public:
 				buckets_[bucket_i].reset( new SortingBucket( bucket_filename.string(), memory_manager, full_statistics.forBucket( bucket_i ),
 																							bucket_i, log_num_buckets_,
 																							entry_size, begin_bits_ + log_num_buckets_, subbucket_bits,
-																							enable_compaction, sequence_start ) );
+																							enable_compaction, sequence_start, parallel_read ) );
 		}
 	}
 
@@ -574,7 +574,6 @@ public:
     }
 
 private:
-
 	// Size of the whole memory array
 	MemoryManager &memory_manager;
 	// Size of each entry

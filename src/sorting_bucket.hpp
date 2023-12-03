@@ -23,10 +23,13 @@
 
 // ==================================================================================================
 struct SortingBucket{
+	bool parallel_read;
+
 	SortingBucket( const std::string &fileName, MemoryManager &memory_manager, STATS_UINT_TYPE* stats_mem,
 								uint16_t bucket_no, uint8_t log_num_buckets, uint16_t entry_size,
-								uint32_t begin_bits, uint8_t bucket_bits_count, bool enable_compression = true, int16_t sequence_start_bit = -1 )
-		:	disk( new BucketStream( fileName, memory_manager, bucket_no, log_num_buckets, entry_size, begin_bits, enable_compression, sequence_start_bit ) )
+								uint32_t begin_bits, uint8_t bucket_bits_count, bool enable_compression = true, int16_t sequence_start_bit = -1, bool parallel_read = true )
+			: parallel_read(parallel_read)
+			,	disk( new BucketStream( fileName, memory_manager, bucket_no, log_num_buckets, entry_size, begin_bits, enable_compression, sequence_start_bit ) )
 
 #ifndef NDEBUG
 		, bucket_no_( bucket_no )
@@ -176,7 +179,7 @@ struct SortingBucket{
 				if( num_read_threads == 2 ){ // in case of 2 threads it is possible to do without locks on memory
 					auto thread_function = [this, &memory]( uint64_t * positions, int16_t const direction){
 						StreamBuffer buf( BUF_SIZE/entry_size_*entry_size_ );
-						std::unique_ptr<IBlockReader> reader( disk->CreateReader() );
+						std::unique_ptr<IBlockReader> reader( disk->CreateReader( true, parallel_read ) );
 
 						while(  reader->Read( buf ) > 0 )
 							FillBuckets( memory, buf.get(), buf.used(), positions, direction );

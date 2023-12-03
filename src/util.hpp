@@ -202,8 +202,8 @@ enum class AllocationType : uint8_t { HUGE_1G, HUGE_2M_INSTEADOF_1G, HUGE_2M, TH
 		}
 
 		inline void setMax( uint64_t cur, std::atomic_uint64_t&to ){
-			if( ((int64_t)cur) < 0 )
-					return;
+			assert( ((int64_t)cur) >= 0 );
+
 			uint64_t exp = to.load(std::memory_order::relaxed);
 			assert( ((int64_t)exp) >= 0 );
 			while( exp < cur && !to.compare_exchange_weak( exp, cur, std::memory_order::relaxed, std::memory_order::relaxed ) )
@@ -226,8 +226,9 @@ enum class AllocationType : uint8_t { HUGE_1G, HUGE_2M_INSTEADOF_1G, HUGE_2M, TH
 		}
 
 		void clear(){
-			current_usage = top_usage = current_usage_2M = top_usage_2M =
-				possible_usage_2M = top_possible_usage_2M = current_usage_1G =
+			//current_usage = current_usage_2M = current_usage_1G =
+			top_usage = top_usage_2M =
+				possible_usage_2M = top_possible_usage_2M =
 				top_usage_1G = possible_usage_1G = top_possible_usage_1G = 0;
 		}
 	} MemAllocationStats;
@@ -306,7 +307,8 @@ enum class AllocationType : uint8_t { HUGE_1G, HUGE_2M_INSTEADOF_1G, HUGE_2M, TH
 			if( ptr != MAP_FAILED )
 				return 	std::unique_ptr<T, Deleter<T>>( (T*)ptr, Deleter<T>( suits_for_1G ? AllocationType::HUGE_2M_INSTEADOF_1G : AllocationType::HUGE_2M, hsize ) );
 
-			std::cout << "Cannot allocate " << (hsize >> HUGE_MEM_PAGE_BITS) << " huge pages ( currently allocated " << MemAllocationStats.current_usage_2M << " pages ): " <<  errno << " " <<::strerror(errno) << std::endl;
+			std::cout << "Cannot allocate " << (hsize >> HUGE_MEM_PAGE_BITS) << " huge pages " << (suits_for_1G?" instead of 1GiB ":"")
+								<< " ( currently allocated " << MemAllocationStats.current_usage_2M << " pages ): " <<  errno << " " <<::strerror(errno) << std::endl;
 
 			// Try to allocate THP
 			if( posix_memalign( &ptr, HUGE_MEM_PAGE_SIZE, hsize ) == 0 && ptr != nullptr ){

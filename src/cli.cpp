@@ -167,6 +167,8 @@ int main(int argc, char *argv[]) try {
         if (show_progress) {
             phases_flags = phases_flags | SHOW_PROGRESS;
         }
+				if( parallel_read )
+						phases_flags |= PARALLEL_READ;
 				BUF_SIZE = std::max( (uint64_t)64, (uint64_t)filebufkb ) << 10;
 				if( kSubBucketBits > 15 ) kSubBucketBits = 15; // it can be increased if change statistics to int
 				plotter.CreatePlotDiskAdv(

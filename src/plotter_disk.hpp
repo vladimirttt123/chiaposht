@@ -235,7 +235,8 @@ public:
 				std::cout << "Subbuckets bits number: " << ((uint)kSubBucketBits) << " (" << ((uint)stats_in_mem) << "x" << ((statistics_memory>>20)/stats_in_mem) << "MiB)" << std::endl;
 				std::cout << "Flags: " << ( phases_flags&ENABLE_BITFIELD ? " using bitfield" : " NO bitfield" )
 									<< ", " << (phases_flags&NO_COMPACTION ? "NO compaction" : "with compaction" )
-									<< ", " << (phases_flags&BUFFER_AS_CACHE ?"USE free buffer as cache" : "NO buffer as cache" );
+									<< ", " << (phases_flags&BUFFER_AS_CACHE ?"USE free buffer as cache" : "NO buffer as cache" )
+									<< ", " << (phases_flags&PARALLEL_READ ? "parallel read" : "sequential read" );
 				if( phases_flags&ENABLE_BITFIELD )
 					std::cout << ", " << (phases_flags&TABLE_7_FULL_SCAN ? "table 7 FULL scan" : "table 7 QUICK scan" );
 				std::cout << std::endl;

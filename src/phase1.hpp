@@ -619,7 +619,7 @@ std::vector<uint64_t> RunPhase1(
 				globals.stripe_size,
 				k, 1 /* Phase */, 2 /* table */,
 				num_threads,
-				(flags&NO_COMPACTION)==0);
+				(flags&NO_COMPACTION)==0, (flags&PARALLEL_READ)!=0 );
 
     // These are used for sorting on disk. The sort on disk code needs to know how
     // many elements are in each bucket.
@@ -698,10 +698,9 @@ std::vector<uint64_t> RunPhase1(
             filename + ".p1.t" + std::to_string(table_index + 1),
             0,
 						globals.stripe_size,
-						k, 1, // Phase
-						table_index+2,
+						k, 1/* Phase */, table_index+2,
 						num_threads,
-						(flags&NO_COMPACTION)==0 );
+						(flags&NO_COMPACTION)==0, (flags&PARALLEL_READ)!=0 );
 
         globals.L_sort_manager->TriggerNewBucket(0);
 
