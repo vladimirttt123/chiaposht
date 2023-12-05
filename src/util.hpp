@@ -289,7 +289,7 @@ enum class AllocationType : uint8_t { HUGE_1G, HUGE_2M_INSTEADOF_1G, HUGE_2M, TH
 		if( size >= HUGE_MEM_PAGE_SIZE*huge_page_fraction ){
 			// Try to allocate huge pages
 			uint64_t h1gb_size = (( size + HUGE_1GB_PAGE_SIZE - 1 )>>HUGE_1GB_PAGE_BITS)<<HUGE_1GB_PAGE_BITS;
-			bool suits_for_1G = (size / (double)h1gb_size ) > huge_1gb_page_min_use;
+			bool suits_for_1G =  size >= HUGE_1GB_PAGE_SIZE*huge_1gb_page_min_use; // (size / (double)h1gb_size ) > huge_1gb_page_min_use;
 			if( suits_for_1G ) {
 				auto ptr = mmap( NULL, h1gb_size , PROT_READ | PROT_WRITE,
 												MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | MAP_HUGE_1GB,
