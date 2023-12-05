@@ -225,6 +225,7 @@ struct EntryAsynRewriter{
 						next_batch.reset( full_batch.exchange( next_batch.release(), std::memory_order_relaxed ) );
 						if( processing_threads.size() == 0
 								|| ( next_batch->size > 0 && processing_threads.size() < num_threads ) ){
+							std::cout << "[start rewriter:" << processing_threads.size() << "/" << num_threads << "]";
 							processing_threads.emplace_back( [this](){threaded_porcessor();} );
 						}
 						if( next_batch->size > 0 ) // wait for threads will process
@@ -390,7 +391,7 @@ Phase3Results RunPhase3(
 		// new_pos), where new_pos is the position in the table, where it's sorted by line_point,
 		// and the line_points are written to disk to a final table. Finally, table_i is sorted by
 		// sort_key. This allows us to compare to the next table.
-		double progress_percent[] = {0.66, 0.73, 0.79, 0.85, 0.92, 0.98};
+		double progress_percent[] = {0.64, 0.7, 0.76, 0.82, 0.88, 0.94};
 		for (int table_index = 1; table_index < 7; table_index++) {
 				Timer table_timer;
 				Timer computation_pass_1_timer;
