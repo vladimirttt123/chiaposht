@@ -150,6 +150,8 @@ private:
 		uint64_t write_byte_start;
 };
 
+#define MEM_SAFE_BUF_SIZE  7
+
 #ifndef __GNUC__
 #define NO_HUGE_PAGES
 #endif
@@ -327,6 +329,7 @@ enum class AllocationType : uint8_t { HUGE_1G, HUGE_2M_INSTEADOF_1G, HUGE_2M, TH
 	// this funciton is adds and inits this bytes.
 	inline uint8_t * NewSafeBuffer( const uint64_t &size ){
 		auto res = new uint8_t[size+8];
+		// init additional ram - this remove valgrind warning of accessing not inited and saving pointer there allow check buffers
 		((uint64_t*)(res + size))[0] = reinterpret_cast<std::uint64_t>(res);
 		return res;
 	}

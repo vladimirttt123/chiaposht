@@ -50,7 +50,7 @@ inline void ScanTable( FileDisk *disk, int64_t const table_size, int16_t const &
 	const auto max_threads = std::max((uint32_t)1, num_threads);
 	auto threads = std::make_unique<std::thread[]>( max_threads );
 	std::mutex read_mutex[2];
-	const uint64_t read_bufsize = ((HUGE_MEM_PAGE_SIZE-1)/entry_size)*entry_size; // allign size to entry length
+	const uint64_t read_bufsize = ((HUGE_MEM_PAGE_SIZE-MEM_SAFE_BUF_SIZE)/entry_size)*entry_size; // allign size to entry length
 	const uint64_t to_read_size = table_size * entry_size;
 
 #ifndef __GNUC__
@@ -59,7 +59,7 @@ inline void ScanTable( FileDisk *disk, int64_t const table_size, int16_t const &
 	auto thread_func = [ entry_size, pos_offset_size, read_bufsize, &read_mutex, &table_size, &to_read_size, &parallel_read]
 			(FileDisk *src_disk, std::atomic_uint64_t *read_cursor, const bitfield * current_bitfield, bitfield *next_bitfield ){
 
-				auto buffer( Util::allocate<uint8_t>(read_bufsize) );
+				auto buffer( Util::allocate<uint8_t>(read_bufsize + MEM_SAFE_BUF_SIZE) );
 				bitfieldReader cur_bitfield( *current_bitfield );
 				const uint64_t proc5_size = table_size*entry_size/20;
 				uint64_t buf_size = 0, buf_start = 0;
@@ -136,8 +136,8 @@ inline void SortRegularTableThread( IReadDiskStream * disk, const uint64_t &tabl
 	uint8_t const write_counter_shift = 128 - k;
 	uint8_t const pos_offset_shift = write_counter_shift - pos_offset_size;
 
-	uint64_t buf_size = ((HUGE_MEM_PAGE_SIZE-1)/entry_size)*entry_size;
-	auto buffer( Util::allocate<uint8_t>( buf_size ) );
+	uint64_t buf_size = ((HUGE_MEM_PAGE_SIZE - MEM_SAFE_BUF_SIZE)/entry_size)*entry_size;
+	auto buffer( Util::allocate<uint8_t>( buf_size + MEM_SAFE_BUF_SIZE ) );
 	SortManager::ThreadWriter writer = SortManager::ThreadWriter( *sort_manager );
 	uint64_t proc5_size = table_size*entry_size/20;
 	if( buf_size > proc5_size ) proc5_size = 1; // do not show counters

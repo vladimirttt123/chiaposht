@@ -12,8 +12,8 @@
 struct FilteredDisk
 {
 		FilteredDisk( FileDisk* underlying, MemoryManager &memory_manager, bitfield *filter, int entry_size, uint64_t file_size )
-			: buf_size( (HUGE_MEM_PAGE_SIZE-8/* safe distance */)/2/entry_size*entry_size), entry_size_(entry_size), file_size(file_size)
-			, buf( Util::allocate<uint8_t>( buf_size*2 + 8 /* safe distance */ ) ), buf_start( buf_size )
+			: buf_size( (HUGE_MEM_PAGE_SIZE - MEM_SAFE_BUF_SIZE)/2/entry_size*entry_size), entry_size_(entry_size), file_size(file_size)
+			, buf( Util::allocate<uint8_t>( buf_size*2 + MEM_SAFE_BUF_SIZE ) ), buf_start( buf_size )
 			, memory_manager(memory_manager), filter_( filter ), underlying_(underlying)
 			, pos_in_buffer( -entry_size )
 		{
