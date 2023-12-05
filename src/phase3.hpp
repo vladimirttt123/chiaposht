@@ -222,14 +222,16 @@ struct EntryAsynRewriter{
 								old_datum.sort_keys[counter] );
 
 					while( next_batch->size >= BATCH_SIZE ){ // queue is full
-						next_batch.reset( full_batch.exchange( next_batch.release(), std::memory_order_relaxed ) );
-						if( processing_threads.size() == 0
+						auto ready_batch = next_batch.release();
+						next_batch.reset( full_batch.exchange( ready_batch, std::memory_order_relaxed ) );
+						full_batch.notify_all();
+						if( processing_threads.size() == 0 // no threads or replaced with full
 								|| ( next_batch->size > 0 && processing_threads.size() < num_threads ) ){
 							std::cout << "[start rewriter:" << processing_threads.size() << "/" << num_threads << "]";
 							processing_threads.emplace_back( [this](){threaded_porcessor();} );
 						}
 						if( next_batch->size > 0 ) // wait for threads will process
-							std::this_thread::sleep_for( 5us );
+							full_batch.wait( ready_batch, std::memory_order::relaxed );
 					}
 				}
 			}
@@ -239,6 +241,12 @@ struct EntryAsynRewriter{
 	~EntryAsynRewriter(){
 		if( num_threads > 1 ){
 			finished = true;
+			auto to_delete_batch = full_batch.exchange( nullptr, std::memory_order::relaxed );
+			full_batch.notify_all();
+
+			for( uint32_t i = 0; i < to_delete_batch->size; i++ )
+				processBatchEntry( writer, to_delete_batch->entries.get()[i] );
+			delete to_delete_batch;
 
 			for( uint32_t i = 0; i < next_batch->size; i++ )
 				processBatchEntry( writer, next_batch->entries.get()[i] );
@@ -246,7 +254,6 @@ struct EntryAsynRewriter{
 			for( auto &t : processing_threads )
 				t.join();
 
-			delete full_batch.load( std::memory_order_relaxed );
 		}
 	}
 private:
@@ -320,11 +327,13 @@ private:
 		SortManager::ThreadWriter thread_writer(*sm);
 		std::unique_ptr<Batch> batch( new Batch(BATCH_SIZE) );
 
-		while( !finished || full_batch.load(std::memory_order_relaxed)->size > 0 ){
-			batch.reset( full_batch.exchange( batch.release(), std::memory_order_relaxed ) );
-			if( batch->size == 0 ){
+		while( !finished ){
+			auto empty_batch = batch.release();
+			batch.reset( full_batch.exchange( empty_batch, std::memory_order_relaxed ) );
+			full_batch.notify_all();
+			if( !batch || batch->size == 0 ){
 				if( finished ) return;
-				std::this_thread::sleep_for( 5us );
+				full_batch.wait( empty_batch, std::memory_order::relaxed );
 			}
 			else {
 				assert( batch->size == BATCH_SIZE ); // only full batches should be here
