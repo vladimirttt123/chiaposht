@@ -77,6 +77,7 @@ void RunPhase4(uint8_t k, uint8_t pos_size, FileDisk &tmp2_disk, Phase3Results &
     auto C3_entry_buf = new uint8_t[size_C3];
     auto P7_entry_buf = new uint8_t[P7_park_size];
 
+		std::cout << "Progress update: 0.98" << std::endl;
     std::cout << "\tStarting to write C1 and C3 tables" << std::endl;
 
     ParkBits to_write_p7;
