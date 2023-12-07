@@ -41,11 +41,11 @@ struct bitfield_index
 
 
 				if( (idx&0xffff) == 0 ){
-					index_mid[idx>>16] = counter - last_hi;
+					index_mid.get()[idx>>16] = counter - last_hi;
 					last_mid = counter;
 				}
 
-				index_lo[idx>>kIndexBucketBits] = counter - last_mid;
+				index_lo.get()[idx>>kIndexBucketBits] = counter - last_mid;
 				int64_t const left = std::min( uint64_t(bitfield_->size()) - idx, kIndexBucket);
 				counter += bitfield_->count(idx, idx + left);
 			}
@@ -62,7 +62,7 @@ struct bitfield_index
 			assert(pos + offset < uint64_t(bitfield_->size()));
 			assert(bitfield_->get(pos) && bitfield_->get(pos + offset));
 
-			uint64_t const base = index_hi[bucket_hi] + index_mid[bucket_mid] + index_lo[bucket_lo];
+			uint64_t const base = index_hi[bucket_hi] + index_mid.get()[bucket_mid] + index_lo.get()[bucket_lo];
 
 			//assert( base == (uint64_t)bitfield_->count(0, bucket_lo<<kIndexBucketBits ) );
 
@@ -82,8 +82,8 @@ private:
 		void setSize( uint64_t new_size ){
 			size = align_size( new_size );
 			if( size > allocated_size ){
-				index_lo.reset( new uint16_t[allocated_size = size] );
-				index_mid.reset( new uint32_t[1 + (new_size>>16)] );
+				index_lo.reset(); 			Util::allocate<uint16_t>( allocated_size = size ).swap( index_lo );
+				index_mid.reset();			Util::allocate<uint32_t>( 1 + (new_size>>16) ).swap( index_mid );
 				index_hi.reset( new uint64_t[1 + (new_size>>32)] );
 			}
 		}
@@ -91,7 +91,7 @@ private:
 		bitfield * bitfield_ = nullptr;
 		uint64_t allocated_size = 0, size = 0;
 		std::unique_ptr<uint64_t[]> index_hi;
-		std::unique_ptr<uint32_t[]> index_mid;
-		std::unique_ptr<uint16_t[]> index_lo;
+		std::unique_ptr<uint32_t, Util::Deleter<uint32_t>> index_mid;
+		std::unique_ptr<uint16_t, Util::Deleter<uint16_t>> index_lo;
 };
 
