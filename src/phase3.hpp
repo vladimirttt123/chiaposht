@@ -224,14 +224,16 @@ struct EntryAsynRewriter{
 					while( next_batch->size >= BATCH_SIZE ){ // queue is full
 						auto ready_batch = next_batch.release();
 						next_batch.reset( full_batch.exchange( ready_batch, std::memory_order_relaxed ) );
-						full_batch.notify_all();
+						full_batch.notify_one();
 						if( processing_threads.size() == 0 // no threads or replaced with full
 								|| ( next_batch->size > 0 && processing_threads.size() < num_threads ) ){
-							std::cout << "[start rewriter:" << processing_threads.size() << "/" << num_threads << "]";
+							std::cout << "[start rewriter:" << (processing_threads.size()+1) << "/" << num_threads << "]" << std::flush;
 							processing_threads.emplace_back( [this](){threaded_porcessor();} );
 						}
 						if( next_batch->size > 0 ) // wait for threads will process
-							full_batch.wait( ready_batch, std::memory_order::relaxed );
+							while( full_batch.load(std::memory_order::relaxed) == ready_batch )
+								std::this_thread::sleep_for(5us);
+							//full_batch.wait( ready_batch, std::memory_order::relaxed );
 					}
 				}
 			}
@@ -330,7 +332,7 @@ private:
 		while( !finished ){
 			auto empty_batch = batch.release();
 			batch.reset( full_batch.exchange( empty_batch, std::memory_order_relaxed ) );
-			full_batch.notify_all();
+			//full_batch.notify_all();
 			if( !batch || batch->size == 0 ){
 				if( finished ) return;
 				full_batch.wait( empty_batch, std::memory_order::relaxed );
