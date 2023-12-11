@@ -304,7 +304,7 @@ enum class AllocationType : uint8_t { HUGE_1G, HUGE_2M_INSTEADOF_1G, HUGE_2M, TH
 
 			uint64_t hsize = ( size <= HUGE_MEM_PAGE_SIZE ? 1 : ((size + HUGE_MEM_PAGE_SIZE-1)>>HUGE_MEM_PAGE_BITS) ) << HUGE_MEM_PAGE_BITS;
 			auto ptr = mmap( NULL, hsize , PROT_READ | PROT_WRITE,
-											MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB,
+											MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | MAP_HUGE_2MB,
 											-1, 0);
 			if( ptr != MAP_FAILED )
 				return 	std::unique_ptr<T, Deleter<T>>( (T*)ptr, Deleter<T>( suits_for_1G ? AllocationType::HUGE_2M_INSTEADOF_1G : AllocationType::HUGE_2M, hsize ) );
