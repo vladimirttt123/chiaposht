@@ -745,7 +745,7 @@ std::vector<uint64_t> RunPhase1(
         // end of parallel execution
 
         // Total matches found in the left table
-				std::cout << "\tTotal matches: " << globals.matches << std::endl;
+				std::cout << "\tTotal matches: " << globals.matches << "; left count: " << globals.left_writer_count << std::endl;
 
         table_sizes[table_index] = globals.left_writer_count;
         table_sizes[table_index + 1] = globals.right_writer_count;

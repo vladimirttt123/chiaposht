@@ -141,7 +141,7 @@ struct SortedBucketBuffer{
 	inline uint64_t WaitsReadCount() const { return read_waits_count; }
 	inline double WaitsTimeSec() const { return wait_time/1000000.0; }
 
-	// returns true if current sort just finished.
+	// wait to sort
 	inline void WaitForSortedTo( uint64_t position ){
 		assert( position >= start_position && position <= end_position );
 
@@ -149,23 +149,15 @@ struct SortedBucketBuffer{
 
 			auto start_time = std::chrono::high_resolution_clock::now();
 
-			if( position == end_position ){
-				if( bucket->SortedPosision() <= 0 ){
-					waits_count++;
-					read_waits_count++;
-				}
-				FinishSort();
+			if( bucket->SortedPosision() <= 0 ) read_waits_count.fetch_add( 1, std::memory_order::relaxed );
+
+			if( position >= end_position ){
+				FinishSort(); // this wait for sort to finish
 			}
 			else {
-//				while( sorting_thread.load( std::memory_order_relaxed ) != NULL && position >= start_position
-//							 && (position - start_position) > bucket->SortedPosision() ){
-//					waits_count++;
-//					if( bucket->SortedPosision() <= 0 ) read_waits_count++;
-//					std::this_thread::sleep_for( 100us );
-//				}
 				waits_count += bucket->SortedPositionWait( position - start_position );
 				if( bucket->SortedPosision() >= bucket->Size() )
-					FinishSort();
+					FinishSort(); // this releasing threads when sort is finished
 			}
 
 			auto elapsed = std::chrono::high_resolution_clock::now() - start_time;

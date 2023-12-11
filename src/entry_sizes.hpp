@@ -70,6 +70,9 @@ public:
 			return  Util::ByteAlign( GetMaxEntrySizeBits( k, table_index, phase_1_size ) ) / 8;
 		}
 
+		static uint16_t GetTalbeEntySize( uint8_t k, uint8_t table_index ){
+			return cdiv( k + (table_index == 1 ? 0 : kOffsetSize ), 8 );
+		}
 
     // Get size of entries containing (sort_key, pos, offset). Such entries are
     // written to table 7 in phase 1 and to tables 2-7 in phase 2.

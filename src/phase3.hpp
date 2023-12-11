@@ -231,9 +231,10 @@ struct EntryAsynRewriter{
 							processing_threads.emplace_back( [this](){threaded_porcessor();} );
 						}
 						if( next_batch->size > 0 ) // wait for threads will process
-							while( full_batch.load(std::memory_order::relaxed) == ready_batch )
-								std::this_thread::sleep_for(5us);
-							//full_batch.wait( ready_batch, std::memory_order::relaxed );
+							while( full_batch.load(std::memory_order::relaxed) == ready_batch ){
+								full_batch.notify_one(); // try to notify more :)
+								std::this_thread::sleep_for(5us); // small sleep to wait
+							}
 					}
 				}
 			}

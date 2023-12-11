@@ -90,6 +90,7 @@ int main(int argc, char *argv[]) try {
     uint32_t buffmegabytes = 0;
 		uint32_t filebufkb = 1024;
 		uint8_t kSubBucketBits = 11, stats_in_ram = 2;
+		string phase1 = "";
 
     options.allow_unrecognised_options().add_options()(
 				"k, size", "Plot size", cxxopts::value<uint8_t>(k))(
@@ -114,6 +115,9 @@ int main(int argc, char *argv[]) try {
 						cxxopts::value<uint8_t>(kSubBucketBits)->default_value("11") )(
 				"stats_in_ram", "Number of sort statistics in ram from 1 to 6.",
 						cxxopts::value<uint8_t>(stats_in_ram)->default_value("2") )(
+				"phase1", "How to process, possible values \"only\", \"skip\". Fist create phase 1 output with parameter \"only\", "
+									"than start once again on same directory (possible on another pc or some different parameters or with backup) with parameter \"skip\" to continue plotting process",
+						cxxopts::value<string>(phase1) )(
         "p, progress", "Display progress percentage during plotting",
 						cxxopts::value<bool>(show_progress))(
         "parallel_read", "Set to false to use sequential reads",
@@ -152,8 +156,13 @@ int main(int argc, char *argv[]) try {
 
         DiskPlotter plotter = DiskPlotter();
         uint8_t phases_flags = 0;
+				if( phase1 == "only" )
+					phases_flags |= PHASE_1_ONLY;
+				if( phase1 == "skip" )
+					phases_flags |= SKIP_PHASE_1;
+
         if (!nobitfield) {
-            phases_flags = ENABLE_BITFIELD;
+						phases_flags |= ENABLE_BITFIELD;
         }
 				if( nocompaction ) {
 					phases_flags |= NO_COMPACTION;

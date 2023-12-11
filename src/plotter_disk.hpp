@@ -49,6 +49,7 @@
 #include "pos_constants.hpp"
 #include "sort_manager.hpp"
 #include "util.hpp"
+#include "entry_sizes.hpp"
 
 #define B17PHASE23
 
@@ -200,9 +201,12 @@ public:
 				uint64_t expected_bitfield_size = bitfield::memSize( (uint64_t)((1ULL << k)*0.9) );
 				if( phases_flags & ENABLE_BITFIELD ){
 					if(  expected_bitfield_size > memory_size ){
-						std::cout << "WARNING: The expected size of bitfield is bigger than buffer size than disable bitfield." << std::endl
+						std::cout << "WARNING: The expected size of bitfield is bigger than buffer size." << std::endl
 											<< "Minimum buffer size to use bitfield is " << ((expected_bitfield_size>>20) + sub_mbytes) << "MiB." << std::endl;
-						phases_flags &= ~ENABLE_BITFIELD;
+						if( (phases_flags&(PHASE_1_ONLY|SKIP_PHASE_1)) == 0 ){
+							std::cout << "!DISABLE BITFIELD!" << std::endl;
+							phases_flags &= ~ENABLE_BITFIELD;
+						}
 					}
 					else if( expected_bitfield_size*2ULL > memory_size ){
 						std::cout << "WARNING: 2 bitfields cannot fit into buffer. One of them expected to flush to disk." << std::endl
@@ -258,8 +262,7 @@ public:
         // Cross platform way to concatenate paths, gulrak library.
         std::vector<fs::path> tmp_1_filenames = std::vector<fs::path>();
 
-        // The table0 file will be used for sort on disk spare. tables 1-7 are stored in their own
-        // file.
+				// The table0 not used. Tables 1-7 are stored in their own files.
 				tmp_1_filenames.push_back(fs::path(tmp_dirname) / fs::path(filename + ".sort.tmp"));
         for (size_t i = 1; i <= 7; i++) {
             tmp_1_filenames.push_back(
@@ -268,7 +271,8 @@ public:
 
         fs::path tmp_2_filename = fs::path(tmp2_dirname) / fs::path(filename + ".2.tmp");
         fs::path final_2_filename = fs::path(final_dirname) / fs::path(filename + ".2.tmp");
-        fs::path final_filename = fs::path(final_dirname) / fs::path(filename);
+				fs::path final_filename = fs::path(final_dirname) / fs::path(filename);
+				fs::path phase1_result_filename = fs::path(final_dirname) / fs::path( filename + ".phase1_result.tmp" );
 
         // Check if the paths exist
         if (!fs::exists(tmp_dirname)) {
@@ -295,7 +299,8 @@ public:
 
 						std::vector<FileDisk> tmp_1_disks;
 						for (auto const& fname : tmp_1_filenames){
-							fs::remove( fname );
+							if( (phases_flags&SKIP_PHASE_1) == 0 )
+								fs::remove( fname ); // do no remove files in case of skipping P1
 							tmp_1_disks.emplace_back(fname, false); // the files delete before than do not crete files up to their use
 						}
 
@@ -303,20 +308,46 @@ public:
 
             assert(id_len == kIdLen);
 
-            std::cout << std::endl
-                      << "Starting phase 1/4: Forward Propagation into tmp files... "
-                      << Timer::GetNow();
+						std::cout << std::endl
+											<< "Starting phase 1/4: Forward Propagation into tmp files... "
+											<< Timer::GetNow();
+						Timer p1;
+						Timer all_phases;
+						std::vector<uint64_t> table_sizes;
+						if( (phases_flags&SKIP_PHASE_1) ){
+							if( !fs::exists( phase1_result_filename ) )
+								throw InvalidStateException( "Cannot find phase1 result file." );
+							FileDisk p1disk( phase1_result_filename, false );
+							uint64_t tsizes[8];
+							std::cout << "Phase1 loading. table sizes: ";
+							p1disk.Read( 0, (uint8_t*)tsizes, 8*sizeof(uint64_t) );
+							for( int i = 0; i < 8; i++ ){
+								table_sizes.push_back( tsizes[i] );
+								if( i ) std::cout << tsizes[i] << "; ";
+							}
+							std::cout << " loaded, skipping " << std::endl;
+						} else {
+							if( fs::exists( phase1_result_filename ) )
+								throw InvalidStateException( "Exists phase1 result file please remove manually " + phase1_result_filename.string() );
 
-            Timer p1;
-            Timer all_phases;
-						std::vector<uint64_t> table_sizes = RunPhase1( tmp_1_disks,
-								k,		id,		tmp_dirname,		filename,
-								memory_manager,			full_stats[0].get(),	full_stats[1].get(),
-								num_buckets,				stripe_size,
-								num_threads,		phases_flags );
-            p1.PrintElapsed("Time for phase 1 =");
+							table_sizes = RunPhase1( tmp_1_disks,
+									k,		id,		tmp_dirname,		filename,
+									memory_manager,			full_stats[0].get(),	full_stats[1].get(),
+									num_buckets,				stripe_size,
+									num_threads,		phases_flags );
+							if( phases_flags&PHASE_1_ONLY ){
+								FileDisk p1disk( phase1_result_filename );
+								for( int i = 0; i < 8; i++ )
+									p1disk.Write( i*sizeof(uint64_t), (uint8_t*)&table_sizes[i], sizeof(uint64_t) );
+								p1disk.Flush();
+								p1.PrintElapsed("Time for phase 1 =");
+								std::cout << "Phase 1 only finished " << std::endl;
+								return;
+							}
+						}
 
-            uint64_t finalsize=0;
+						p1.PrintElapsed("Time for phase 1 =");
+						uint64_t finalsize=0;
 
             if((phases_flags & ENABLE_BITFIELD) == 0)
 						{
