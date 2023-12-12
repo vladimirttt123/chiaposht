@@ -289,6 +289,7 @@ public:
 								<< " buckets. Available buffer " << (memory_size>>20) << "MiB is too small for this size."
 								<< " Increase number of buckets to " << need_buckets << std::endl;
 			num_buckets = need_buckets;
+			Util::setOpenFilesLimit( num_buckets );
 		}
 
 		log_num_buckets_ = log2(num_buckets);

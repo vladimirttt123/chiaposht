@@ -173,25 +173,7 @@ public:
         uint32_t log_num_buckets = log2(num_buckets);
         assert(log2(num_buckets) == ceil(log2(num_buckets)));
 
-#ifndef _WIN32
-				// Increases the open files limit, in case it is too low.
-				struct rlimit the_limit;// = { need_limit , need_limit };
-				if( getrlimit(RLIMIT_NOFILE, &the_limit ) < 0 )
-					std::cout << "Warning: cannot read files limit... skipping" << std::endl;
-				else{
-					rlim_t need_limit = 100 + num_buckets*3;
-					if( the_limit.rlim_cur < need_limit ){
-						if( the_limit.rlim_max < need_limit ){
-							std::cout << "Warning: max open files limit " << the_limit.rlim_max << " is less than sugested " << need_limit << std::endl;
-							need_limit = the_limit.rlim_max;
-						}
-						the_limit.rlim_cur = need_limit;
-						if( -1 == setrlimit(RLIMIT_NOFILE, &the_limit) ) {
-								std::cout << "Warning: set opened files limit failed" << std::endl;
-						}
-					}
-				}
-#endif
+				Util::setOpenFilesLimit( num_buckets );
 
 
         if (max_table_size / num_buckets < stripe_size * 30) {

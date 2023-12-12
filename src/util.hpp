@@ -34,6 +34,9 @@
 #include <vector>
 #include <functional>
 
+#ifndef _WIN32
+#include <sys/resource.h>
+#endif
 
 template <typename Int, typename Int2>
 constexpr inline Int cdiv(Int a, Int2 b) { return (a + b - 1) / b; }
@@ -168,7 +171,7 @@ const uint64_t HUGE_1GB_PAGE_SIZE = 1UL << HUGE_1GB_PAGE_BITS;
 #endif // NO_HUGE_PAGES
 
 namespace Util {
-enum class AllocationType : uint8_t { HUGE_1G, HUGE_2M_INSTEADOF_1G, HUGE_2M, THP_INSTEADOF_1G, THP, NORMAL, UNDEFINED };
+	enum class AllocationType : uint8_t { HUGE_1G, HUGE_2M_INSTEADOF_1G, HUGE_2M, THP_INSTEADOF_1G, THP, NORMAL, UNDEFINED };
 
 	struct {
 		std::atomic_uint64_t current_usage = 0, top_usage = 0,
@@ -587,6 +590,29 @@ enum class AllocationType : uint8_t { HUGE_1G, HUGE_2M_INSTEADOF_1G, HUGE_2M, TH
         return __builtin_popcountl(n);
 #endif /* defined(_WIN32) ... defined(__x86_64__) */
     }
+
+
+		void setOpenFilesLimit( uint32_t forNumberOfBuckets ){
+#ifndef _WIN32
+			// Increases the open files limit, in case it is too low.
+			struct rlimit the_limit;// = { need_limit , need_limit };
+			if( getrlimit(RLIMIT_NOFILE, &the_limit ) < 0 )
+					std::cout << "Warning: cannot read files limit... skipping" << std::endl;
+			else{
+				rlim_t need_limit = 100 + forNumberOfBuckets*3;
+				if( the_limit.rlim_cur < need_limit ){
+					if( the_limit.rlim_max < need_limit ){
+						std::cout << "Warning: max open files limit " << the_limit.rlim_max << " is less than sugested " << need_limit << std::endl;
+						need_limit = the_limit.rlim_max;
+					}
+					the_limit.rlim_cur = need_limit;
+					if( -1 == setrlimit(RLIMIT_NOFILE, &the_limit) ) {
+						std::cout << "Warning: set opened files limit failed" << std::endl;
+					}
+				}
+			}
+#endif
+		}
 } // end of namespac Util
 
 #endif  // SRC_CPP_UTIL_HPP_
