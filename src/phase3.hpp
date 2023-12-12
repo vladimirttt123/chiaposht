@@ -233,12 +233,11 @@ struct EntryAsynRewriter{
 							processing_threads.emplace_back( [this](){threaded_porcessor();} );
 						}
 						if( next_batch->size > 0 ) // wait for threads will process
-							while( full_batch.load(std::memory_order::relaxed) == ready_batch ){
 #ifdef USE_ATOMIC_WAITS
+							while( full_batch.load(std::memory_order::relaxed) == ready_batch )
 								full_batch.notify_one(); // try to notify more :)
 #endif // USE_ATOMIC_WAITS
-								std::this_thread::sleep_for(5us); // small sleep to wait
-							}
+							std::this_thread::sleep_for(5us); // small sleep to wait
 					}
 				}
 			}
@@ -345,7 +344,7 @@ private:
 #ifdef USE_ATOMIC_WAITS
 				full_batch.wait( empty_batch, std::memory_order::relaxed );
 #else // USE_ATOMIC_WAITS
-				while( full_batch.load(std::memory_order::relaxed ) == empty_batch )
+				//while( full_batch.load(std::memory_order::relaxed ) == empty_batch )
 					std::this_thread::sleep_for(5us);
 #endif //USE_ATOMIC_WAITS
 			}
