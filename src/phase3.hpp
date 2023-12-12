@@ -224,7 +224,9 @@ struct EntryAsynRewriter{
 					while( next_batch->size >= BATCH_SIZE ){ // queue is full
 						auto ready_batch = next_batch.release();
 						next_batch.reset( full_batch.exchange( ready_batch, std::memory_order_relaxed ) );
+#ifdef USE_ATOMIC_WAITS
 						full_batch.notify_one();
+#endif // USE_ATOMIC_WAITS
 						if( processing_threads.size() == 0 // no threads or replaced with full
 								|| ( next_batch->size > 0 && processing_threads.size() < num_threads ) ){
 							std::cout << "[start rewriter:" << (processing_threads.size()+1) << "/" << num_threads << "]" << std::flush;
@@ -232,7 +234,9 @@ struct EntryAsynRewriter{
 						}
 						if( next_batch->size > 0 ) // wait for threads will process
 							while( full_batch.load(std::memory_order::relaxed) == ready_batch ){
+#ifdef USE_ATOMIC_WAITS
 								full_batch.notify_one(); // try to notify more :)
+#endif // USE_ATOMIC_WAITS
 								std::this_thread::sleep_for(5us); // small sleep to wait
 							}
 					}
@@ -245,7 +249,9 @@ struct EntryAsynRewriter{
 		if( num_threads > 1 ){
 			finished = true;
 			auto to_delete_batch = full_batch.exchange( nullptr, std::memory_order::relaxed );
+#ifdef USE_ATOMIC_WAITS
 			full_batch.notify_all();
+#endif // USE_ATOMIC_WAITS
 
 			for( uint32_t i = 0; i < to_delete_batch->size; i++ )
 				processBatchEntry( writer, to_delete_batch->entries.get()[i] );
@@ -333,10 +339,15 @@ private:
 		while( !finished ){
 			auto empty_batch = batch.release();
 			batch.reset( full_batch.exchange( empty_batch, std::memory_order_relaxed ) );
-			//full_batch.notify_all();
+
 			if( !batch || batch->size == 0 ){
 				if( finished ) return;
+#ifdef USE_ATOMIC_WAITS
 				full_batch.wait( empty_batch, std::memory_order::relaxed );
+#else // USE_ATOMIC_WAITS
+				while( full_batch.load(std::memory_order::relaxed ) == empty_batch )
+					std::this_thread::sleep_for(5us);
+#endif //USE_ATOMIC_WAITS
 			}
 			else {
 				assert( batch->size == BATCH_SIZE ); // only full batches should be here
