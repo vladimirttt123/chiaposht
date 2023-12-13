@@ -209,7 +209,7 @@ public:
 				if( est_non_cache_use > memory_size )
 					phases_flags &= ~BUFFER_AS_CACHE; // disable the flag
 
-        std::cout << std::endl
+				std::cout << std::setprecision(2) << std::endl
                   << "Starting plotting progress into temporary dirs: " << tmp_dirname << " and "
                   << tmp2_dirname << std::endl;
         std::cout << "ID: " << Util::HexStr(id, id_len) << std::endl;
