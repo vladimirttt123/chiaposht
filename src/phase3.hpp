@@ -228,6 +228,116 @@ private:
 };
 
 
+void PassOne( const uint8_t k, const int table_index, const uint64_t left_table_count,
+							FilteredDisk& left_disk, SortManager * L_sort_manager,
+							const uint32_t p2_entry_size_bytes, const uint32_t right_sort_key_size,
+							const uint32_t right_entry_size_bytes, const uint64_t right_table_size,
+							Disk& right_disk, SortManager * R_sort_manager, const uint32_t num_threads ){
+	uint8_t const pos_size = k;
+
+	uint64_t left_reader = 0;
+	uint64_t right_reader = 0;
+
+	StreamBuffer entry_buffer( right_entry_size_bytes );
+
+	bool should_read_entry = true;
+	uint64_t left_new_pos[kCachedPositionsSize];
+
+	OldData old_data[kReadMinusWrite];
+
+	bool end_of_right_table = false;
+	uint64_t end_of_table_pos = 0;
+	uint64_t greatest_pos = 0;
+
+	uint8_t const* left_entry_disk_buf = nullptr;
+
+	uint64_t entry_sort_key, entry_pos, entry_offset;
+	uint64_t cached_entry_sort_key = 0;
+	uint64_t cached_entry_pos = 0;
+	uint64_t cached_entry_offset = 0;
+
+	{ // scope for async rewriter
+		EntryAsynRewriter rewriter( k, R_sort_manager, num_threads, right_entry_size_bytes, left_new_pos, old_data );
+
+		// Similar algorithm as Backprop, to read both L and R tables simultaneously
+		for( uint64_t current_pos = 0;
+				 !end_of_right_table || (current_pos - end_of_table_pos <= kReadMinusWrite); current_pos++ ) {
+
+			old_data[current_pos % kReadMinusWrite].count = 0;
+
+			if (end_of_right_table || current_pos <= greatest_pos) {
+				while (!end_of_right_table) {
+					if (should_read_entry) {
+						if (right_reader == right_table_size) {
+							end_of_right_table = true;
+							end_of_table_pos = current_pos;
+							right_disk.FreeMemory();
+							break;
+						}
+						// The right entries are in the format from backprop, (sort_key, pos, offset)
+						uint8_t const* right_entry_buf = right_disk.Read(right_reader, p2_entry_size_bytes);
+						right_reader += p2_entry_size_bytes;
+
+						entry_sort_key =
+								Util::SliceInt64FromBytes(right_entry_buf, right_sort_key_size);
+						entry_pos = Util::SliceInt64FromBytes(
+								right_entry_buf, right_sort_key_size, pos_size);
+						entry_offset = Util::SliceInt64FromBytes(
+								right_entry_buf, right_sort_key_size + pos_size, kOffsetSize);
+					} else if (cached_entry_pos == current_pos) {
+							entry_sort_key = cached_entry_sort_key;
+							entry_pos = cached_entry_pos;
+							entry_offset = cached_entry_offset;
+					} else {
+							break;
+					}
+
+					should_read_entry = true;
+
+					if (entry_pos + entry_offset > greatest_pos) {
+							greatest_pos = entry_pos + entry_offset;
+					}
+					if (entry_pos == current_pos) {
+							old_data[entry_pos % kReadMinusWrite].add( entry_sort_key, entry_pos + entry_offset );
+					} else {
+							should_read_entry = false;
+							cached_entry_sort_key = entry_sort_key;
+							cached_entry_pos = entry_pos;
+							cached_entry_offset = entry_offset;
+							break;
+					}
+				}
+			}
+
+			if( current_pos < left_table_count ) {
+				// The left entries are in the new format: (sort_key, new_pos), except for table
+				// 1: (y, x).
+
+				// We read the "new_pos" from the L table, which for table 1 is just x. For
+				// other tables, the new_pos
+				if (table_index == 1) {
+					left_entry_disk_buf = left_disk.ReadNext();
+
+					// Only k bits, since this is x
+					left_new_pos[current_pos % kCachedPositionsSize] =
+							Util::SliceInt64FromBytes(left_entry_disk_buf, k);
+				} else {
+					left_entry_disk_buf = L_sort_manager->ReadEntry(left_reader);
+					left_reader += L_sort_manager->EntrySize();
+
+					// k+1 bits in case it overflows
+					left_new_pos[current_pos % kCachedPositionsSize] =
+							Util::SliceInt64FromBytes(left_entry_disk_buf, right_sort_key_size, k);
+				}
+			}
+
+			// Rewrites each right entry as (line_point, sort_key)
+			rewriter.next( current_pos );
+		} // end of loop of first computation pass
+	} // end srope for async rewriter
+
+}
+
 // Compresses the plot file tables into the final file. In order to do this, entries must be
 // reorganized from the (pos, offset) bucket sorting order, to a more free line_point sorting
 // order. In (pos, offset ordering), we store two pointers two the previous table, (x, y) which
@@ -255,7 +365,6 @@ Phase3Results RunPhase3(
 		const uint8_t flags,
 		uint32_t num_threads)
 {
-		uint8_t const pos_size = k;
 		uint8_t const line_point_size = 2 * k - 1;
 
 		std::vector<uint64_t> final_table_begin_pointers(12, 0);
@@ -271,9 +380,12 @@ Phase3Results RunPhase3(
 		std::unique_ptr<SortManager> L_sort_manager;
 		std::unique_ptr<SortManager> R_sort_manager;
 
-		// These variables are used in the WriteParkToFile method. They are preallocatted here
-		// to save time.
-//		ParkWriter parker( &tmp2_disk, k );
+		// Sort key is k bits for all tables. For table 7 it is just y, which
+		// is k bits, and for all other tables the number of entries does not
+		// exceed 0.865 * 2^k on average.
+		const uint32_t right_sort_key_size = k;
+
+		const uint32_t p2_entry_size_bytes = EntrySizes::GetKeyPosOffsetSize(k);
 
 		// Iterates through all tables, starting at 1, with L and R pointers.
 		// For each table, R entries are rewritten with line points. Then, the right table is
@@ -285,27 +397,16 @@ Phase3Results RunPhase3(
 		for (int table_index = 1; table_index < 7; table_index++) {
 				Timer table_timer;
 				Timer computation_pass_1_timer;
-				std::cout << "Compressing tables " << table_index << " and " << (table_index + 1)
-									<< std::endl;
+				std::cout << "Compressing tables " << table_index << " and " << (table_index + 1) << std::endl;
 				std::cout << "Progress update: " << std::setprecision(2) << progress_percent[table_index - 1] << std::endl;
 
 				Disk& right_disk = res2.disk_for_table(table_index + 1);
 
-				// Sort key is k bits for all tables. For table 7 it is just y, which
-				// is k bits, and for all other tables the number of entries does not
-				// exceed 0.865 * 2^k on average.
-				const uint32_t right_sort_key_size = k;
-
-				const uint32_t p2_entry_size_bytes = EntrySizes::GetKeyPosOffsetSize(k);
 				const uint32_t right_entry_size_bytes = EntrySizes::GetMaxEntrySize(k, table_index + 1, false);
-				const uint64_t right_table_size = p2_entry_size_bytes * res2.table_sizes[table_index + 1];
 
-				uint64_t left_reader = 0;
-				uint64_t right_reader = 0;
 
-				if (table_index > 1) {
-						L_sort_manager->FreeMemory();
-				}
+				if (table_index > 1)
+					L_sort_manager->FreeMemory();
 
 				// We read only from this SortManager during the second pass, so all
 				// memory is available
@@ -320,104 +421,11 @@ Phase3Results RunPhase3(
 						(flags&NO_COMPACTION)==0, (flags&PARALLEL_READ)!=0 );
 				next_stats_idx = !full_stats[1] ? 0 : (next_stats_idx + 1)%2;
 
-				StreamBuffer entry_buffer( right_entry_size_bytes );
-
-				bool should_read_entry = true;
-				uint64_t left_new_pos[kCachedPositionsSize];
-
-				OldData old_data[kReadMinusWrite];
-
-				bool end_of_right_table = false;
-
-				uint64_t end_of_table_pos = 0;
-				uint64_t greatest_pos = 0;
-
-				uint8_t const* left_entry_disk_buf = nullptr;
-
-				uint64_t entry_sort_key, entry_pos, entry_offset;
-				uint64_t cached_entry_sort_key = 0;
-				uint64_t cached_entry_pos = 0;
-				uint64_t cached_entry_offset = 0;
-
-				{ // scope for async rewriter
-					EntryAsynRewriter rewriter( k, R_sort_manager.get(), num_threads, right_entry_size_bytes, left_new_pos, old_data );
-
-					// Similar algorithm as Backprop, to read both L and R tables simultaneously
-					for( uint64_t current_pos = 0;
-							 !end_of_right_table || (current_pos - end_of_table_pos <= kReadMinusWrite); current_pos++ ) {
-
-						old_data[current_pos % kReadMinusWrite].count = 0;
-
-						if (end_of_right_table || current_pos <= greatest_pos) {
-								while (!end_of_right_table) {
-										if (should_read_entry) {
-												if (right_reader == right_table_size) {
-														end_of_right_table = true;
-														end_of_table_pos = current_pos;
-														right_disk.FreeMemory();
-														break;
-												}
-												// The right entries are in the format from backprop, (sort_key, pos, offset)
-												uint8_t const* right_entry_buf = right_disk.Read(right_reader, p2_entry_size_bytes);
-												right_reader += p2_entry_size_bytes;
-
-												entry_sort_key =
-														Util::SliceInt64FromBytes(right_entry_buf, right_sort_key_size);
-												entry_pos = Util::SliceInt64FromBytes(
-														right_entry_buf, right_sort_key_size, pos_size);
-												entry_offset = Util::SliceInt64FromBytes(
-														right_entry_buf, right_sort_key_size + pos_size, kOffsetSize);
-										} else if (cached_entry_pos == current_pos) {
-												entry_sort_key = cached_entry_sort_key;
-												entry_pos = cached_entry_pos;
-												entry_offset = cached_entry_offset;
-										} else {
-												break;
-										}
-
-										should_read_entry = true;
-
-										if (entry_pos + entry_offset > greatest_pos) {
-												greatest_pos = entry_pos + entry_offset;
-										}
-										if (entry_pos == current_pos) {
-											old_data[entry_pos % kReadMinusWrite].add( entry_sort_key, entry_pos + entry_offset );
-										} else {
-												should_read_entry = false;
-												cached_entry_sort_key = entry_sort_key;
-												cached_entry_pos = entry_pos;
-												cached_entry_offset = entry_offset;
-												break;
-										}
-								}
-						}
-
-						if( current_pos < res2.table_sizes[table_index] ) {
-							// The left entries are in the new format: (sort_key, new_pos), except for table
-							// 1: (y, x).
-
-							// We read the "new_pos" from the L table, which for table 1 is just x. For
-							// other tables, the new_pos
-							if (table_index == 1) {
-									left_entry_disk_buf = res2.table1.ReadNext();
-
-									// Only k bits, since this is x
-									left_new_pos[current_pos % kCachedPositionsSize] =
-											Util::SliceInt64FromBytes(left_entry_disk_buf, k);
-							} else {
-									left_entry_disk_buf = L_sort_manager->ReadEntry(left_reader);
-									left_reader += new_pos_entry_size_bytes;
-
-									// k+1 bits in case it overflows
-									left_new_pos[current_pos % kCachedPositionsSize] =
-											Util::SliceInt64FromBytes(left_entry_disk_buf, right_sort_key_size, k);
-							}
-						}
-
-						// Rewrites each right entry as (line_point, sort_key)
-						rewriter.next( current_pos );
-					} // end of loop of first computation pass
-				} // end srope for async rewriter
+				PassOne( k, table_index, /*left table count:*/ res2.table_sizes[table_index],
+								 res2.table1, L_sort_manager.get(),
+								 p2_entry_size_bytes, right_sort_key_size,
+								 right_entry_size_bytes, /*right_table_size:*/ p2_entry_size_bytes * res2.table_sizes[table_index + 1],
+								 right_disk, R_sort_manager.get(), num_threads );
 
 				// Remove no longer needed file
 				res2.table1.FreeMemory();

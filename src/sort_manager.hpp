@@ -375,6 +375,7 @@ public:
 			return res;
 		}
 
+		inline uint16_t EntrySize() const { return entry_size_; }
 
 		inline void AddToCache( StreamBuffer &entry )
     {
