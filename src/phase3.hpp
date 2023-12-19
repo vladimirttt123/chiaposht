@@ -17,7 +17,6 @@
 
 #include "encoding.hpp"
 #include "entry_sizes.hpp"
-#include "exceptions.hpp"
 #include "phase2.hpp"
 #include "pos_constants.hpp"
 #include "sort_manager.hpp"
@@ -227,15 +226,43 @@ private:
 
 };
 
+struct NewPosTable1Reader{
+	NewPosTable1Reader( const uint8_t k, FilteredDisk & disk ) : k(k), disk(disk) {	}
 
+	// The left entries are in the new format: (sort_key, new_pos), except for table 1: (y, x).
+	// Only k bits, since this is x
+	inline uint64_t ReadNext() {	return Util::SliceInt64FromBytes(disk.ReadNext(), k);	}
+private:
+	const uint8_t k;
+	FilteredDisk & disk;
+};
+
+struct NewPosSortManagerReader{
+	NewPosSortManagerReader( const uint8_t k, const uint32_t right_sort_key_size, SortManager * sm)
+			: k(k), right_sort_key_size(right_sort_key_size), sm(sm){}
+
+	inline uint64_t ReadNext() {
+		auto left_entry_disk_buf = sm->ReadEntry(left_reader);
+		left_reader += sm->EntrySize();
+		// k+1 bits in case it overflows ( seems this comment is incorrect )
+		return Util::SliceInt64FromBytes(left_entry_disk_buf, right_sort_key_size, k);
+	}
+private:
+	const uint8_t k;
+	const uint32_t right_sort_key_size;
+	SortManager * sm;
+	uint64_t left_reader = 0;
+};
+
+template<class T>
 void PassOne( const uint8_t k, const int table_index, const uint64_t left_table_count,
-							FilteredDisk& left_disk, SortManager * L_sort_manager,
+							T& left_disk_new_pos_reader,
 							const uint32_t p2_entry_size_bytes, const uint32_t right_sort_key_size,
 							const uint32_t right_entry_size_bytes, const uint64_t right_table_size,
 							Disk& right_disk, SortManager * R_sort_manager, const uint32_t num_threads ){
 	uint8_t const pos_size = k;
 
-	uint64_t left_reader = 0;
+	//uint64_t left_reader = 0;
 	uint64_t right_reader = 0;
 
 	StreamBuffer entry_buffer( right_entry_size_bytes );
@@ -249,7 +276,7 @@ void PassOne( const uint8_t k, const int table_index, const uint64_t left_table_
 	uint64_t end_of_table_pos = 0;
 	uint64_t greatest_pos = 0;
 
-	uint8_t const* left_entry_disk_buf = nullptr;
+	//uint8_t const* left_entry_disk_buf = nullptr;
 
 	uint64_t entry_sort_key, entry_pos, entry_offset;
 	uint64_t cached_entry_sort_key = 0;
@@ -310,25 +337,9 @@ void PassOne( const uint8_t k, const int table_index, const uint64_t left_table_
 			}
 
 			if( current_pos < left_table_count ) {
-				// The left entries are in the new format: (sort_key, new_pos), except for table
-				// 1: (y, x).
-
 				// We read the "new_pos" from the L table, which for table 1 is just x. For
 				// other tables, the new_pos
-				if (table_index == 1) {
-					left_entry_disk_buf = left_disk.ReadNext();
-
-					// Only k bits, since this is x
-					left_new_pos[current_pos % kCachedPositionsSize] =
-							Util::SliceInt64FromBytes(left_entry_disk_buf, k);
-				} else {
-					left_entry_disk_buf = L_sort_manager->ReadEntry(left_reader);
-					left_reader += L_sort_manager->EntrySize();
-
-					// k+1 bits in case it overflows
-					left_new_pos[current_pos % kCachedPositionsSize] =
-							Util::SliceInt64FromBytes(left_entry_disk_buf, right_sort_key_size, k);
-				}
+				left_new_pos[current_pos % kCachedPositionsSize] = left_disk_new_pos_reader.ReadNext();
 			}
 
 			// Rewrites each right entry as (line_point, sort_key)
@@ -421,11 +432,21 @@ Phase3Results RunPhase3(
 						(flags&NO_COMPACTION)==0, (flags&PARALLEL_READ)!=0 );
 				next_stats_idx = !full_stats[1] ? 0 : (next_stats_idx + 1)%2;
 
-				PassOne( k, table_index, /*left table count:*/ res2.table_sizes[table_index],
-								 res2.table1, L_sort_manager.get(),
-								 p2_entry_size_bytes, right_sort_key_size,
-								 right_entry_size_bytes, /*right_table_size:*/ p2_entry_size_bytes * res2.table_sizes[table_index + 1],
-								 right_disk, R_sort_manager.get(), num_threads );
+				if( table_index == 1 ){
+					NewPosTable1Reader t1(k, res2.table1 );
+					PassOne( k, table_index, /*left table count:*/ res2.table_sizes[table_index],
+									t1,
+									p2_entry_size_bytes, right_sort_key_size,
+									right_entry_size_bytes, /*right_table_size:*/ p2_entry_size_bytes * res2.table_sizes[table_index + 1],
+									right_disk, R_sort_manager.get(), num_threads );
+				}else{
+					NewPosSortManagerReader sr( k, right_sort_key_size, L_sort_manager.get() );
+					PassOne( k, table_index, /*left table count:*/ res2.table_sizes[table_index],
+									sr,
+									p2_entry_size_bytes, right_sort_key_size,
+									right_entry_size_bytes, /*right_table_size:*/ p2_entry_size_bytes * res2.table_sizes[table_index + 1],
+									right_disk, R_sort_manager.get(), num_threads );
+				}
 
 				// Remove no longer needed file
 				res2.table1.FreeMemory();
