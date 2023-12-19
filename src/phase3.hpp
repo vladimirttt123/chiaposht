@@ -258,10 +258,10 @@ struct P3Entry{
 	inline void Set( uint8_t const* entry_buf, const uint8_t k ){
 		sort_key = Util::SliceInt64FromBytes( entry_buf, /*sort_key_size*/k);
 		pos = Util::SliceInt64FromBytes( entry_buf, /*sort_key_size*/k, /*pos_size*/k);
-		offset = Util::SliceInt64FromBytes( entry_buf, /*sort_key_size*/k + /*pos_size*/k, kOffsetSize);
+		new_pos = pos + /*offset*/ Util::SliceInt64FromBytes( entry_buf, /*sort_key_size*/k + /*pos_size*/k, kOffsetSize);
 	}
 
-	uint64_t sort_key = 0, pos = 0, offset = 0;
+	uint64_t sort_key = 0, pos = 0, new_pos /*pos+offset*/= 0;
 };
 
 template<class T>
@@ -281,62 +281,56 @@ void PassOne( const uint8_t k, const int table_index, const uint64_t left_table_
 	uint64_t end_of_table_pos = 0;
 	uint64_t greatest_pos = 0;
 
-	P3Entry entry, cached_entry;
+	P3Entry entry;
 
-	{ // scope for async rewriter
-		EntryAsynRewriter rewriter( k, R_sort_manager, num_threads, right_entry_size_bytes, left_new_pos, old_data );
+	EntryAsynRewriter rewriter( k, R_sort_manager, num_threads, right_entry_size_bytes, left_new_pos, old_data );
 
-		// Similar algorithm as Backprop, to read both L and R tables simultaneously
-		for( uint64_t current_pos = 0;
-				 !end_of_right_table || (current_pos - end_of_table_pos <= kReadMinusWrite); current_pos++ ) {
+	// Similar algorithm as Backprop, to read both L and R tables simultaneously
+	for( uint64_t current_pos = 0;
+			 !end_of_right_table || (current_pos - end_of_table_pos <= kReadMinusWrite); current_pos++ ) {
 
-			old_data[current_pos % kReadMinusWrite].count = 0;
+		old_data[current_pos % kReadMinusWrite].count = 0;
 
-			if (end_of_right_table || current_pos <= greatest_pos) {
-				while (!end_of_right_table) {
-					if( should_read_entry ) {
-						if (right_reader == right_table_size) {
-							end_of_right_table = true;
-							end_of_table_pos = current_pos;
-							right_disk.FreeMemory();
-							break;
-						}
-						// The right entries are in the format from backprop, (sort_key, pos, offset)
-						entry.Set( right_disk.Read( right_reader, p2_entry_size_bytes ), k );
-						right_reader += p2_entry_size_bytes;
-
-					} else if (cached_entry.pos == current_pos) {
-						entry = cached_entry;
-					} else {
-							break;
+		if( end_of_right_table || current_pos <= greatest_pos ) {
+			while( !end_of_right_table ) {
+				if( should_read_entry ) {
+					if (right_reader == right_table_size) {
+						end_of_right_table = true;
+						end_of_table_pos = current_pos;
+						right_disk.FreeMemory();
+						break;
 					}
+					// The right entries are in the format from backprop, (sort_key, pos, offset)
+					entry.Set( right_disk.Read( right_reader, p2_entry_size_bytes ), k );
+					right_reader += p2_entry_size_bytes;
 
+					if( entry.new_pos > greatest_pos )
+						greatest_pos = entry.new_pos;
+				} else if( entry.pos == current_pos ) {
 					should_read_entry = true;
+				} else {
+					break;
+				}
 
-					if (entry.pos + entry.offset > greatest_pos) {
-							greatest_pos = entry.pos + entry.offset;
-					}
-					if (entry.pos == current_pos) {
-							old_data[entry.pos % kReadMinusWrite].add( entry.sort_key, entry.pos + entry.offset );
-					} else {
-							should_read_entry = false;
-							cached_entry = entry;
-							break;
-					}
+
+				if( entry.pos == current_pos ) {
+					old_data[entry.pos % kReadMinusWrite].add( entry.sort_key, entry.new_pos );
+				} else {
+					should_read_entry = false;
+					break;
 				}
 			}
+		}
 
-			if( current_pos < left_table_count ) {
-				// We read the "new_pos" from the L table, which for table 1 is just x. For
-				// other tables, the new_pos
-				left_new_pos[current_pos % kCachedPositionsSize] = left_disk_new_pos_reader.ReadNext();
-			}
+		if( current_pos < left_table_count ) {
+			// We read the "new_pos" from the L table, which for table 1 is just x. For
+			// other tables, the new_pos
+			left_new_pos[current_pos % kCachedPositionsSize] = left_disk_new_pos_reader.ReadNext();
+		}
 
-			// Rewrites each right entry as (line_point, sort_key)
-			rewriter.next( current_pos );
-		} // end of loop of first computation pass
-	} // end srope for async rewriter
-
+		// Rewrites each right entry as (line_point, sort_key)
+		rewriter.next( current_pos );
+	} // end of loop of first computation pass
 }
 
 // Compresses the plot file tables into the final file. In order to do this, entries must be
