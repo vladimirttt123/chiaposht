@@ -265,7 +265,7 @@ struct P3Entry{
 };
 
 template<class T>
-void PassOne( const uint8_t k, const int table_index, const uint64_t left_table_count,
+void PassOne_( const uint8_t k, const uint64_t left_table_count,
 							T& left_disk_new_pos_reader,
 							const uint32_t p2_entry_size_bytes, const uint32_t right_sort_key_size,
 							const uint32_t right_entry_size_bytes, const uint64_t right_table_size,
@@ -332,6 +332,56 @@ void PassOne( const uint8_t k, const int table_index, const uint64_t left_table_
 		rewriter.next( current_pos );
 	} // end of loop of first computation pass
 }
+
+template<class T>
+void PassOne( const uint8_t k, const uint64_t left_table_count,
+						 T& left_disk_new_pos_reader,
+						 const uint32_t p2_entry_size_bytes, const uint32_t right_sort_key_size,
+						 const uint32_t right_entry_size_bytes, const uint64_t right_table_size,
+						 Disk& right_disk, SortManager * R_sort_manager, const uint32_t num_threads ){
+
+	const uint64_t POSITION_LIMIT = (uint64_t)1 << k;
+	const uint8_t line_point_size = 2 * k - 1;
+	StreamBuffer entry_buf(right_entry_size_bytes);
+
+	assert( left_table_count > kCachedPositionsSize );
+
+	uint64_t left_new_pos[kCachedPositionsSize];
+
+	P3Entry entry;
+	for( uint64_t current_pos = 0, left_entreis_read = 0, right_table_count = right_table_size/p2_entry_size_bytes;
+			 current_pos < right_table_count; current_pos++ ){
+		// The right entries are in the format from backprop, (sort_key, pos, offset)
+		entry.Set( right_disk.Read( current_pos * p2_entry_size_bytes, p2_entry_size_bytes ), k );
+
+		for( uint64_t left_max = std::min( entry.pos + kCachedPositionsSize, left_table_count ); left_max > left_entreis_read; left_entreis_read++ )
+			left_new_pos[left_entreis_read%kCachedPositionsSize] = left_disk_new_pos_reader.ReadNext();
+
+		uint64_t &left_new_pos_1 = left_new_pos[ entry.pos % kCachedPositionsSize ];
+		uint64_t &left_new_pos_2 = left_new_pos[ entry.new_pos % kCachedPositionsSize ];
+
+		// A line point is an encoding of two k bit values into one 2k bit value.
+		uint128_t line_point = Encoding::SquareToLinePoint( left_new_pos_1, left_new_pos_2 );
+
+		if( left_new_pos_1 > POSITION_LIMIT || left_new_pos_2 > POSITION_LIMIT ) {
+			std::cout << "left or right positions too large" << std::endl;
+			std::cout << (line_point > ((uint128_t)1 << (2 * k)));
+			if ((line_point > ((uint128_t)1 << (2 * k)))) {
+				std::cout << "L, R: " << left_new_pos_1 << " " << left_new_pos_2
+									<< std::endl;
+				std::cout << "Line point: " << line_point << std::endl;
+				abort();
+			}
+		}
+
+		Bits to_write = Bits(line_point, line_point_size);
+		to_write.AppendValue( entry.sort_key, right_sort_key_size );
+
+		to_write.ToBytes( entry_buf.get() );
+		R_sort_manager->AddToCache( entry_buf.setUsed(right_entry_size_bytes) );
+	}
+}
+
 
 // Compresses the plot file tables into the final file. In order to do this, entries must be
 // reorganized from the (pos, offset) bucket sorting order, to a more free line_point sorting
@@ -418,14 +468,14 @@ Phase3Results RunPhase3(
 
 				if( table_index == 1 ){
 					NewPosTable1Reader t1(k, res2.table1 );
-					PassOne( k, table_index, /*left table count:*/ res2.table_sizes[table_index],
+					PassOne( k, /*left table count:*/ res2.table_sizes[table_index],
 									t1,
 									p2_entry_size_bytes, right_sort_key_size,
 									right_entry_size_bytes, /*right_table_size:*/ p2_entry_size_bytes * res2.table_sizes[table_index + 1],
 									right_disk, R_sort_manager.get(), num_threads );
 				}else{
 					NewPosSortManagerReader sr( k, right_sort_key_size, L_sort_manager.get() );
-					PassOne( k, table_index, /*left table count:*/ res2.table_sizes[table_index],
+					PassOne( k, /*left table count:*/ res2.table_sizes[table_index],
 									sr,
 									p2_entry_size_bytes, right_sort_key_size,
 									right_entry_size_bytes, /*right_table_size:*/ p2_entry_size_bytes * res2.table_sizes[table_index + 1],
@@ -439,6 +489,7 @@ Phase3Results RunPhase3(
 				R_sort_manager->FlushCache( !full_stats[1] );
 				R_sort_manager->FreeMemory();
 
+				std::cout << "Wrote: " << R_sort_manager->Count() << std::endl;
 				computation_pass_1_timer.PrintElapsed("\tFirst computation pass time:");
 
 				Timer computation_pass_2_timer;
