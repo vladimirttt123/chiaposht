@@ -254,34 +254,34 @@ private:
 	uint64_t left_reader = 0;
 };
 
+struct P3Entry{
+	inline void Set( uint8_t const* entry_buf, const uint8_t k ){
+		sort_key = Util::SliceInt64FromBytes( entry_buf, /*sort_key_size*/k);
+		pos = Util::SliceInt64FromBytes( entry_buf, /*sort_key_size*/k, /*pos_size*/k);
+		offset = Util::SliceInt64FromBytes( entry_buf, /*sort_key_size*/k + /*pos_size*/k, kOffsetSize);
+	}
+
+	uint64_t sort_key = 0, pos = 0, offset = 0;
+};
+
 template<class T>
 void PassOne( const uint8_t k, const int table_index, const uint64_t left_table_count,
 							T& left_disk_new_pos_reader,
 							const uint32_t p2_entry_size_bytes, const uint32_t right_sort_key_size,
 							const uint32_t right_entry_size_bytes, const uint64_t right_table_size,
 							Disk& right_disk, SortManager * R_sort_manager, const uint32_t num_threads ){
-	uint8_t const pos_size = k;
 
-	//uint64_t left_reader = 0;
 	uint64_t right_reader = 0;
-
-	StreamBuffer entry_buffer( right_entry_size_bytes );
-
 	bool should_read_entry = true;
-	uint64_t left_new_pos[kCachedPositionsSize];
 
+	uint64_t left_new_pos[kCachedPositionsSize];
 	OldData old_data[kReadMinusWrite];
 
 	bool end_of_right_table = false;
 	uint64_t end_of_table_pos = 0;
 	uint64_t greatest_pos = 0;
 
-	//uint8_t const* left_entry_disk_buf = nullptr;
-
-	uint64_t entry_sort_key, entry_pos, entry_offset;
-	uint64_t cached_entry_sort_key = 0;
-	uint64_t cached_entry_pos = 0;
-	uint64_t cached_entry_offset = 0;
+	P3Entry entry, cached_entry;
 
 	{ // scope for async rewriter
 		EntryAsynRewriter rewriter( k, R_sort_manager, num_threads, right_entry_size_bytes, left_new_pos, old_data );
@@ -294,7 +294,7 @@ void PassOne( const uint8_t k, const int table_index, const uint64_t left_table_
 
 			if (end_of_right_table || current_pos <= greatest_pos) {
 				while (!end_of_right_table) {
-					if (should_read_entry) {
+					if( should_read_entry ) {
 						if (right_reader == right_table_size) {
 							end_of_right_table = true;
 							end_of_table_pos = current_pos;
@@ -302,35 +302,25 @@ void PassOne( const uint8_t k, const int table_index, const uint64_t left_table_
 							break;
 						}
 						// The right entries are in the format from backprop, (sort_key, pos, offset)
-						uint8_t const* right_entry_buf = right_disk.Read(right_reader, p2_entry_size_bytes);
+						entry.Set( right_disk.Read( right_reader, p2_entry_size_bytes ), k );
 						right_reader += p2_entry_size_bytes;
 
-						entry_sort_key =
-								Util::SliceInt64FromBytes(right_entry_buf, right_sort_key_size);
-						entry_pos = Util::SliceInt64FromBytes(
-								right_entry_buf, right_sort_key_size, pos_size);
-						entry_offset = Util::SliceInt64FromBytes(
-								right_entry_buf, right_sort_key_size + pos_size, kOffsetSize);
-					} else if (cached_entry_pos == current_pos) {
-							entry_sort_key = cached_entry_sort_key;
-							entry_pos = cached_entry_pos;
-							entry_offset = cached_entry_offset;
+					} else if (cached_entry.pos == current_pos) {
+						entry = cached_entry;
 					} else {
 							break;
 					}
 
 					should_read_entry = true;
 
-					if (entry_pos + entry_offset > greatest_pos) {
-							greatest_pos = entry_pos + entry_offset;
+					if (entry.pos + entry.offset > greatest_pos) {
+							greatest_pos = entry.pos + entry.offset;
 					}
-					if (entry_pos == current_pos) {
-							old_data[entry_pos % kReadMinusWrite].add( entry_sort_key, entry_pos + entry_offset );
+					if (entry.pos == current_pos) {
+							old_data[entry.pos % kReadMinusWrite].add( entry.sort_key, entry.pos + entry.offset );
 					} else {
 							should_read_entry = false;
-							cached_entry_sort_key = entry_sort_key;
-							cached_entry_pos = entry_pos;
-							cached_entry_offset = entry_offset;
+							cached_entry = entry;
 							break;
 					}
 				}
