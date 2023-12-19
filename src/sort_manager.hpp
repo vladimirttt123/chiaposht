@@ -213,7 +213,7 @@ struct SortedBucketBuffer{
 												}
 												else if( waits_count > 0 ){
 													if( read_waits_count > 0 && num_read_threads < max_threads )
-														num_read_threads++;
+														num_read_threads += std::max( (max_threads-num_read_threads)/10, 1 ); // increase by minimum 1 max or 10% of possible increase
 													if( num_background_threads < max_threads )
 														num_background_threads++;
 													else if( isPrevWaited && read_waits_count == 0 && num_read_threads < max_threads )
