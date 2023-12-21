@@ -377,6 +377,13 @@ public:
 
 		inline uint16_t EntrySize() const { return entry_size_; }
 
+		inline uint64_t CurrentBucketStart() const { return sorted_current->StartPosition(); }
+		inline uint64_t CurrentBucketEnd() const { return sorted_current->EndPosition(); }
+		inline uint64_t CurrentBucketSize() const { return sorted_current->Bucket()->Size(); }
+		inline uint64_t CurrentBucketCount() const { return sorted_current->Bucket()->Count(); }
+		inline const uint8_t * CurrentBucketBuffer() const { sorted_current->WaitForSorted(); return sorted_current->buffer(); }
+		inline const bool CurrentBucketIsLast() const { return sorted_current->BucketNo() + 1 >= (int)num_buckets || buckets_[sorted_current->BucketNo() + 1]->Count() == 0; }
+
 		inline void AddToCache( StreamBuffer &entry )
     {
 			uint64_t const bucket_index =
@@ -557,6 +564,8 @@ public:
 			return res;
 		}
 
+		void inline EnsureSortingStarted() { if( !sorted_current ) StartSorting(); }
+
     ~SortManager()
     {
 			if( sorted_current )
@@ -600,7 +609,6 @@ private:
 
 	const inline uint8_t* memory_start() const {return sorted_current->buffer();}
 
-	void inline EnsureSortingStarted() { if( !sorted_current ) StartSorting(); }
 
 	bool StartSorting(){
 		if( sorted_current ) return false;

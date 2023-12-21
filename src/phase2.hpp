@@ -34,7 +34,8 @@ struct Phase2Results
 				if (table_index == 7) return *table7.get();
         else return *output_files[table_index - 2];
     }
-    FilteredDisk table1;
+
+		FilteredDisk table1;
 		std::unique_ptr<LastTableReader> table7;
     std::vector<std::unique_ptr<SortManager>> output_files;
     std::vector<uint64_t> table_sizes;

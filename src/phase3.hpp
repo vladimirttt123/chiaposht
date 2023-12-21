@@ -40,192 +40,6 @@ struct Phase3Results {
 		std::unique_ptr<SortManager> table7_sm;
 };
 
-
-struct OldData{
-	uint64_t sort_keys[kMaxMatchesSingleEntry];
-	uint64_t offsets[kMaxMatchesSingleEntry];
-	uint16_t count = 0;
-
-	inline void add( uint64_t sort_key, uint64_t offset ){
-		sort_keys[count] = sort_key;
-		offsets[count] = offset;
-		count++;
-	}
-};
-
-
-struct EntryAsynRewriter{
-	EntryAsynRewriter( uint8_t k, SortManager *R_sort_manager, uint32_t num_threads, const uint32_t right_entry_size_bytes,
-										 uint64_t (&left_new_pos)[kCachedPositionsSize], OldData (&old_data)[kReadMinusWrite] )
-		: k(k), num_threads( std::max( 1U, num_threads ) ), POSITION_LIMIT((uint64_t)1 << k)
-		, line_point_size(2 * k - 1), right_sort_key_size(k)
-		, right_entry_size_bytes(right_entry_size_bytes), sm(R_sort_manager)
-		, writer(*R_sort_manager), BATCH_SIZE( this->num_threads <= 1 ? 0 : (HUGE_MEM_PAGE_SIZE/sizeof(BatchEntry)) )
-		, left_new_pos(left_new_pos), old_data(old_data) {
-
-		if( this->num_threads > 1 ){
-			next_batch.reset( new Batch( BATCH_SIZE ) );
-			full_batch.store( new Batch( BATCH_SIZE ) );
-		}
-	}
-
-	inline void next( const uint64_t &current_pos ){
-		if( current_pos + 1 >= kReadMinusWrite ) {
-			uint64_t const write_pointer_pos = current_pos - kReadMinusWrite + 1;
-			uint64_t left_new_pos_1 = left_new_pos[write_pointer_pos % kCachedPositionsSize];
-			OldData &old_datum = old_data[write_pointer_pos % kReadMinusWrite];
-
-			if( num_threads <= 1 ){ // no threads
-				for (uint32_t counter = 0; counter < old_datum.count; counter++ ){
-					writeNext(	writer,	left_new_pos_1,
-											left_new_pos[old_datum.offsets[counter] % kCachedPositionsSize],
-											old_datum.sort_keys[counter] );
-				}
-			} else { // processing with thread
-				for (uint32_t counter = 0; counter < old_datum.count; counter++ ){
-					assert( next_batch->size < BATCH_SIZE );
-					next_batch->add( left_new_pos_1,
-								left_new_pos[old_datum.offsets[counter] % kCachedPositionsSize],
-								old_datum.sort_keys[counter] );
-
-					while( next_batch->size >= BATCH_SIZE ){ // queue is full
-						auto ready_batch = next_batch.release();
-						next_batch.reset( full_batch.exchange( ready_batch, std::memory_order_relaxed ) );
-#ifdef USE_ATOMIC_WAITS
-						full_batch.notify_one();
-#endif // USE_ATOMIC_WAITS
-						if( processing_threads.size() == 0 // no threads or replaced with full
-								|| ( next_batch->size > 0 && processing_threads.size() < num_threads ) ){
-							std::cout << "[start rewriter:" << (processing_threads.size()+1) << "/" << num_threads << "]" << std::flush;
-							processing_threads.emplace_back( [this](){threaded_porcessor();} );
-						}
-						if( next_batch->size > 0 ) // wait for threads will process
-#ifdef USE_ATOMIC_WAITS
-							while( full_batch.load(std::memory_order::relaxed) == ready_batch )
-								full_batch.notify_one(); // try to notify more :)
-#endif // USE_ATOMIC_WAITS
-							std::this_thread::sleep_for(5us); // small sleep to wait
-					}
-				}
-			}
-		}
-	}
-
-	~EntryAsynRewriter(){
-		if( num_threads > 1 ){
-			finished = true;
-			auto to_delete_batch = full_batch.exchange( nullptr, std::memory_order::relaxed );
-#ifdef USE_ATOMIC_WAITS
-			full_batch.notify_all();
-#endif // USE_ATOMIC_WAITS
-
-			for( uint32_t i = 0; i < to_delete_batch->size; i++ )
-				processBatchEntry( writer, to_delete_batch->entries.get()[i] );
-			delete to_delete_batch;
-
-			for( uint32_t i = 0; i < next_batch->size; i++ )
-				processBatchEntry( writer, next_batch->entries.get()[i] );
-
-			for( auto &t : processing_threads )
-				t.join();
-
-		}
-	}
-private:
-	const uint8_t k;
-	const uint32_t num_threads;
-	const uint64_t POSITION_LIMIT;
-	const uint8_t  line_point_size;
-	const uint32_t right_sort_key_size;
-	const uint32_t right_entry_size_bytes;
-
-
-	struct BatchEntry{
-		uint64_t left_new_pos_1;
-		uint64_t left_new_pos_2;
-		uint64_t old_sort_key;
-	};
-	struct Batch{
-		Batch( uint32_t batch_size ) : entries(Util::allocate<BatchEntry>(batch_size)) {}
-		std::unique_ptr<BatchEntry,Util::Deleter<BatchEntry>>entries;
-		uint32_t size = 0;
-		inline void add( uint64_t pos_1, uint64_t pos_2, uint64_t key ){
-			auto e = entries.get() + size;
-			e->left_new_pos_1 = pos_1;
-			e->left_new_pos_2 = pos_2;
-			e->old_sort_key = key;
-			size++;
-		}
-	};
-
-	SortManager * sm;
-	SortManager::ThreadWriter writer;
-	const uint32_t BATCH_SIZE;
-	std::unique_ptr<Batch> next_batch;
-	std::atomic<Batch *> full_batch;
-
-	bool finished = false;
-	std::vector<std::thread> processing_threads;
-
-	uint64_t (&left_new_pos)[kCachedPositionsSize];
-	OldData (&old_data)[kReadMinusWrite];
-
-	// ================ FUNCS =================
-	inline void writeNext( SortManager::ThreadWriter & tw, uint64_t left_new_pos_1,	uint64_t left_new_pos_2, uint64_t old_sort_key ){
-		// A line point is an encoding of two k bit values into one 2k bit value.
-		uint128_t line_point =
-				Encoding::SquareToLinePoint( left_new_pos_1, left_new_pos_2 );
-
-		if( left_new_pos_1 > POSITION_LIMIT || left_new_pos_2 > POSITION_LIMIT ) {
-				std::cout << "left or right positions too large" << std::endl;
-				std::cout << (line_point > ((uint128_t)1 << (2 * k)));
-				if ((line_point > ((uint128_t)1 << (2 * k)))) {
-						std::cout << "L, R: " << left_new_pos_1 << " " << left_new_pos_2
-											<< std::endl;
-						std::cout << "Line point: " << line_point << std::endl;
-						abort();
-				}
-		}
-
-		Bits to_write = Bits(line_point, line_point_size);
-		to_write.AppendValue( old_sort_key, right_sort_key_size );
-
-		uint8_t entry_buf[right_entry_size_bytes+8];
-		to_write.ToBytes( entry_buf );
-		tw.Add( entry_buf );
-	}
-	inline void processBatchEntry( SortManager::ThreadWriter & tw, BatchEntry &entry ){
-		writeNext( tw, entry.left_new_pos_1, entry.left_new_pos_2, entry.old_sort_key );
-	}
-
-	void threaded_porcessor(){
-		SortManager::ThreadWriter thread_writer(*sm);
-		std::unique_ptr<Batch> batch( new Batch(BATCH_SIZE) );
-
-		while( !finished ){
-			auto empty_batch = batch.release();
-			batch.reset( full_batch.exchange( empty_batch, std::memory_order_relaxed ) );
-
-			if( !batch || batch->size == 0 ){
-				if( finished ) return;
-#ifdef USE_ATOMIC_WAITS
-				full_batch.wait( empty_batch, std::memory_order::relaxed );
-#else // USE_ATOMIC_WAITS
-				//while( full_batch.load(std::memory_order::relaxed ) == empty_batch )
-					std::this_thread::sleep_for(5us);
-#endif //USE_ATOMIC_WAITS
-			}
-			else {
-				assert( batch->size == BATCH_SIZE ); // only full batches should be here
-				for( uint32_t i = 0; i < batch->size; i++ )
-					processBatchEntry( thread_writer, batch->entries.get()[i] );
-				batch->size = 0; // clear the batch
-			}
-		}
-	}
-
-};
-
 struct NewPosTable1Reader{
 	NewPosTable1Reader( const uint8_t k, FilteredDisk & disk ) : k(k), disk(disk) {	}
 
@@ -255,96 +69,175 @@ private:
 };
 
 struct P3Entry{
+	uint64_t sort_key = 0, pos = 0, new_pos /*pos+offset*/= 0;
+
 	inline void Set( uint8_t const* entry_buf, const uint8_t k ){
 		sort_key = Util::SliceInt64FromBytes( entry_buf, /*sort_key_size*/k);
-		pos = Util::SliceInt64FromBytes( entry_buf, /*sort_key_size*/k, /*pos_size*/k);
+		pos = Util::SliceInt64FromBytes( entry_buf, /*sort_key_size*/k, /*pos_size*/k );
 		new_pos = pos + /*offset*/ Util::SliceInt64FromBytes( entry_buf, /*sort_key_size*/k + /*pos_size*/k, kOffsetSize);
 	}
 
-	uint64_t sort_key = 0, pos = 0, new_pos /*pos+offset*/= 0;
+	static inline uint64_t Pos( uint8_t const* entry_buf, const uint8_t k ){
+		return Util::SliceInt64FromBytes( entry_buf, /*sort_key_size*/k, /*pos_size*/k );
+	}
 };
 
-template<class T>
-void PassOne_( const uint8_t k, const uint64_t left_table_count,
-							T& left_disk_new_pos_reader,
-							const uint32_t p2_entry_size_bytes, const uint32_t right_sort_key_size,
-							const uint32_t right_entry_size_bytes, const uint64_t right_table_size,
-							Disk& right_disk, SortManager * R_sort_manager, const uint32_t num_threads ){
+// This used to process entries from 2 tables in computational pass one of phase 3
+struct PassOneBlockProcessor {
+	const uint8_t k, left_entry_size_bytes, right_entry_size_bytes, right_sort_key_size, line_point_size, p2_entry_size_bytes;
+	const uint64_t POSITION_LIMIT;
 
-	uint64_t right_reader = 0;
-	bool should_read_entry = true;
+	PassOneBlockProcessor( const uint8_t k, const uint8_t left_entry_size_bytes,
+												const uint8_t right_entry_size_bytes, const uint8_t p2_entry_size_bytes )
+			: k(k), left_entry_size_bytes(left_entry_size_bytes), right_entry_size_bytes(right_entry_size_bytes)
+			, right_sort_key_size(k), line_point_size( 2 * k - 1 ), p2_entry_size_bytes( p2_entry_size_bytes )
+			, POSITION_LIMIT((uint64_t)1 << k)
+	{}
 
-	uint64_t left_new_pos[kCachedPositionsSize];
-	OldData old_data[kReadMinusWrite];
+	uint64_t Process( const uint64_t left_disk_start_idx,	const uint64_t left_table_end_idx, const uint8_t *left_disk,
+					const uint64_t right_disk_size_bytes, const uint8_t * right_disk, SortManager::ThreadWriter &R_sort_manager) {
+		uint8_t entry_buf[right_entry_size_bytes + 8/*safe distance*/];
 
-	bool end_of_right_table = false;
-	uint64_t end_of_table_pos = 0;
-	uint64_t greatest_pos = 0;
-
-	P3Entry entry;
-
-	EntryAsynRewriter rewriter( k, R_sort_manager, num_threads, right_entry_size_bytes, left_new_pos, old_data );
-
-	// Similar algorithm as Backprop, to read both L and R tables simultaneously
-	for( uint64_t current_pos = 0;
-			 !end_of_right_table || (current_pos - end_of_table_pos <= kReadMinusWrite); current_pos++ ) {
-
-		old_data[current_pos % kReadMinusWrite].count = 0;
-
-		if( end_of_right_table || current_pos <= greatest_pos ) {
-			while( !end_of_right_table ) {
-				if( should_read_entry ) {
-					if (right_reader == right_table_size) {
-						end_of_right_table = true;
-						end_of_table_pos = current_pos;
-						right_disk.FreeMemory();
-						break;
-					}
-					// The right entries are in the format from backprop, (sort_key, pos, offset)
-					entry.Set( right_disk.Read( right_reader, p2_entry_size_bytes ), k );
-					right_reader += p2_entry_size_bytes;
-
-					if( entry.new_pos > greatest_pos )
-						greatest_pos = entry.new_pos;
-				} else if( entry.pos == current_pos ) {
-					should_read_entry = true;
-				} else {
-					break;
-				}
+		P3Entry entry;
+		for( uint64_t current_pos = 0; current_pos < right_disk_size_bytes; current_pos += p2_entry_size_bytes ){
+			// The right entries are in the format from backprop, (sort_key, pos, offset)
+			entry.Set( right_disk + current_pos, k );
 
 
-				if( entry.pos == current_pos ) {
-					old_data[entry.pos % kReadMinusWrite].add( entry.sort_key, entry.new_pos );
-				} else {
-					should_read_entry = false;
-					break;
+			if( entry.new_pos >= left_table_end_idx )
+				return current_pos; // not enough left disk
+
+			uint64_t left_new_pos_1 = Util::SliceInt64FromBytes( left_disk + (entry.pos - left_disk_start_idx) * left_entry_size_bytes, right_sort_key_size, k );
+			uint64_t left_new_pos_2 = Util::SliceInt64FromBytes( left_disk + (entry.new_pos - left_disk_start_idx) * left_entry_size_bytes, right_sort_key_size, k );
+
+			// A line point is an encoding of two k bit values into one 2k bit value.
+			uint128_t line_point = Encoding::SquareToLinePoint( left_new_pos_1, left_new_pos_2 );
+
+			if( left_new_pos_1 > POSITION_LIMIT || left_new_pos_2 > POSITION_LIMIT ) {
+				std::cout << "left or right positions too large" << std::endl;
+				std::cout << (line_point > ((uint128_t)1 << (2 * k)));
+				if ((line_point > ((uint128_t)1 << (2 * k)))) {
+					std::cout << "L, R: " << left_new_pos_1 << " " << left_new_pos_2
+										<< std::endl;
+					std::cout << "Line point: " << line_point << std::endl;
+					abort();
 				}
 			}
+
+			Bits to_write = Bits(line_point, line_point_size);
+			to_write.AppendValue( entry.sort_key, right_sort_key_size );
+
+			to_write.ToBytes( entry_buf );
+			R_sort_manager.Add( entry_buf );
 		}
 
-		if( current_pos < left_table_count ) {
-			// We read the "new_pos" from the L table, which for table 1 is just x. For
-			// other tables, the new_pos
-			left_new_pos[current_pos % kCachedPositionsSize] = left_disk_new_pos_reader.ReadNext();
-		}
+		return right_disk_size_bytes; // all done
+	}
+};
 
-		// Rewrites each right entry as (line_point, sort_key)
-		rewriter.next( current_pos );
-	} // end of loop of first computation pass
+void PassOneRegular( const uint8_t k, SortManager &left_disk,
+										 const uint32_t p2_entry_size_bytes, const uint32_t right_sort_key_size,
+										 SortManager &right_disk, SortManager &R_sort_manager, uint32_t num_threads ){
+
+	assert( num_threads > 1 );
+	//assert( num_threads = 1 ); // for debug
+
+	left_disk.EnsureSortingStarted();
+	right_disk.EnsureSortingStarted();
+
+	assert( left_disk.CurrentBucketEnd() > kCachedPositionsSize*left_disk.EntrySize() ); // bucket should be bigger than size of cached position
+
+	std::unique_ptr<SortManager::ThreadWriter> writers[num_threads];
+	for( uint32_t i = 0; i < num_threads; i++ )
+		writers[i].reset( new SortManager::ThreadWriter(R_sort_manager) );
+	std::unique_ptr<std::thread> threads[num_threads];
+
+	PassOneBlockProcessor block_processor( k, left_disk.EntrySize(), right_disk.EntrySize(), p2_entry_size_bytes );
+
+	const uint64_t left_cache_size = kCachedPositionsSize*left_disk.EntrySize();
+	const uint64_t chunk_size = std::max( BUF_SIZE/right_disk.EntrySize()*right_disk.EntrySize(),
+																			 2UL*left_cache_size /* need to threads not overlap */ );
+
+	std::atomic_uint64_t right_bucket_from_pos = 0, right_bucket_last_position = right_disk.CurrentBucketEnd();
+
+	for( int64_t right_entries_todo = right_disk.Count(); right_entries_todo >= 0; ){ // for all right entries
+		// start threads...
+		for( uint32_t t = 0; t < num_threads; t++ )
+			threads[t].reset( new std::thread([ &chunk_size, &right_bucket_from_pos, &left_disk, &right_disk,
+																				&right_bucket_last_position, &block_processor, &k]( SortManager::ThreadWriter *wri ){
+				const uint64_t left_bucket_start_idx = left_disk.CurrentBucketStart()/left_disk.EntrySize();
+				const uint64_t left_bucket_end_idx = left_disk.CurrentBucketEnd()/left_disk.EntrySize();
+				while(true){
+					uint64_t right_bucket_start = right_bucket_from_pos.fetch_add( chunk_size, std::memory_order::relaxed );
+					if( right_bucket_start >= right_disk.CurrentBucketSize() ) return; // right disk need switch
+					uint64_t right_chunk_size_bytes = std::min( chunk_size, right_disk.CurrentBucketSize() - right_bucket_start );
+
+					// Cannot process chunk with first entry position too close to end of the left bucket but not the last one.
+					uint64_t processed_to = !left_disk.CurrentBucketIsLast()
+																					&& (P3Entry::Pos( right_disk.CurrentBucketBuffer() + right_bucket_start, k ) + kCachedPositionsSize) >= left_bucket_end_idx ? 0 :
+																			block_processor.Process( left_bucket_start_idx, left_bucket_end_idx, left_disk.CurrentBucketBuffer(),
+																											right_chunk_size_bytes, right_disk.CurrentBucketBuffer() + right_bucket_start, *wri );
+
+					if( processed_to < right_chunk_size_bytes ){ // chunk is not finished need left bucket switch
+						// set last processed postion outside thread
+						uint64_t cur = right_bucket_last_position.load(std::memory_order::relaxed), top_value = processed_to + right_bucket_start;
+						while( cur > top_value && !right_bucket_last_position.compare_exchange_weak( cur, top_value, std::memory_order::relaxed ) )/*empty loop*/;
+
+						return;
+					}
+				}
+			}, writers[t].get() ) );
+
+		// wait for threads
+		for( uint32_t t = 0; t < num_threads; t++ )
+			threads[t]->join();
+
+		auto right_to_next_bucket = [&right_entries_todo, &right_disk, &right_bucket_from_pos, &right_bucket_last_position]( uint64_t pos ){
+			if( pos != right_disk.CurrentBucketSize() ) return false;
+
+			right_entries_todo -= right_disk.CurrentBucketCount();
+			if( right_entries_todo > 0){
+				right_disk.ReadEntry( right_disk.CurrentBucketEnd() ); // TODO replace with moving to next bucket
+				right_bucket_from_pos = 0;
+				right_bucket_last_position = right_disk.CurrentBucketSize();
+			}
+			return true;
+		};
+
+		// now need to finished not finished by threads.
+		if( !right_to_next_bucket( right_bucket_last_position.load(std::memory_order::relaxed) ) ){	// need to switch left disk to next bucket.
+			uint8_t left_disk_cache[ 2UL*left_cache_size ];
+			memcpy( left_disk_cache, left_disk.CurrentBucketBuffer() + left_disk.CurrentBucketSize() - left_cache_size, left_cache_size );
+			left_disk.ReadEntry( left_disk.CurrentBucketEnd() ); // TODO replace to moving next bucket
+			// copy the rest
+			uint32_t to_copy = std::min( left_cache_size, left_disk.CurrentBucketSize() );
+			memcpy( left_disk_cache + left_cache_size, left_disk.CurrentBucketBuffer(), to_copy );
+			P3Entry entry;
+
+			right_bucket_from_pos = right_bucket_last_position.load(std::memory_order::relaxed);
+			do{
+				right_bucket_from_pos += block_processor.Process( left_disk.CurrentBucketStart()/left_disk.EntrySize() - kCachedPositionsSize,
+																													(left_disk.CurrentBucketStart()+to_copy)/left_disk.EntrySize(), left_disk_cache,
+																													right_disk.CurrentBucketSize() - right_bucket_from_pos,
+																													right_disk.CurrentBucketBuffer() + right_bucket_from_pos, *writers[0].get() );
+
+				right_to_next_bucket( right_bucket_from_pos.load(std::memory_order::relaxed) );
+				entry.Set( right_disk.CurrentBucketBuffer() + right_bucket_from_pos, k ); // to check if we can move to threaded process
+			} while( entry.pos < left_disk.CurrentBucketStart()/left_disk.EntrySize() );
+		}
+	}
 }
 
 template<class T>
-void PassOne( const uint8_t k, const uint64_t left_table_count,
+void PassOneSingleThread( const uint8_t k, const uint64_t left_table_count,
 						 T& left_disk_new_pos_reader,
 						 const uint32_t p2_entry_size_bytes, const uint32_t right_sort_key_size,
 						 const uint32_t right_entry_size_bytes, const uint64_t right_table_size,
-						 Disk& right_disk, SortManager * R_sort_manager, const uint32_t num_threads ){
+						 Disk& right_disk, SortManager * R_sort_manager ){
 
 	const uint64_t POSITION_LIMIT = (uint64_t)1 << k;
 	const uint8_t line_point_size = 2 * k - 1;
 	StreamBuffer entry_buf(right_entry_size_bytes);
-
-	assert( left_table_count > kCachedPositionsSize );
 
 	uint64_t left_new_pos[kCachedPositionsSize];
 
@@ -353,6 +246,7 @@ void PassOne( const uint8_t k, const uint64_t left_table_count,
 			 current_pos < right_table_count; current_pos++ ){
 		// The right entries are in the format from backprop, (sort_key, pos, offset)
 		entry.Set( right_disk.Read( current_pos * p2_entry_size_bytes, p2_entry_size_bytes ), k );
+
 
 		for( uint64_t left_max = std::min( entry.pos + kCachedPositionsSize, left_table_count ); left_max > left_entreis_read; left_entreis_read++ )
 			left_new_pos[left_entreis_read%kCachedPositionsSize] = left_disk_new_pos_reader.ReadNext();
@@ -466,20 +360,23 @@ Phase3Results RunPhase3(
 						(flags&NO_COMPACTION)==0, (flags&PARALLEL_READ)!=0 );
 				next_stats_idx = !full_stats[1] ? 0 : (next_stats_idx + 1)%2;
 
-				if( table_index == 1 ){
+				if( table_index == 1){
 					NewPosTable1Reader t1(k, res2.table1 );
-					PassOne( k, /*left table count:*/ res2.table_sizes[table_index],
-									t1,
+					PassOneSingleThread( k, /*left table count:*/ res2.table_sizes[table_index], t1,
 									p2_entry_size_bytes, right_sort_key_size,
 									right_entry_size_bytes, /*right_table_size:*/ p2_entry_size_bytes * res2.table_sizes[table_index + 1],
-									right_disk, R_sort_manager.get(), num_threads );
+									right_disk, R_sort_manager.get() );
 				}else{
-					NewPosSortManagerReader sr( k, right_sort_key_size, L_sort_manager.get() );
-					PassOne( k, /*left table count:*/ res2.table_sizes[table_index],
-									sr,
-									p2_entry_size_bytes, right_sort_key_size,
-									right_entry_size_bytes, /*right_table_size:*/ p2_entry_size_bytes * res2.table_sizes[table_index + 1],
-									right_disk, R_sort_manager.get(), num_threads );
+					if( num_threads <= 1 || table_index == 6  ){
+						NewPosSortManagerReader sr( k, right_sort_key_size, L_sort_manager.get() );
+						PassOneSingleThread( k, /*left table count:*/ res2.table_sizes[table_index], sr,
+										p2_entry_size_bytes, right_sort_key_size,
+										right_entry_size_bytes, /*right_table_size:*/ p2_entry_size_bytes * res2.table_sizes[table_index + 1],
+										right_disk, R_sort_manager.get() );
+					} else {
+						PassOneRegular( k, *L_sort_manager.get(), p2_entry_size_bytes, right_sort_key_size,
+														(SortManager&)right_disk, *R_sort_manager.get(), num_threads );
+					}
 				}
 
 				// Remove no longer needed file
@@ -489,7 +386,6 @@ Phase3Results RunPhase3(
 				R_sort_manager->FlushCache( !full_stats[1] );
 				R_sort_manager->FreeMemory();
 
-				std::cout << "Wrote: " << R_sort_manager->Count() << std::endl;
 				computation_pass_1_timer.PrintElapsed("\tFirst computation pass time:");
 
 				Timer computation_pass_2_timer;
