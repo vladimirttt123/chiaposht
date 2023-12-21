@@ -55,6 +55,16 @@ string Strip0x(const string &hex)
 
 void HelpAndQuit(cxxopts::Options options)
 {
+		std::cout << "ChiaposHT ";
+#ifdef GIT_COMMIT_HASH
+		std::cout << GIT_COMMIT_HASH;
+#else
+		std::cout << "unknown";
+#endif
+#ifndef NO_HUGE_PAGES
+		std::cout << " - THP";
+#endif
+		std::cout << std::endl;
     cout << options.help({""}) << endl;
     cout << "./ProofOfSpace create" << endl;
     cout << "./ProofOfSpace prove <challenge>" << endl;
