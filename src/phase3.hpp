@@ -426,17 +426,16 @@ Phase3Results RunPhase3(
 				final_table_begin_pointers[table_index + 1] = final_table_begin_pointers[table_index] +
 						( entries_to_be_written/kEntriesPerPark + ( (entries_to_be_written%kEntriesPerPark) ? 1 : 0) ) * park_size_bytes;
 
-				std::atomic_uint64_t reading_position = 0;
-				std::atomic_uint64_t processed_total = 0;
+				std::atomic_uint64_t reading_position = 0, processed_total = 0, bucket_end = 0;
 
 				std::mutex write_mutex;
 				auto parking_thread = [ &R_sort_manager, &line_point_size, &right_sort_key_size,
 																&sort_key_shift, &index_shift, &L_sort_manager, &write_mutex,
 																&tmp2_disk, &k, &final_table_begin_pointers, &table_index,
-															 &park_size_bytes, &reading_position, &R_sort_manager_size_bytes, &processed_total](){
+															 &park_size_bytes, &reading_position, &R_sort_manager_size_bytes, &processed_total, &bucket_end](){
 
 					uint32_t sort_buf_size = kEntriesPerPark*R_sort_manager->EntrySize();
-					uint8_t switch_bucket_buffer[sort_buf_size];
+					uint8_t switch_bucket_buffer[sort_buf_size + MEM_SAFE_BUF_SIZE];
 					ParkWriterTS parker( &tmp2_disk, &write_mutex,k, table_index,
 															 final_table_begin_pointers[table_index], park_size_bytes );
 					auto park_deltas = std::make_unique<std::vector<uint8_t>>();
@@ -446,14 +445,16 @@ Phase3Results RunPhase3(
 					SortManager::ThreadWriter sort_writer = SortManager::ThreadWriter( *L_sort_manager );
 					uint8_t const* right_reader_entry_buf;
 
-					auto switch_to_next_bucket = [&processed_total, &R_sort_manager, &last_line_point, &line_point_size, &right_reader_entry_buf]( uint64_t &pos ){
+					auto switch_to_next_bucket = [&processed_total, &R_sort_manager, &last_line_point, &line_point_size, &right_reader_entry_buf, &bucket_end]( uint64_t &pos ){
 							last_line_point = Util::SliceInt128FromBytes( right_reader_entry_buf - R_sort_manager->EntrySize(), 0, line_point_size );
 							uint64_t old;
-							while( (old = processed_total.load(std::memory_order::relaxed) != pos) )
+							while( (old = processed_total.load(std::memory_order::relaxed) ) != pos )
 								processed_total.wait( old, std::memory_order::relaxed );
 
 							// no threads working with ram -> bucket can be switched
 							R_sort_manager->SwitchNextBucket(); // throws exception if no additional buckets
+							bucket_end.store( R_sort_manager->CurrentBucketEnd(), std::memory_order::relaxed );
+							bucket_end.notify_all();
 						};
 
 					for( uint64_t position = reading_position.fetch_add( sort_buf_size, std::memory_order::relaxed);
@@ -466,20 +467,23 @@ Phase3Results RunPhase3(
 							if( position == R_sort_manager->CurrentBucketEnd() ){
 								switch_to_next_bucket( position );
 								right_reader_entry_buf = R_sort_manager->CurrentBucketBuffer( position + sort_buf_size );
+								std::cout << "rare case " << std::endl;
 							} else if( position < R_sort_manager->CurrentBucketEnd() ){
 								uint64_t prev_size = R_sort_manager->CurrentBucketEnd() - position;
-								assert( prev_size > 0 && prev_size < sort_buf_size );
+								assert( prev_size > 0 );
+								assert( prev_size < sort_buf_size );
 								memcpy( switch_bucket_buffer, right_reader_entry_buf, prev_size ); // store unprocessed prev bucket part
 								switch_to_next_bucket( position );
-								assert( (position + sort_buf_size) <= R_sort_manager->CurrentBucketEnd() );
-								assert( position < R_sort_manager->CurrentBucketStart() );
 								// add to processing bufer part from new bucket
 								memcpy( switch_bucket_buffer + prev_size, R_sort_manager->CurrentBucketBuffer( position + sort_buf_size ), sort_buf_size - prev_size );
 								right_reader_entry_buf = switch_bucket_buffer; // set processing buffer to cached
-								// assert( R_sort_manager->checkSort( right_reader_entry_buf, sort_buf_size ) );
+								assert( (position + sort_buf_size) <= R_sort_manager->CurrentBucketEnd() );
+								assert( position < R_sort_manager->CurrentBucketStart() );
+								assert( R_sort_manager->checkSort( right_reader_entry_buf, sort_buf_size ) );
 							} else {
-								while( position > R_sort_manager->CurrentBucketEnd() ) // wait for bucket switch
-									std::this_thread::sleep_for(5us); // small sleep to wait
+								uint64_t old;
+								while(  position > ( old = bucket_end.load( std::memory_order::relaxed ) ) ) // wait for bucket switch
+									bucket_end.wait( old, std::memory_order::relaxed ); // small sleep to wait
 
 								assert( (position + sort_buf_size) <= R_sort_manager->CurrentBucketEnd() );
 								assert( position > R_sort_manager->CurrentBucketStart() );
@@ -528,14 +532,16 @@ Phase3Results RunPhase3(
 							last_line_point = line_point;
 						}
 
-						processed_total.fetch_add( sort_buf_size );
+						processed_total.fetch_add( sort_buf_size, std::memory_order::relaxed );
 						processed_total.notify_all();
+						assert( processed_total <= R_sort_manager->CurrentBucketEnd() );
 						parker.Write( position / R_sort_manager->EntrySize() / kEntriesPerPark, checkpoint_line_point, park_deltas, park_stubs );
 					}
 				};
 
 				// Start threads
 				R_sort_manager->EnsureSortingStarted();
+				bucket_end.store( R_sort_manager->CurrentBucketEnd(), std::memory_order::relaxed );
 				if( num_threads <= 1 ){
 					parking_thread();
 				}
