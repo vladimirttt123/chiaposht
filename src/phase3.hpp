@@ -197,7 +197,7 @@ void PassOneRegular( const uint8_t k, SortManager &left_disk,
 
 			right_entries_todo -= right_disk.CurrentBucketCount();
 			if( right_entries_todo > 0){
-				right_disk.ReadEntry( right_disk.CurrentBucketEnd() ); // TODO replace with moving to next bucket
+				right_disk.SwitchNextBucket(); // moving to next bucket
 				right_bucket_from_pos = 0;
 				right_bucket_last_position = right_disk.CurrentBucketSize();
 			}
@@ -208,7 +208,7 @@ void PassOneRegular( const uint8_t k, SortManager &left_disk,
 		if( !right_to_next_bucket( right_bucket_last_position.load(std::memory_order::relaxed) ) ){	// need to switch left disk to next bucket.
 			uint8_t left_disk_cache[ 2UL*left_cache_size ];
 			memcpy( left_disk_cache, left_disk.CurrentBucketBuffer() + left_disk.CurrentBucketSize() - left_cache_size, left_cache_size );
-			left_disk.ReadEntry( left_disk.CurrentBucketEnd() ); // TODO replace to moving next bucket
+			left_disk.SwitchNextBucket(); // moving to next bucket
 			// copy the rest
 			uint32_t to_copy = std::min( left_cache_size, left_disk.CurrentBucketSize() );
 			memcpy( left_disk_cache + left_cache_size, left_disk.CurrentBucketBuffer(), to_copy );
@@ -275,7 +275,6 @@ void PassOneSingleThread( const uint8_t k, const uint64_t left_table_count,
 		R_sort_manager->AddToCache( entry_buf.setUsed(right_entry_size_bytes) );
 	}
 }
-
 
 // Compresses the plot file tables into the final file. In order to do this, entries must be
 // reorganized from the (pos, offset) bucket sorting order, to a more free line_point sorting
@@ -420,94 +419,131 @@ Phase3Results RunPhase3(
 				uint8_t const index_shift = sort_key_shift - (k + (table_index == 6 ? 1 : 0));
 				const uint32_t park_size_bytes = EntrySizes::CalculateParkSize( k, table_index );
 
-				// At this point we know how many park will be written,
+				// At this point we know how many parks will be written,
 				// than we can evalueate next table pointer
-				uint64_t to_be_written = R_sort_manager->Count();
+				const uint64_t entries_to_be_written = R_sort_manager->Count();
+				const uint64_t R_sort_manager_size_bytes = entries_to_be_written*R_sort_manager->EntrySize();
 				final_table_begin_pointers[table_index + 1] = final_table_begin_pointers[table_index] +
-						( to_be_written/kEntriesPerPark + ( (to_be_written%kEntriesPerPark) ? 1 : 0) ) * park_size_bytes;
+						( entries_to_be_written/kEntriesPerPark + ( (entries_to_be_written%kEntriesPerPark) ? 1 : 0) ) * park_size_bytes;
 
-				uint128_t global_last_line_point = 0;
+				std::atomic_uint64_t reading_position = 0;
+				std::atomic_uint64_t processed_total = 0;
 
-				std::mutex read_mutex, write_mutex;
-				auto parking_thread = [&right_entry_size_bytes, &R_sort_manager, &read_mutex,
-															&line_point_size, &right_sort_key_size, &global_last_line_point,
-															&sort_key_shift, &index_shift, &L_sort_manager, &write_mutex,
-															&tmp2_disk, &k, &final_table_begin_pointers, &table_index,
-															&park_size_bytes](){
+				std::mutex write_mutex;
+				auto parking_thread = [ &R_sort_manager, &line_point_size, &right_sort_key_size,
+																&sort_key_shift, &index_shift, &L_sort_manager, &write_mutex,
+																&tmp2_disk, &k, &final_table_begin_pointers, &table_index,
+															 &park_size_bytes, &reading_position, &R_sort_manager_size_bytes, &processed_total](){
 
-						uint32_t sort_buf_size = kEntriesPerPark*right_entry_size_bytes;
-						std::unique_ptr<uint8_t[]> sort_buf( Util::NewSafeBuffer( sort_buf_size ) );
-						ParkWriterTS parker( &tmp2_disk, &write_mutex,k, table_index,
-																 final_table_begin_pointers[table_index], park_size_bytes );
-						uint64_t index;
-						auto park_deltas = std::make_unique<std::vector<uint8_t>>();
-						auto park_stubs = std::make_unique<std::vector<uint64_t>>();
-						uint128_t last_line_point = 0;
+					uint32_t sort_buf_size = kEntriesPerPark*R_sort_manager->EntrySize();
+					uint8_t switch_bucket_buffer[sort_buf_size];
+					ParkWriterTS parker( &tmp2_disk, &write_mutex,k, table_index,
+															 final_table_begin_pointers[table_index], park_size_bytes );
+					auto park_deltas = std::make_unique<std::vector<uint8_t>>();
+					auto park_stubs = std::make_unique<std::vector<uint64_t>>();
+					uint128_t last_line_point = 0;
 
-						SortManager::ThreadWriter sort_writer = SortManager::ThreadWriter( *L_sort_manager );
+					SortManager::ThreadWriter sort_writer = SortManager::ThreadWriter( *L_sort_manager );
+					uint8_t const* right_reader_entry_buf;
 
-						while( true ){
-							{
-								std::lock_guard<std::mutex> lk(read_mutex);
-								index = R_sort_manager->GetReadPosition()/right_entry_size_bytes;
-								sort_buf_size = R_sort_manager->Read( sort_buf.get(), sort_buf_size );
-								if( sort_buf_size == 0 ) return;
-								last_line_point = global_last_line_point;
-								global_last_line_point = Util::SliceInt128FromBytes(
-											sort_buf.get() + sort_buf_size - right_entry_size_bytes, 0, line_point_size );
+					auto switch_to_next_bucket = [&processed_total, &R_sort_manager, &last_line_point, &line_point_size, &right_reader_entry_buf]( uint64_t &pos ){
+							last_line_point = Util::SliceInt128FromBytes( right_reader_entry_buf - R_sort_manager->EntrySize(), 0, line_point_size );
+							uint64_t old;
+							while( (old = processed_total.load(std::memory_order::relaxed) != pos) )
+								processed_total.wait( old, std::memory_order::relaxed );
+
+							// no threads working with ram -> bucket can be switched
+							R_sort_manager->SwitchNextBucket(); // throws exception if no additional buckets
+						};
+
+					for( uint64_t position = reading_position.fetch_add( sort_buf_size, std::memory_order::relaxed);
+							 position < R_sort_manager_size_bytes; position = reading_position.fetch_add( sort_buf_size, std::memory_order::relaxed) ) {
+
+						sort_buf_size = std::min( (uint64_t)sort_buf_size, R_sort_manager_size_bytes-position ); // define real buffer size
+						right_reader_entry_buf = R_sort_manager->CurrentBucketBuffer( std::min( R_sort_manager->CurrentBucketEnd(), position+sort_buf_size ) ) + position - R_sort_manager->CurrentBucketStart();
+
+						if( ( position + sort_buf_size ) > /*>=?*/ R_sort_manager->CurrentBucketEnd() ){ // check the buffer inside current bucket
+							if( position == R_sort_manager->CurrentBucketEnd() ){
+								switch_to_next_bucket( position );
+								right_reader_entry_buf = R_sort_manager->CurrentBucketBuffer( position + sort_buf_size );
+							} else if( position < R_sort_manager->CurrentBucketEnd() ){
+								uint64_t prev_size = R_sort_manager->CurrentBucketEnd() - position;
+								assert( prev_size > 0 && prev_size < sort_buf_size );
+								memcpy( switch_bucket_buffer, right_reader_entry_buf, prev_size ); // store unprocessed prev bucket part
+								switch_to_next_bucket( position );
+								assert( (position + sort_buf_size) <= R_sort_manager->CurrentBucketEnd() );
+								assert( position < R_sort_manager->CurrentBucketStart() );
+								// add to processing bufer part from new bucket
+								memcpy( switch_bucket_buffer + prev_size, R_sort_manager->CurrentBucketBuffer( position + sort_buf_size ), sort_buf_size - prev_size );
+								right_reader_entry_buf = switch_bucket_buffer; // set processing buffer to cached
+								// assert( R_sort_manager->checkSort( right_reader_entry_buf, sort_buf_size ) );
+							} else {
+								while( position > R_sort_manager->CurrentBucketEnd() ) // wait for bucket switch
+									std::this_thread::sleep_for(5us); // small sleep to wait
+
+								assert( (position + sort_buf_size) <= R_sort_manager->CurrentBucketEnd() );
+								assert( position > R_sort_manager->CurrentBucketStart() );
+								right_reader_entry_buf = R_sort_manager->CurrentBucketBuffer( position + sort_buf_size ) + position - R_sort_manager->CurrentBucketStart();
 							}
-							uint128_t checkpoint_line_point = 0;
-							uint64_t park_index = index / kEntriesPerPark;
-
-							uint8_t *right_reader_entry_buf = sort_buf.get();
-							for( uint64_t last_index = index + sort_buf_size/right_entry_size_bytes
-									 ; index < last_index; index++, right_reader_entry_buf += right_entry_size_bytes ){
-
-								// Right entry is read as (line_point, sort_key)
-								uint128_t line_point = Util::SliceInt128FromBytes(right_reader_entry_buf, 0, line_point_size);
-								uint64_t sort_key =
-										Util::SliceInt64FromBytes(right_reader_entry_buf, line_point_size, right_sort_key_size);
-
-								// Write the new position (index) and the sort key
-								uint128_t to_write = (uint128_t)sort_key << sort_key_shift;
-								to_write |= (uint128_t)index << index_shift;
-
-								sort_writer.Add( to_write );
-
-								// Every EPP entries, writes a park
-								if (index % kEntriesPerPark == 0)
-										checkpoint_line_point = line_point;
-
-								uint128_t big_delta = line_point - last_line_point;
-
-								// Since we have approx 2^k line_points between 0 and 2^2k, the average
-								// space between them when sorted, is k bits. Much more efficient than storing each
-								// line point. This is diveded into the stub and delta. The stub is the least
-								// significant (k-kMinusStubs) bits, and largely random/incompressible. The small
-								// delta is the rest, which can be efficiently encoded since it's usually very
-								// small.
-
-								uint64_t stub = big_delta & ((1ULL << (k - kStubMinusBits)) - 1);
-								uint64_t small_delta = big_delta >> (k - kStubMinusBits);
-
-								assert(small_delta < 256);
-
-								if( (index % kEntriesPerPark) != 0 ) {
-									park_deltas->push_back(small_delta);
-									park_stubs->push_back(stub);
-								}
-								last_line_point = line_point;
-							}
-
-							parker.Write( park_index, checkpoint_line_point, park_deltas, park_stubs );
 						}
-					};
+
+						if( position > R_sort_manager->CurrentBucketStart() )
+							last_line_point = Util::SliceInt128FromBytes( right_reader_entry_buf - R_sort_manager->EntrySize(), 0, line_point_size );
+
+						// Every EPP entries, writes a park
+						uint128_t checkpoint_line_point = Util::SliceInt128FromBytes(right_reader_entry_buf, 0, line_point_size);
+
+						for( uint64_t index = position/R_sort_manager->EntrySize(), last_index = index + sort_buf_size/R_sort_manager->EntrySize()
+								 ; index < last_index; index++, right_reader_entry_buf += R_sort_manager->EntrySize() ){
+
+							// Right entry is read as (line_point, sort_key)
+							uint128_t line_point = Util::SliceInt128FromBytes(right_reader_entry_buf, 0, line_point_size);
+							uint64_t sort_key =
+									Util::SliceInt64FromBytes(right_reader_entry_buf, line_point_size, right_sort_key_size);
+
+							// Write the new position (index) and the sort key
+							uint128_t to_write = (uint128_t)sort_key << sort_key_shift;
+							to_write |= (uint128_t)index << index_shift;
+
+							sort_writer.Add( to_write );
+
+							uint128_t big_delta = line_point - last_line_point;
+
+							// Since we have approx 2^k line_points between 0 and 2^2k, the average
+							// space between them when sorted, is k bits. Much more efficient than storing each
+							// line point. This is diveded into the stub and delta. The stub is the least
+							// significant (k-kMinusStubs) bits, and largely random/incompressible. The small
+							// delta is the rest, which can be efficiently encoded since it's usually very
+							// small.
+
+							uint64_t stub = big_delta & ((1ULL << (k - kStubMinusBits)) - 1);
+							uint64_t small_delta = big_delta >> (k - kStubMinusBits);
+
+							assert(small_delta < 256);
+
+							if( (index % kEntriesPerPark) != 0 ) {
+								park_deltas->push_back(small_delta);
+								park_stubs->push_back(stub);
+							}
+							last_line_point = line_point;
+						}
+
+						processed_total.fetch_add( sort_buf_size );
+						processed_total.notify_all();
+						parker.Write( position / R_sort_manager->EntrySize() / kEntriesPerPark, checkpoint_line_point, park_deltas, park_stubs );
+					}
+				};
 
 				// Start threads
-				if( num_threads <= 1 )
+				R_sort_manager->EnsureSortingStarted();
+				if( num_threads <= 1 ){
 					parking_thread();
+				}
 				else {
-					auto t_num = num_threads*2; // double the number of threads for this part
+					uint32_t t_num = num_threads*2; // double the number of threads for this part
+
+					// assert( R_sort_manager->SmallestBucketSize()/(t_num+1) > kEntriesPerPark*R_sort_manager->EntrySize() );
+
 					std::unique_ptr<std::thread> threads[t_num];
 					for( uint32_t t = 0; t < t_num; t++ )
 						threads[t].reset( new std::thread(parking_thread) );

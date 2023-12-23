@@ -377,11 +377,14 @@ public:
 
 		inline uint16_t EntrySize() const { return entry_size_; }
 
+		inline uint32_t CurrentBucketNo() const { return sorted_current->BucketNo(); }
 		inline uint64_t CurrentBucketStart() const { return sorted_current->StartPosition(); }
 		inline uint64_t CurrentBucketEnd() const { return sorted_current->EndPosition(); }
 		inline uint64_t CurrentBucketSize() const { return sorted_current->Bucket()->Size(); }
 		inline uint64_t CurrentBucketCount() const { return sorted_current->Bucket()->Count(); }
-		inline const uint8_t * CurrentBucketBuffer() const { sorted_current->WaitForSorted(); return sorted_current->buffer(); }
+		inline const uint8_t * CurrentBucketBuffer( uint64_t sorted_to = 0) const {
+			if( sorted_to == 0 ) sorted_to = sorted_current->EndPosition()-entry_size_;
+			sorted_current->WaitForSortedTo(sorted_to); return sorted_current->buffer(); }
 		inline const bool CurrentBucketIsLast() const { return sorted_current->BucketNo() + 1 >= (int)num_buckets || buckets_[sorted_current->BucketNo() + 1]->Count() == 0; }
 
 		inline void AddToCache( StreamBuffer &entry )
@@ -467,6 +470,7 @@ public:
 			return buf_size;
 		};
 
+		// This used for debug purposes to check if buffer sorted correctly
 		bool checkSort( uint8_t const *buf, uint64_t buf_size ) const {
 			for( uint64_t i = entry_size_; i < buf_size; i += entry_size_ )
 				if( Util::MemCmpBits( buf + i - entry_size_, buf + i, entry_size_, begin_bits_ ) > 0 ){
@@ -564,9 +568,48 @@ public:
 			return res;
 		}
 
+		inline uint64_t SmallestBucketSize() const {
+			uint64_t res = buckets_[0]->Size();
+			for( uint i = 1; i < num_buckets; i++ )
+				if( buckets_[i]->Size() < res ) res = buckets_[i]->Size();
+			return res;
+		}
+
 		void inline EnsureSortingStarted() { if( !sorted_current ) StartSorting(); }
 
-    ~SortManager()
+		void SwitchNextBucket()
+		{
+			if( StartSorting() ) return; // for first bucket
+
+			if( !hasMoreBuckets )
+				throw InvalidValueException( "Trying to sort bucket which does not exist." );
+
+
+			if( sorted_next ){
+				assert( sorted_next->BucketNo() == sorted_current->BucketNo() + 1 );
+				assert( !sorted_current->WaitForSorted() ); // sort on current should be finished at this point
+
+				sorted_current.swap( sorted_next ); // bring sorted to front
+
+				uint next_bucket_no = sorted_current->BucketNo() + 1;
+				hasMoreBuckets = next_bucket_no < num_buckets && buckets_[next_bucket_no]->Count() > 0;
+				if( hasMoreBuckets ){
+					// define number of threads for next sort - it could be not accurate because this numbers changed in threads... but it is ok.
+					//				sorted_next->num_background_threads = std::max( sorted_current->num_background_threads, sorted_next->num_background_threads );
+					//				sorted_next->num_read_threads = std::max( sorted_current->num_read_threads, sorted_next->num_read_threads );
+
+					sorted_next->StartSorting( next_bucket_no, sorted_current->EndPosition(), buckets_[next_bucket_no].get() );
+				}
+			} else {
+				uint next_bucket_no = sorted_current->BucketNo() + 1;
+				sorted_current->SortBucket( buckets_[next_bucket_no].get() );
+				hasMoreBuckets = next_bucket_no + 1 < num_buckets && buckets_[next_bucket_no+1]->Count() > 0;
+			}
+
+			if( !hasMoreBuckets ) std::cout << std::endl;
+		}
+
+		~SortManager()
     {
 			if( sorted_current )
 				memory_manager.release( sorted_current->buffer_size * (sorted_next? 2 : 1) ); // release current and next bucket's memory
@@ -652,37 +695,6 @@ private:
 	inline bool isSingleSort() const { return phase_ == 1 || ( phase_ == 2 && table_index_ == 2 ) || phase_ == 3 || (phase_ == 4 && table_index_ >= 6 ); }
 
 
-	void SwitchNextBucket()
-	{
-		if( StartSorting() ) return; // for first bucket
-
-		if( !hasMoreBuckets )
-			throw InvalidValueException( "Trying to sort bucket which does not exist." );
-
-
-		if( sorted_next ){
-			assert( sorted_next->BucketNo() == sorted_current->BucketNo() + 1 );
-			assert( !sorted_current->WaitForSorted() ); // sort on current should be finished at this point
-
-			sorted_current.swap( sorted_next ); // bring sorted to front
-
-			uint next_bucket_no = sorted_current->BucketNo() + 1;
-			hasMoreBuckets = next_bucket_no < num_buckets && buckets_[next_bucket_no]->Count() > 0;
-			if( hasMoreBuckets ){
-				// define number of threads for next sort - it could be not accurate because this numbers changed in threads... but it is ok.
-//				sorted_next->num_background_threads = std::max( sorted_current->num_background_threads, sorted_next->num_background_threads );
-//				sorted_next->num_read_threads = std::max( sorted_current->num_read_threads, sorted_next->num_read_threads );
-
-				sorted_next->StartSorting( next_bucket_no, sorted_current->EndPosition(), buckets_[next_bucket_no].get() );
-			}
-		} else {
-			uint next_bucket_no = sorted_current->BucketNo() + 1;
-			sorted_current->SortBucket( buckets_[next_bucket_no].get() );
-			hasMoreBuckets = next_bucket_no + 1 < num_buckets && buckets_[next_bucket_no+1]->Count() > 0;
-		}
-
-		if( !hasMoreBuckets ) std::cout << std::endl;
-	}
 
 	void ShowStatistics( const SortedBucketBuffer *stats_of ) const {
 		double const total_ram = memory_manager.getTotalSize() / (1024.0 * 1024.0 * 1024.0);
