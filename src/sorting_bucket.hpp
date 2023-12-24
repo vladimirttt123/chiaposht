@@ -330,8 +330,10 @@ struct SortingBucket{
 		sort_time = (std::chrono::high_resolution_clock::now() - start_time)/std::chrono::milliseconds(1);
 #ifndef NDEBUG
 		// Check sort
-		for( uint64_t i = 1; i < entries_count; i++ )
-			assert( Util::MemCmpBits( memory + (i-1) * entry_size_, memory + i*entry_size_, entry_size_, begin_bits_ ) < 0 );
+		for( uint64_t i = 1; i < entries_count; i++ ){
+			auto cmp = Util::MemCmpBits( memory + (i-1) * entry_size_, memory + i*entry_size_, entry_size_, begin_bits_ );
+			assert( cmp < 0 );
+		}
 #endif
 	}
 

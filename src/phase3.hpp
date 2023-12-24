@@ -87,15 +87,21 @@ struct PassOneBlockProcessor {
 	const uint8_t k, left_entry_size_bytes, right_entry_size_bytes, right_sort_key_size, line_point_size, p2_entry_size_bytes;
 	const uint64_t POSITION_LIMIT;
 
-	PassOneBlockProcessor( const uint8_t k, const uint8_t left_entry_size_bytes,
+	PassOneBlockProcessor( const uint8_t k, bool is_table_1, const uint8_t left_entry_size_bytes,
 												const uint8_t right_entry_size_bytes, const uint8_t p2_entry_size_bytes )
 			: k(k), left_entry_size_bytes(left_entry_size_bytes), right_entry_size_bytes(right_entry_size_bytes)
-			, right_sort_key_size(k), line_point_size( 2 * k - 1 ), p2_entry_size_bytes( p2_entry_size_bytes )
+			, right_sort_key_size(is_table_1?0:k), line_point_size( 2 * k - 1 ), p2_entry_size_bytes( p2_entry_size_bytes )
 			, POSITION_LIMIT((uint64_t)1 << k)
 	{}
 
+	// returns processed size in bytes
 	uint64_t Process( const uint64_t left_disk_start_idx,	const uint64_t left_table_end_idx, const uint8_t *left_disk,
 					const uint64_t right_disk_size_bytes, const uint8_t * right_disk, SortManager::ThreadWriter &R_sort_manager) {
+
+		assert( (right_disk_size_bytes%right_entry_size_bytes) == 0 );
+		assert( P3Entry::Pos( right_disk, k ) >= left_disk_start_idx );
+
+
 		uint8_t entry_buf[right_entry_size_bytes + 8/*safe distance*/];
 
 		P3Entry entry;
@@ -106,6 +112,8 @@ struct PassOneBlockProcessor {
 
 			if( entry.new_pos >= left_table_end_idx )
 				return current_pos; // not enough left disk
+
+			assert( entry.pos >= left_disk_start_idx );
 
 			uint64_t left_new_pos_1 = Util::SliceInt64FromBytes( left_disk + (entry.pos - left_disk_start_idx) * left_entry_size_bytes, right_sort_key_size, k );
 			uint64_t left_new_pos_2 = Util::SliceInt64FromBytes( left_disk + (entry.new_pos - left_disk_start_idx) * left_entry_size_bytes, right_sort_key_size, k );
@@ -125,7 +133,7 @@ struct PassOneBlockProcessor {
 			}
 
 			Bits to_write = Bits(line_point, line_point_size);
-			to_write.AppendValue( entry.sort_key, right_sort_key_size );
+			to_write.AppendValue( entry.sort_key, /*right_sort_key_size*/k );
 
 			to_write.ToBytes( entry_buf );
 			R_sort_manager.Add( entry_buf );
@@ -135,7 +143,8 @@ struct PassOneBlockProcessor {
 	}
 };
 
-void PassOneRegular( const uint8_t k, SortManager &left_disk,
+template<class T>
+void PassOneRegular( const uint8_t k, bool is_table_1, T &left_disk,
 										 const uint32_t p2_entry_size_bytes, const uint32_t right_sort_key_size,
 										 SortManager &right_disk, SortManager &R_sort_manager, uint32_t num_threads ){
 
@@ -152,7 +161,7 @@ void PassOneRegular( const uint8_t k, SortManager &left_disk,
 		writers[i].reset( new SortManager::ThreadWriter(R_sort_manager) );
 	std::unique_ptr<std::thread> threads[num_threads];
 
-	PassOneBlockProcessor block_processor( k, left_disk.EntrySize(), right_disk.EntrySize(), p2_entry_size_bytes );
+	PassOneBlockProcessor block_processor( k, is_table_1, left_disk.EntrySize(), right_disk.EntrySize(), p2_entry_size_bytes );
 
 	const uint64_t left_cache_size = kCachedPositionsSize*left_disk.EntrySize();
 	const uint64_t chunk_size = std::max( BUF_SIZE/right_disk.EntrySize()*right_disk.EntrySize(),
@@ -170,6 +179,7 @@ void PassOneRegular( const uint8_t k, SortManager &left_disk,
 				while(true){
 					uint64_t right_bucket_start = right_bucket_from_pos.fetch_add( chunk_size, std::memory_order::relaxed );
 					if( right_bucket_start >= right_disk.CurrentBucketSize() ) return; // right disk need switch
+
 					uint64_t right_chunk_size_bytes = std::min( chunk_size, right_disk.CurrentBucketSize() - right_bucket_start );
 
 					// Cannot process chunk with first entry position too close to end of the left bucket but not the last one.
@@ -177,6 +187,8 @@ void PassOneRegular( const uint8_t k, SortManager &left_disk,
 																					&& (P3Entry::Pos( right_disk.CurrentBucketBuffer() + right_bucket_start, k ) + kCachedPositionsSize) >= left_bucket_end_idx ? 0 :
 																			block_processor.Process( left_bucket_start_idx, left_bucket_end_idx, left_disk.CurrentBucketBuffer(),
 																											right_chunk_size_bytes, right_disk.CurrentBucketBuffer() + right_bucket_start, *wri );
+
+					assert( processed_to + right_bucket_start <= right_disk.CurrentBucketSize() );
 
 					if( processed_to < right_chunk_size_bytes ){ // chunk is not finished need left bucket switch
 						// set last processed postion outside thread
@@ -192,7 +204,7 @@ void PassOneRegular( const uint8_t k, SortManager &left_disk,
 		for( uint32_t t = 0; t < num_threads; t++ )
 			threads[t]->join();
 
-		auto right_to_next_bucket = [&right_entries_todo, &right_disk, &right_bucket_from_pos, &right_bucket_last_position]( uint64_t pos ){
+		auto switch_right_to_next_bucket = [&right_entries_todo, &right_disk, &right_bucket_from_pos, &right_bucket_last_position]( uint64_t pos ){
 			if( pos != right_disk.CurrentBucketSize() ) return false;
 
 			right_entries_todo -= right_disk.CurrentBucketCount();
@@ -205,31 +217,125 @@ void PassOneRegular( const uint8_t k, SortManager &left_disk,
 		};
 
 		// now need to finished not finished by threads.
-		if( !right_to_next_bucket( right_bucket_last_position.load(std::memory_order::relaxed) ) ){	// need to switch left disk to next bucket.
+		if( !switch_right_to_next_bucket( right_bucket_last_position.load(std::memory_order::relaxed) ) ){	// need to switch left disk to next bucket.
 			uint8_t left_disk_cache[ 2UL*left_cache_size ];
 			memcpy( left_disk_cache, left_disk.CurrentBucketBuffer() + left_disk.CurrentBucketSize() - left_cache_size, left_cache_size );
 			left_disk.SwitchNextBucket(); // moving to next bucket
 			// copy the rest
 			uint32_t to_copy = std::min( left_cache_size, left_disk.CurrentBucketSize() );
 			memcpy( left_disk_cache + left_cache_size, left_disk.CurrentBucketBuffer(), to_copy );
-			P3Entry entry;
 
 			right_bucket_from_pos = right_bucket_last_position.load(std::memory_order::relaxed);
+			assert( right_bucket_from_pos < right_disk.CurrentBucketSize() );
 			do{
 				right_bucket_from_pos += block_processor.Process( left_disk.CurrentBucketStart()/left_disk.EntrySize() - kCachedPositionsSize,
 																													(left_disk.CurrentBucketStart()+to_copy)/left_disk.EntrySize(), left_disk_cache,
 																													right_disk.CurrentBucketSize() - right_bucket_from_pos,
 																													right_disk.CurrentBucketBuffer() + right_bucket_from_pos, *writers[0].get() );
 
-				right_to_next_bucket( right_bucket_from_pos.load(std::memory_order::relaxed) );
-				entry.Set( right_disk.CurrentBucketBuffer() + right_bucket_from_pos, k ); // to check if we can move to threaded process
-			} while( entry.pos < left_disk.CurrentBucketStart()/left_disk.EntrySize() );
+				switch_right_to_next_bucket( right_bucket_from_pos.load(std::memory_order::relaxed) );
+			} while( P3Entry::Pos( right_disk.CurrentBucketBuffer() + right_bucket_from_pos, k ) < left_disk.CurrentBucketStart()/left_disk.EntrySize() );
+			right_bucket_last_position = right_disk.CurrentBucketSize();
 		}
 	}
 }
 
+
 template<class T>
-void PassOneSingleThread( const uint8_t k, const uint64_t left_table_count,
+struct LeftTableCache{
+	const uint8_t entry_size;
+	const uint32_t cache_size;
+	const uint64_t table_count;
+	T &reader;
+	uint64_t start_idx = 0, disk_idx = 0;
+	std::unique_ptr<uint8_t[]> disk_cache;
+
+	LeftTableCache( T & reader, uint8_t entry_size, uint64_t table_count )
+			: entry_size(entry_size), cache_size(kCachedPositionsSize*entry_size), table_count(table_count),
+									 reader(reader), disk_cache( new uint8_t(cache_size) ) {	}
+
+	void ReadToIndexPlus( uint8_t *buf ){
+		// start from copy cache
+		uint64_t size = std::min( (uint64_t)kCachedPositionsSize, disk_idx)*entry_size;
+		memcpy( buf, disk_cache.get(), size );
+		buf += size;
+
+		for( ;disk_idx < start_idx-1 && disk_idx < table_count; disk_idx++, buf += entry_size )
+			memcpy( buf, reader.ReadNext(), entry_size );
+
+		uint8_t *dc = disk_cache.get();
+		for( uint64_t upto = disk_idx + std::min( (uint64_t)kCachedPositionsSize, table_count - disk_idx);
+				 disk_idx < upto; disk_idx++, dc += entry_size, buf += entry_size ){
+			const uint8_t * next = reader.ReadNext();
+			memcpy( buf, next, entry_size );
+			memcpy( dc, next, entry_size );
+		}
+	}
+};
+
+template<class T>
+void PassOneSemiThreaded( const uint8_t k, const uint64_t left_table_count, T& left_disk,
+													const uint32_t p2_entry_size_bytes, const uint32_t right_sort_key_size,
+													const uint32_t right_entry_size_bytes, const uint64_t right_table_size,
+													Disk& right_disk, SortManager * R_sort_manager, uint32_t num_threads ){
+
+	PassOneBlockProcessor block_processor( k, left_disk.EntrySize(), right_entry_size_bytes, p2_entry_size_bytes );
+
+	LeftTableCache left_cache( left_disk, left_disk.EntrySize(), left_table_count );
+	uint64_t right_disk_pos = 0;
+
+	std::unique_ptr<std::thread> threads[num_threads];
+	std::mutex left_read_mutex, right_read_mutex;
+
+	for( uint32_t i = 0; i < num_threads; i++ ){ // satrt threads
+		threads[i].reset( new std::thread( [ &R_sort_manager, &left_disk, &left_cache, &right_read_mutex,
+																				 &right_disk, &right_disk_pos, &k, &right_table_size, &left_read_mutex,
+																				 &block_processor, &p2_entry_size_bytes ](){
+			SortManager::ThreadWriter writer( *R_sort_manager );
+			uint64_t left_max_entries = ( HUGE_MEM_PAGE_SIZE - MEM_SAFE_BUF_SIZE )/left_disk.EntrySize();
+			auto left_buf = Util::allocate<uint8_t>( left_max_entries*left_disk.EntrySize() );
+			uint64_t right_max_size = (HUGE_MEM_PAGE_SIZE-MEM_SAFE_BUF_SIZE)/ p2_entry_size_bytes*p2_entry_size_bytes;
+			auto right_buf = Util::allocate<uint8_t>( right_max_size );
+			uint64_t left_buf_start_idx, left_disk_end_idx;
+			while( right_disk_pos < right_table_size ){
+				uint64_t right_buf_size = 0;
+				{
+					std::lock_guard<std::mutex> m_guard( right_read_mutex );
+					if( right_disk_pos >= right_table_size ) return; // we done
+					left_buf_start_idx = left_cache.start_idx;
+
+					// the max idx we can read up to
+					uint64_t left_max_idx = left_cache.start_idx + left_max_entries - kCachedPositionsSize - 1;
+
+					do{
+						memcpy( right_buf.get() + right_buf_size, right_disk.Read( right_disk_pos, p2_entry_size_bytes ), p2_entry_size_bytes );
+						left_disk_end_idx = P3Entry::Pos( right_buf.get() + right_buf_size, k );
+						right_buf_size += p2_entry_size_bytes;
+						right_disk_pos++;
+					} while( right_buf_size < right_max_size && right_disk_pos < right_table_size && left_disk_end_idx < left_max_idx );
+
+					// now we can update left disk cache data and free write lock after catching left lock
+					left_cache.start_idx = left_disk_end_idx;
+					left_read_mutex.lock();
+				}
+
+				// reading left disk
+				left_cache.ReadToIndexPlus( left_buf.get() );
+				left_read_mutex.unlock();
+
+				auto tmp = block_processor.Process( left_buf_start_idx, left_disk_end_idx + kCachedPositionsSize, left_buf.get(), right_buf_size, right_buf.get(), writer );
+				assert( tmp == right_buf_size );
+			}
+		} ) );
+	}
+
+	// wait for threads finished
+	for( uint32_t i = 0; i < num_threads; i++ )
+		threads[i]->join();
+}
+
+template<class T>
+void PassOneSingleThreaded( const uint8_t k, const uint64_t left_table_count,
 						 T& left_disk_new_pos_reader,
 						 const uint32_t p2_entry_size_bytes, const uint32_t right_sort_key_size,
 						 const uint32_t right_entry_size_bytes, const uint64_t right_table_size,
@@ -360,26 +466,36 @@ Phase3Results RunPhase3(
 				next_stats_idx = !full_stats[1] ? 0 : (next_stats_idx + 1)%2;
 
 				if( table_index == 1){
-					NewPosTable1Reader t1(k, res2.table1 );
-					PassOneSingleThread( k, /*left table count:*/ res2.table_sizes[table_index], t1,
-									p2_entry_size_bytes, right_sort_key_size,
-									right_entry_size_bytes, /*right_table_size:*/ p2_entry_size_bytes * res2.table_sizes[table_index + 1],
-									right_disk, R_sort_manager.get() );
-				}else{
-					if( num_threads <= 1 || table_index == 6  ){
-						NewPosSortManagerReader sr( k, right_sort_key_size, L_sort_manager.get() );
-						PassOneSingleThread( k, /*left table count:*/ res2.table_sizes[table_index], sr,
+					if( num_threads <= 1 ){
+						NewPosTable1Reader t1(k, res2.table1 );
+						PassOneSingleThreaded( k, /*left table count:*/ res2.table_sizes[table_index], t1,
 										p2_entry_size_bytes, right_sort_key_size,
 										right_entry_size_bytes, /*right_table_size:*/ p2_entry_size_bytes * res2.table_sizes[table_index + 1],
 										right_disk, R_sort_manager.get() );
 					} else {
-						PassOneRegular( k, *L_sort_manager.get(), p2_entry_size_bytes, right_sort_key_size,
-														(SortManager&)right_disk, *R_sort_manager.get(), num_threads );
+						PassOneRegular( k, true, res2.table1, p2_entry_size_bytes, right_sort_key_size,
+													 (SortManager&)right_disk, *R_sort_manager.get(), num_threads );
+					// 	PassOneSemiThreaded( k, /*left table count:*/ res2.table_sizes[table_index], res2.table1,
+					// 											 p2_entry_size_bytes, right_sort_key_size,
+					// 											 right_entry_size_bytes, /*right_table_size:*/ p2_entry_size_bytes * res2.table_sizes[table_index + 1],
+					// 											 right_disk, R_sort_manager.get(), /*num_threads*/ 1 );
+					}
+
+					// Remove no longer needed file
+					res2.table1.FreeMemory();
+
+				}else{
+					if( num_threads <= 1 || table_index == 6  ){
+						NewPosSortManagerReader sr( k, right_sort_key_size, L_sort_manager.get() );
+						PassOneSingleThreaded( k, /*left table count:*/ res2.table_sizes[table_index], sr,
+										p2_entry_size_bytes, right_sort_key_size,
+										right_entry_size_bytes, /*right_table_size:*/ p2_entry_size_bytes * res2.table_sizes[table_index + 1],
+										right_disk, R_sort_manager.get() );
+					} else {
+						PassOneRegular( k, false, *L_sort_manager.get(), p2_entry_size_bytes, right_sort_key_size,
+													 (SortManager&)right_disk, *R_sort_manager.get(), num_threads );
 					}
 				}
-
-				// Remove no longer needed file
-				res2.table1.FreeMemory();
 
 				// Flush cache so all entries are written to buckets
 				R_sort_manager->FlushCache( !full_stats[1] );
@@ -389,10 +505,9 @@ Phase3Results RunPhase3(
 
 				Timer computation_pass_2_timer;
 
-				if (table_index > 1) {
-						// Make sure all files are removed
-						L_sort_manager.reset();
-				}
+				if (table_index > 1)
+					L_sort_manager.reset(); // Make sure all files are removed
+
 
 				// In the second pass we read from R sort manager and write to L sort
 				// manager, and they both handle table (table_index + 1)'s data. The
@@ -425,7 +540,8 @@ Phase3Results RunPhase3(
 				const uint64_t R_sort_manager_size_bytes = entries_to_be_written*R_sort_manager->EntrySize();
 				final_table_begin_pointers[table_index + 1] = final_table_begin_pointers[table_index] +
 						( entries_to_be_written/kEntriesPerPark + ( (entries_to_be_written%kEntriesPerPark) ? 1 : 0) ) * park_size_bytes;
-
+#define NO_MUTEX_ALG
+#ifdef NO_MUTEX_ALG
 				std::atomic_uint64_t reading_position = 0, processed_total = 0, bucket_end = 0;
 
 				std::mutex write_mutex;
@@ -467,7 +583,6 @@ Phase3Results RunPhase3(
 							if( position == R_sort_manager->CurrentBucketEnd() ){
 								switch_to_next_bucket( position );
 								right_reader_entry_buf = R_sort_manager->CurrentBucketBuffer( position + sort_buf_size );
-								std::cout << "rare case " << std::endl;
 							} else if( position < R_sort_manager->CurrentBucketEnd() ){
 								uint64_t prev_size = R_sort_manager->CurrentBucketEnd() - position;
 								assert( prev_size > 0 );
@@ -542,13 +657,88 @@ Phase3Results RunPhase3(
 				// Start threads
 				R_sort_manager->EnsureSortingStarted();
 				bucket_end.store( R_sort_manager->CurrentBucketEnd(), std::memory_order::relaxed );
+#else // NO_MUTEX_ALG
+				uint128_t global_last_line_point = 0;
+				std::mutex read_mutex, write_mutex;
+				auto parking_thread = [&right_entry_size_bytes, &R_sort_manager, &read_mutex,
+															 &line_point_size, &right_sort_key_size, &global_last_line_point,
+															 &sort_key_shift, &index_shift, &L_sort_manager, &write_mutex,
+															 &tmp2_disk, &k, &final_table_begin_pointers, &table_index,
+															 &park_size_bytes](){
+
+					uint32_t sort_buf_size = kEntriesPerPark*right_entry_size_bytes;
+					std::unique_ptr<uint8_t[]> sort_buf( Util::NewSafeBuffer( sort_buf_size ) );
+					ParkWriterTS parker( &tmp2_disk, &write_mutex,k, table_index,
+															final_table_begin_pointers[table_index], park_size_bytes );
+					uint64_t index;
+					auto park_deltas = std::make_unique<std::vector<uint8_t>>();
+					auto park_stubs = std::make_unique<std::vector<uint64_t>>();
+					uint128_t last_line_point = 0;
+
+					SortManager::ThreadWriter sort_writer = SortManager::ThreadWriter( *L_sort_manager );
+
+					while( true ){
+						{
+							std::lock_guard<std::mutex> lk(read_mutex);
+							index = R_sort_manager->GetReadPosition()/right_entry_size_bytes;
+							sort_buf_size = R_sort_manager->Read( sort_buf.get(), sort_buf_size );
+							if( sort_buf_size == 0 ) return;
+							last_line_point = global_last_line_point;
+							global_last_line_point = Util::SliceInt128FromBytes(
+									sort_buf.get() + sort_buf_size - right_entry_size_bytes, 0, line_point_size );
+						}
+						uint128_t checkpoint_line_point = 0;
+						uint64_t park_index = index / kEntriesPerPark;
+
+						uint8_t *right_reader_entry_buf = sort_buf.get();
+						for( uint64_t last_index = index + sort_buf_size/right_entry_size_bytes
+								 ; index < last_index; index++, right_reader_entry_buf += right_entry_size_bytes ){
+
+							// Right entry is read as (line_point, sort_key)
+							uint128_t line_point = Util::SliceInt128FromBytes(right_reader_entry_buf, 0, line_point_size);
+							uint64_t sort_key =
+									Util::SliceInt64FromBytes(right_reader_entry_buf, line_point_size, right_sort_key_size);
+
+							// Write the new position (index) and the sort key
+							uint128_t to_write = (uint128_t)sort_key << sort_key_shift;
+							to_write |= (uint128_t)index << index_shift;
+
+							sort_writer.Add( to_write );
+
+							// Every EPP entries, writes a park
+							if (index % kEntriesPerPark == 0)
+								checkpoint_line_point = line_point;
+
+							uint128_t big_delta = line_point - last_line_point;
+
+							// Since we have approx 2^k line_points between 0 and 2^2k, the average
+							// space between them when sorted, is k bits. Much more efficient than storing each
+							// line point. This is diveded into the stub and delta. The stub is the least
+							// significant (k-kMinusStubs) bits, and largely random/incompressible. The small
+							// delta is the rest, which can be efficiently encoded since it's usually very
+							// small.
+
+							uint64_t stub = big_delta & ((1ULL << (k - kStubMinusBits)) - 1);
+							uint64_t small_delta = big_delta >> (k - kStubMinusBits);
+
+							assert(small_delta < 256);
+
+							if( (index % kEntriesPerPark) != 0 ) {
+								park_deltas->push_back(small_delta);
+								park_stubs->push_back(stub);
+							}
+							last_line_point = line_point;
+						}
+
+						parker.Write( park_index, checkpoint_line_point, park_deltas, park_stubs );
+					}
+				};
+#endif // NO_MUTEX_ALG
 				if( num_threads <= 1 ){
 					parking_thread();
 				}
 				else {
-					uint32_t t_num = num_threads*2; // double the number of threads for this part
-
-					// assert( R_sort_manager->SmallestBucketSize()/(t_num+1) > kEntriesPerPark*R_sort_manager->EntrySize() );
+					uint32_t t_num = 1;// num_threads*2; // double the number of threads for this part
 
 					std::unique_ptr<std::thread> threads[t_num];
 					for( uint32_t t = 0; t < t_num; t++ )

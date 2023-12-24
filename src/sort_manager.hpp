@@ -382,9 +382,9 @@ public:
 		inline uint64_t CurrentBucketEnd() const { return sorted_current->EndPosition(); }
 		inline uint64_t CurrentBucketSize() const { return sorted_current->Bucket()->Size(); }
 		inline uint64_t CurrentBucketCount() const { return sorted_current->Bucket()->Count(); }
-		inline const uint8_t * CurrentBucketBuffer( uint64_t sorted_to = 0) const {
-			if( sorted_to == 0 ) sorted_to = sorted_current->EndPosition()-entry_size_;
-			sorted_current->WaitForSortedTo(sorted_to); return sorted_current->buffer(); }
+		inline const uint8_t * CurrentBucketBuffer( uint64_t sorted_to = 0 ) const {
+			sorted_current->WaitForSortedTo( sorted_to ? sorted_to : sorted_current->EndPosition() );
+			return sorted_current->buffer(); }
 		inline const bool CurrentBucketIsLast() const { return sorted_current->BucketNo() + 1 >= (int)num_buckets || buckets_[sorted_current->BucketNo() + 1]->Count() == 0; }
 
 		inline void AddToCache( StreamBuffer &entry )
