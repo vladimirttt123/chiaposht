@@ -566,9 +566,9 @@ public:
 			return res;
 		}
 
-		inline uint64_t SmallestBucketSize() const {
+		inline uint64_t SmallestBucketSizeWithoutLast() const {
 			uint64_t res = buckets_[0]->Size();
-			for( uint i = 1; i < num_buckets; i++ )
+			for( uint i = 1; i < (num_buckets-1); i++ )
 				if( buckets_[i]->Size() < res ) res = buckets_[i]->Size();
 			return res;
 		}

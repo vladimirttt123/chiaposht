@@ -109,7 +109,7 @@ public:
         return Util::ByteAlign((kEntriesPerPark - 1) * (k - kStubMinusBits)) / 8;
     }
 
-    static uint32_t CalculateParkSize(uint8_t k, uint8_t table_index)
+		static uint32_t CalculateParkSize( uint8_t k, uint8_t table_index )
     {
         return CalculateLinePointSize(k) + CalculateStubsSize(k) +
                CalculateMaxDeltasSize(k, table_index);

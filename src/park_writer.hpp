@@ -13,6 +13,7 @@
 #ifndef PARK_WRITER_HPP
 #define PARK_WRITER_HPP
 
+#include "disk.hpp"
 #include "encoding.hpp"
 #include "pos_constants.hpp"
 
@@ -99,53 +100,112 @@ void WriteParkToFile(
 	final_disk.Write(writer, (uint8_t *)park_buffer, park_size_bytes);
 }
 
+
+struct ParksBuffer{
+	uint32_t park_first_index = 0;
+	std::unique_ptr<uint8_t,Util::Deleter<uint8_t>> buf;
+	std::atomic_uint32_t written_parks = 0;
+
+	ParksBuffer() : buf(Util::allocate<uint8_t>(HUGE_MEM_PAGE_SIZE) ) { }
+};
+
+struct ParkAggregator{
+	static const uint32_t num_buffers = 2;
+	const uint32_t park_size_bytes;
+	const uint32_t parks_per_buffer;
+	const uint64_t table_start;
+
+	ParkAggregator( FileDisk *final_disk, const uint8_t &k, const uint8_t &table_index, uint64_t table_start, uint32_t park_size_bytes )
+			: park_size_bytes(park_size_bytes)
+			, parks_per_buffer( (HUGE_MEM_PAGE_SIZE-MEM_SAFE_BUF_SIZE)/park_size_bytes )
+			, table_start(table_start)
+			, final_disk(final_disk), max_index( parks_per_buffer*num_buffers ){
+		for( uint32_t i = 1; i < num_buffers; i++)
+			buffers[i].park_first_index = buffers[i-1].park_first_index + parks_per_buffer;
+	}
+
+	inline uint8_t * get_for( uint64_t index ){
+		uint64_t old;
+		while( (old = max_index.load(std::memory_order::relaxed) ) <= index )
+			max_index.wait( old, std::memory_order::relaxed );
+
+		uint32_t i = i_for_index( index );
+		return buffers[i].buf.get() + (index-buffers[i].park_first_index)*park_size_bytes;
+	}
+
+	inline void finish( uint64_t index ){
+		uint32_t i = i_for_index( index );
+		buffers[i].written_parks.fetch_add(1,std::memory_order::relaxed);
+		if( buffers[i].written_parks == parks_per_buffer ){
+			{
+				std::lock_guard<std::mutex> lk(write_mutex);
+				final_disk->Write( table_start + buffers[i].park_first_index * park_size_bytes, buffers[i].buf.get(), parks_per_buffer*park_size_bytes );
+			}
+			buffers[i].written_parks.store( 0, std::memory_order::relaxed );
+			buffers[i].park_first_index = max_index.fetch_add( parks_per_buffer, std::memory_order::relaxed );
+			max_index.notify_all();
+		}
+	}
+	~ParkAggregator(){
+		bool chk = true;
+		for( uint32_t i = 0; i < num_buffers; i++ )
+			if( buffers[i].written_parks > 0 ){
+				assert( chk ); chk = false;
+				final_disk->Write( table_start + buffers[i].park_first_index * park_size_bytes, buffers[i].buf.get(), parks_per_buffer*park_size_bytes );
+			}
+	}
+private:
+	FileDisk *final_disk;
+	ParksBuffer buffers[num_buffers];
+	std::atomic_uint64_t max_index;
+	std::mutex write_mutex;
+
+	inline uint32_t i_for_index( uint64_t index ){
+		for( uint32_t i = 0; i < num_buffers; i++ ){
+			if( buffers[i].park_first_index <= index && index < (buffers[i].park_first_index + parks_per_buffer) )
+				return i;
+		}
+
+		throw InvalidStateException( "Park aggregator for processed index" );
+	}
+};
+
+// Thread safe version of park writer
 struct ParkWriterTS{
 
-	ParkWriterTS( FileDisk *final_disk, std::mutex *write_mutex, const uint8_t &k,
-							 const uint8_t &table_index, const uint64_t &table_start, const uint32_t &park_size_bytes )
-			: final_disk(final_disk), write_mutex(write_mutex), k(k)
-			, park_buffer_size( EntrySizes::CalculateLinePointSize(k)
-												 + EntrySizes::CalculateStubsSize(k) + 2
-												 + EntrySizes::CalculateMaxDeltasSize(k, 1) )
-			, park_buffer( new uint8_t[park_buffer_size] )
-			, table_start(table_start)
-			, table_index(table_index)
-			, park_size_bytes(park_size_bytes )
-	{}
+	ParkWriterTS( ParkAggregator&aggregator, const uint8_t &k, const uint8_t &table_index )
+			: aggregator(aggregator), k(k), table_index(table_index)	{}
 
 	void Write( uint64_t park_index, uint128_t first_line_point,
 						 std::unique_ptr<std::vector<uint8_t>> &park_deltas,
 						 std::unique_ptr<std::vector<uint64_t>> &park_stubs ){
 
-		PrepareParkBuffer( park_size_bytes,
+		// for( uint32_t k = 15; k < 55; k++ ){
+		// 	for( uint32_t table_index = 1; table_index < 8; table_index ++ ){
+		// 		auto was = EntrySizes::CalculateLinePointSize(k)
+		// 										 + EntrySizes::CalculateStubsSize(k) + 2
+		// 											 + EntrySizes::CalculateMaxDeltasSize(k, 1);
+		// 		auto now = EntrySizes::CalculateParkSize(k, table_index );
+		// 		std::cout << "k=" << k << "; t=" << table_index << "; was=" << was << "; now=" << now << "; was-now=" << (was - now) << std::endl;
+		// 		//assert( was == now );
+		// 	}
+		// }
+
+		PrepareParkBuffer( aggregator.park_size_bytes,
 											first_line_point, *park_deltas.get(), *park_stubs.get(),
 											k, table_index,
-											park_buffer.get(), park_buffer_size );
+											aggregator.get_for( park_index ), aggregator.park_size_bytes );
 
-		uint64_t writer = table_start + park_index * park_size_bytes;
-		{
-			std::lock_guard<std::mutex> lk(*write_mutex);
-			final_disk->Write( writer, park_buffer.get(), park_size_bytes );
-		}
+		aggregator.finish( park_index );
 
 		park_deltas->clear();
 		park_stubs->clear();
 	}
 
 private:
-	FileDisk *final_disk;
-	std::mutex *write_mutex;
+	ParkAggregator &aggregator;
 	const uint8_t k;
-	uint64_t const park_buffer_size;
-	std::unique_ptr<uint8_t[]> park_buffer;
-	const uint64_t table_start;
 	const uint8_t table_index;
-
-	// The park size must be constant, for simplicity, but must be big enough to store EPP
-	// entries. entry deltas are encoded with variable length, and thus there is no
-	// guarantee that they won't override into the next park. It is only different (larger)
-	// for table 1
-	const uint32_t park_size_bytes;
 };
 
 
