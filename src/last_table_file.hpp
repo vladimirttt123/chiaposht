@@ -216,7 +216,8 @@ struct LastTableReader : Disk {
 		, threads( new ThreadData[max_threads] )
 	{	}
 
-
+	inline uint16_t EntrySize() const { return entry_size; }
+	inline uint64_t Count() const { return num_entries; }
 
 	uint8_t const* Read( uint64_t begin, uint64_t length) override{
 		if( !bitfield_ ){ // first read
@@ -466,6 +467,35 @@ private: // *********************
 			memcpy( entry, tmp, entry_size );
 		}
 	}
+};
+
+// Temporal implementation to allow threads in Phase3 computational pass 1
+// need to be done better in particular reading source file
+struct LastTableBucketReader{
+	LastTableReader &reader;
+	const uint64_t bucket_size, file_size;
+
+	LastTableBucketReader( LastTableReader&reader, uint64_t bucekt_size )
+			:reader(reader), bucket_size((bucekt_size-MEM_SAFE_BUF_SIZE)/reader.EntrySize()*reader.EntrySize() )
+			, file_size( reader.Count()*reader.EntrySize() ), bucket(Util::allocate<uint8_t>(this->bucket_size)){}
+
+	inline uint64_t Count() const { return reader.Count(); }
+	inline uint16_t EntrySize() const { return reader.EntrySize(); }
+	inline uint64_t CurrentBucketSize() const { return bucket_used; }
+	inline uint64_t CurrentBucketCount() const { return bucket_used/reader.EntrySize();}
+	inline const uint8_t* CurrentBucketBuffer(uint64_t up_to_global_pos = 0){
+		return bucket.get();
+	}
+	inline void EnsureSortingStarted(){ SwitchNextBucket(); }
+
+	inline void SwitchNextBucket(){
+		for( bucket_used = 0; bucket_used < bucket_size && file_read_position < file_size ;bucket_used+=reader.EntrySize(), file_read_position += reader.EntrySize() )
+			memcpy( bucket.get() + bucket_used, reader.Read( file_read_position, reader.EntrySize() ), reader.EntrySize() );
+	}
+
+private:
+	std::unique_ptr<uint8_t, Util::Deleter<uint8_t>>  bucket;
+	uint64_t bucket_used = 0, file_read_position = 0;
 };
 
 #endif // SRC_CPP_LAST_TABLE_FILE_HPP_

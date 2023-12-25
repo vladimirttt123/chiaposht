@@ -14,8 +14,8 @@
 #ifdef NEW_FILTERED
 struct FilteredDisk
 {
-		FilteredDisk( FileDisk* underlying, MemoryManager &memory_manager, bitfield *filter, int entry_size, uint64_t file_size )
-			: bucket_size( (HUGE_MEM_PAGE_SIZE - MEM_SAFE_BUF_SIZE)/2/entry_size*entry_size), entry_size_(entry_size), file_size(file_size)
+		FilteredDisk( FileDisk* underlying, MemoryManager &memory_manager, bitfield *filter, int entry_size, uint64_t file_size, uint32_t num_threads )
+			: bucket_size( (HUGE_MEM_PAGE_SIZE - MEM_SAFE_BUF_SIZE)/2/entry_size*entry_size*std::max(1U,num_threads)), entry_size_(entry_size), file_size(file_size)
 			, buckets_buf( Util::allocate<uint8_t>( bucket_size*2 + MEM_SAFE_BUF_SIZE ) ), bucket_buf_start( bucket_size )
 			, last_pos_in_buffer(-entry_size), memory_manager(memory_manager), filter_( filter ), underlying_(underlying)
 		{

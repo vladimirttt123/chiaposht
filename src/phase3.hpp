@@ -149,10 +149,10 @@ struct PassOneBlockProcessor {
 	}
 };
 
-template<class T>
+template<class T, class S>
 void PassOneRegular( const uint8_t k, bool is_table_1, T &left_disk,
 										 const uint32_t p2_entry_size_bytes, const uint32_t right_sort_key_size,
-										 SortManager &right_disk, SortManager &R_sort_manager, uint32_t num_threads ){
+										 S &right_disk, SortManager &R_sort_manager, uint32_t num_threads ){
 
 	assert( num_threads > 1 );
 	//assert( num_threads = 1 ); // for debug
@@ -400,15 +400,21 @@ Phase3Results RunPhase3(
 					res2.table1.FreeMemory();
 
 				}else{
-					if( num_threads <= 1 || table_index == 6  ){
+					if( num_threads <= 1  ){
 						NewPosSortManagerReader sr( k, right_sort_key_size, L_sort_manager.get() );
 						PassOneSingleThreaded( k, /*left table count:*/ res2.table_sizes[table_index], sr,
 										p2_entry_size_bytes, right_sort_key_size,
 										right_entry_size_bytes, /*right_table_size:*/ p2_entry_size_bytes * res2.table_sizes[table_index + 1],
 										right_disk, R_sort_manager.get() );
 					} else {
-						PassOneRegular( k, false, *L_sort_manager.get(), p2_entry_size_bytes, right_sort_key_size,
+						if( table_index < 6 )
+							PassOneRegular( k, false, *L_sort_manager.get(), p2_entry_size_bytes, right_sort_key_size,
 													 (SortManager&)right_disk, *R_sort_manager.get(), num_threads );
+						else{
+							LastTableBucketReader bucket_reader( (LastTableReader&)right_disk, HUGE_MEM_PAGE_SIZE*num_threads );
+							PassOneRegular( k, false, *L_sort_manager.get(), p2_entry_size_bytes, right_sort_key_size,
+															bucket_reader, *R_sort_manager.get(), num_threads );
+						}
 					}
 				}
 

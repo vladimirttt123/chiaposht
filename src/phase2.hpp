@@ -411,7 +411,7 @@ Phase2Results RunPhase2(
 		tmp_1_disks[1].setClearAfterRead(); // next read is last read
 		// BufferedDisk disk_table1(&tmp_1_disks[1], table_size * entry_size);
 		return {
-				FilteredDisk( &tmp_1_disks[1], memory_manager, current_bitfield.release(), entry_size_t1, table_size * entry_size_t1 )
+				FilteredDisk( &tmp_1_disks[1], memory_manager, current_bitfield.release(), entry_size_t1, table_size * entry_size_t1, num_threads )
 				, std::make_unique<LastTableReader>( &tmp_1_disks[7], k, new_entry_size,
 														new_table_sizes[7], (flags&NO_COMPACTION)==0, num_threads )
         , std::move(output_files)
