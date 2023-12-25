@@ -135,30 +135,25 @@ struct SortedBucketBuffer{
 	{
 	}
 
-	~SortedBucketBuffer(){ FinishSort(); }
+	~SortedBucketBuffer(){ ReplaceSortingThread(); }
 
 	inline uint64_t WaitsCount() const { return waits_count; }
 	inline uint64_t WaitsReadCount() const { return read_waits_count; }
 	inline double WaitsTimeSec() const { return wait_time/1000000.0; }
 
 	// wait to sort
-	inline void WaitForSortedTo( uint64_t position ){
-		assert( position >= start_position && position <= end_position );
+	inline void WaitForSortedTo( uint64_t global_position ){
+		assert( global_position >= start_position && global_position <= end_position );
 
-		if( sorting_thread.load( std::memory_order_relaxed ) != NULL && position >= start_position && position <= end_position ){
+		if( sorting_thread.load( std::memory_order_relaxed ) != NULL && global_position >= start_position && global_position <= end_position ){
 
 			auto start_time = std::chrono::high_resolution_clock::now();
 
 			if( bucket->SortedPosision() <= 0 ) read_waits_count.fetch_add( 1, std::memory_order::relaxed );
 
-			if( position >= end_position ){
-				FinishSort(); // this wait for sort to finish
-			}
-			else {
-				waits_count += bucket->SortedPositionWait( position - start_position );
-				if( bucket->SortedPosision() >= bucket->Size() )
-					FinishSort(); // this releasing threads when sort is finished
-			}
+			waits_count += bucket->SortedPositionWait( global_position - start_position );
+			if( bucket->SortedPosision() >= bucket->Size() )
+				ReplaceSortingThread(); // this releasing threads when sort is finished
 
 			auto elapsed = std::chrono::high_resolution_clock::now() - start_time;
 			uint64_t microseconds = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -167,7 +162,7 @@ struct SortedBucketBuffer{
 		}
 	}
 
-	inline bool WaitForSorted(){ return FinishSort(); }
+	inline void WaitForSorted(){ WaitForSortedTo( end_position ); }
 
 	inline const uint8_t* buffer() const { return bucket_buffer.get(); }
 	inline SortingBucket * Bucket() const { return bucket; }
@@ -198,10 +193,12 @@ struct SortedBucketBuffer{
 
 		bool isPrevWaited = waits_count > 0;
 		wait_time = read_waits_count = waits_count = 0;
-		FinishSort( new std::thread(
+		ReplaceSortingThread( new std::thread(
 										[this]( SortingBucket* bucket, uint8_t* buf, std::mutex *r_mutex, bool isPrevWaited ){
+//					std::cout << "\t\tdebug: Start sort of " << this->bucket_no << std::endl;
 												r_mutex->lock();
 												bucket->SortToMemory( buf, num_background_threads, num_read_threads, r_mutex );
+//					std::cout << "\t\tdebug: Finished sort of " << this->bucket_no << std::endl;
 												SortDoneEvent( this->sort_manager, this );
 
 												// adjust number of threads for next sorting?
@@ -220,6 +217,8 @@ struct SortedBucketBuffer{
 														num_read_threads++; // if we cannot increase sorts threads increase read threads
 												}
 											}, this->bucket, this->bucket_buffer.get(), this->read_mutex, isPrevWaited ) );
+
+		assert( this->sorting_thread );
 	}
 private:
 	std::unique_ptr<uint8_t, Util::Deleter<uint8_t>> bucket_buffer;
@@ -232,14 +231,13 @@ private:
 	std::atomic_uint_fast64_t wait_time = 0;
 
 
-	inline bool FinishSort( std::thread * newThread = NULL){
+	inline void ReplaceSortingThread( std::thread * newThread = NULL){
 		auto prev = sorting_thread.exchange( newThread, std::memory_order_relaxed );
 
-		if( prev == NULL ) return false;
-
-		prev->join();
-		delete prev;
-		return true;
+		if( prev ){
+			prev->join();
+			delete prev;
+		}
 	}
 };
 
@@ -382,8 +380,8 @@ public:
 		inline uint64_t CurrentBucketEnd() const { return sorted_current->EndPosition(); }
 		inline uint64_t CurrentBucketSize() const { return sorted_current->Bucket()->Size(); }
 		inline uint64_t CurrentBucketCount() const { return sorted_current->Bucket()->Count(); }
-		inline const uint8_t * CurrentBucketBuffer( uint64_t sorted_to = 0 ) const {
-			sorted_current->WaitForSortedTo( sorted_to ? sorted_to : sorted_current->EndPosition() );
+		inline const uint8_t * CurrentBucketBuffer( uint64_t sorted_to_global_pos = 0 ) const {
+			sorted_current->WaitForSortedTo( sorted_to_global_pos ? sorted_to_global_pos : sorted_current->EndPosition() );
 			return sorted_current->buffer(); }
 		inline const bool CurrentBucketIsLast() const { return sorted_current->BucketNo() + 1 >= (int)num_buckets || buckets_[sorted_current->BucketNo() + 1]->Count() == 0; }
 
@@ -587,7 +585,7 @@ public:
 
 			if( sorted_next ){
 				assert( sorted_next->BucketNo() == sorted_current->BucketNo() + 1 );
-				assert( !sorted_current->WaitForSorted() ); // sort on current should be finished at this point
+				//assert( !sorted_current->WaitForSorted() ); // sort on current should be finished at this point
 
 				sorted_current.swap( sorted_next ); // bring sorted to front
 
