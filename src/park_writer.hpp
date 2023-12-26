@@ -102,15 +102,13 @@ void WriteParkToFile(
 
 
 struct ParksBuffer{
-	uint32_t park_first_index = 0;
 	std::unique_ptr<uint8_t,Util::Deleter<uint8_t>> buf;
-	std::atomic_uint32_t written_parks = 0;
+	std::atomic_uint32_t started_parks = 0, finished_parks = 0;
 
 	ParksBuffer() : buf(Util::allocate<uint8_t>(HUGE_MEM_PAGE_SIZE) ) { }
 };
 
 struct ParkAggregator{
-	static const uint32_t num_buffers = 2;
 	const uint32_t park_size_bytes;
 	const uint32_t parks_per_buffer;
 	const uint64_t table_start;
@@ -119,55 +117,54 @@ struct ParkAggregator{
 			: park_size_bytes(park_size_bytes)
 			, parks_per_buffer( (HUGE_MEM_PAGE_SIZE-MEM_SAFE_BUF_SIZE)/park_size_bytes )
 			, table_start(table_start)
-			, final_disk(final_disk), max_index( parks_per_buffer*num_buffers ){
-		for( uint32_t i = 1; i < num_buffers; i++)
-			buffers[i].park_first_index = buffers[i-1].park_first_index + parks_per_buffer;
-	}
+			, final_disk(final_disk)
+	{	}
 
 	inline uint8_t * get_for( uint64_t index ){
-		uint64_t old;
-		while( (old = max_index.load(std::memory_order::relaxed) ) <= index )
-			max_index.wait( old, std::memory_order::relaxed );
+		uint64_t idx; // wait for index be in current
+		while( (idx = park_first_index.load( std::memory_order::relaxed )) + parks_per_buffer <= index )
+			park_first_index.wait( idx, std::memory_order::relaxed );
+		idx = (idx/parks_per_buffer)%2; // find index of current
+		index -= park_first_index.load(std::memory_order::relaxed); // make index local
 
-		uint32_t i = i_for_index( index );
-		return buffers[i].buf.get() + (index-buffers[i].park_first_index)*park_size_bytes;
+		uint32_t prev = buffers[idx].started_parks.fetch_add( 1, std::memory_order::relaxed );
+		if( prev+1 == parks_per_buffer ){ // need to switch
+			// wait for other is free to change to
+			while( (prev = buffers[idx^1].finished_parks.load(std::memory_order::relaxed)) != 0 )
+				buffers[idx^1].finished_parks.wait( prev, std::memory_order::relaxed );
+			// move to next
+			park_first_index.fetch_add( parks_per_buffer, std::memory_order::relaxed );
+			park_first_index.notify_all();
+		}
+
+		return buffers[idx].buf.get() + index*park_size_bytes;
 	}
 
 	inline void finish( uint64_t index ){
-		uint32_t i = i_for_index( index );
-		buffers[i].written_parks.fetch_add(1,std::memory_order::relaxed);
-		if( buffers[i].written_parks == parks_per_buffer ){
-			{
-				std::lock_guard<std::mutex> lk(write_mutex);
-				final_disk->Write( table_start + buffers[i].park_first_index * park_size_bytes, buffers[i].buf.get(), parks_per_buffer*park_size_bytes );
+		uint64_t first_idx = park_first_index.load(std::memory_order::relaxed);
+		if( index < first_idx ) first_idx -= parks_per_buffer;
+		uint64_t idx = (first_idx/parks_per_buffer)%2;
+		uint32_t finished = buffers[idx].finished_parks.fetch_add( 1, std::memory_order::relaxed );
+		if( (finished+1) == parks_per_buffer ){
+			{ // seems no need in mutiex it is impossible that both buffers are full
+				// std::lock_guard<std::mutex> lk(write_mutex);
+				final_disk->Write( table_start + first_idx * park_size_bytes, buffers[idx].buf.get(), parks_per_buffer*park_size_bytes );
 			}
-			buffers[i].written_parks.store( 0, std::memory_order::relaxed );
-			buffers[i].park_first_index = max_index.fetch_add( parks_per_buffer, std::memory_order::relaxed );
-			max_index.notify_all();
+			buffers[idx].started_parks.fetch_sub( parks_per_buffer );
+			buffers[idx].finished_parks.fetch_sub( parks_per_buffer, std::memory_order::relaxed );
+			buffers[idx].finished_parks.notify_all();
 		}
 	}
 	~ParkAggregator(){
-		bool chk = true;
-		for( uint32_t i = 0; i < num_buffers; i++ )
-			if( buffers[i].written_parks > 0 ){
-				assert( chk ); chk = false;
-				final_disk->Write( table_start + buffers[i].park_first_index * park_size_bytes, buffers[i].buf.get(), parks_per_buffer*park_size_bytes );
-			}
+		uint64_t idx = (park_first_index.load(std::memory_order::relaxed)/parks_per_buffer)%2;
+		if( buffers[idx].finished_parks > 0 )
+			final_disk->Write( table_start + park_first_index.load(std::memory_order::relaxed) * park_size_bytes, buffers[idx].buf.get(), buffers[idx].finished_parks*park_size_bytes );
 	}
 private:
 	FileDisk *final_disk;
-	ParksBuffer buffers[num_buffers];
-	std::atomic_uint64_t max_index;
-	std::mutex write_mutex;
-
-	inline uint32_t i_for_index( uint64_t index ){
-		for( uint32_t i = 0; i < num_buffers; i++ ){
-			if( buffers[i].park_first_index <= index && index < (buffers[i].park_first_index + parks_per_buffer) )
-				return i;
-		}
-
-		throw InvalidStateException( "Park aggregator for processed index" );
-	}
+	std::atomic_uint64_t park_first_index = 0;
+	ParksBuffer buffers[2];
+	//std::mutex write_mutex;
 };
 
 // Thread safe version of park writer
