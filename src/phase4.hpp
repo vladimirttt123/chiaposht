@@ -94,7 +94,7 @@ void RunPhase4(uint8_t k, uint8_t pos_size, FileDisk &tmp2_disk, Phase3Results &
 			std::thread p7_thread( [&k, &pos_size, &res, &right_entry_size_bytes, &P7_entry_buf,
 														 &P7_park_size, &to_write_p7, &write_mutex, &final_file_writer_3, &tmp2_disk](){
 						for( uint64_t f7_position = 0; f7_position < res.table7_sm->CurrentBucketSize(); f7_position += right_entry_size_bytes ) {
-							auto right_entry_buf = res.table7_sm->CurrentBucketBuffer(/*is providing position could impove?*/) + f7_position;
+							auto right_entry_buf = res.table7_sm->CurrentBucketBuffer( res.table7_sm->CurrentBucketStart() + f7_position + 1 ) + f7_position;
 							uint64_t entry_new_pos = Util::SliceInt64FromBytes( right_entry_buf, k, pos_size );
 
 							if( ( res.table7_sm->CurrentBucketNo() > 0 || f7_position > 0 )
@@ -117,7 +117,7 @@ void RunPhase4(uint8_t k, uint8_t pos_size, FileDisk &tmp2_disk, Phase3Results &
 														&num_C1_entries, &tmp2_disk,&write_mutex, &begin_byte_C3, &final_file_writer_2,
 														&size_C3, &C3_entry_buf, &deltas_to_write, &prev_y, &C2](){
 						for( uint64_t f7_position = 0; f7_position < res.table7_sm->CurrentBucketSize(); f7_position += right_entry_size_bytes ) {
-							auto right_entry_buf = res.table7_sm->CurrentBucketBuffer(/*is providing position could impove?*/) + f7_position;
+							auto right_entry_buf = res.table7_sm->CurrentBucketBuffer( res.table7_sm->CurrentBucketStart() + f7_position + 1 ) + f7_position;
 							uint64_t entry_y = Util::SliceInt64FromBytes(right_entry_buf, k);
 							Bits entry_y_bits = Bits(entry_y, k);
 
