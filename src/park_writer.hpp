@@ -113,7 +113,7 @@ struct ParkAggregator{
 	const uint32_t parks_per_buffer;
 	const uint64_t table_start;
 
-	ParkAggregator( FileDisk *final_disk, const uint8_t &k, const uint8_t &table_index, uint64_t table_start, uint32_t park_size_bytes )
+	ParkAggregator( FileDisk *final_disk, uint64_t table_start, uint32_t park_size_bytes )
 			: park_size_bytes(park_size_bytes)
 			, parks_per_buffer( (HUGE_MEM_PAGE_SIZE-MEM_SAFE_BUF_SIZE)/park_size_bytes )
 			, table_start(table_start)
@@ -155,6 +155,23 @@ struct ParkAggregator{
 			buffers[idx].finished_parks.notify_all();
 		}
 	}
+
+	inline void finish( uint64_t index, std::mutex & write_mutex ){
+		uint64_t first_idx = park_first_index.load(std::memory_order::relaxed);
+		if( index < first_idx ) first_idx -= parks_per_buffer;
+		uint64_t idx = (first_idx/parks_per_buffer)%2;
+		uint32_t finished = buffers[idx].finished_parks.fetch_add( 1, std::memory_order::relaxed );
+		if( (finished+1) == parks_per_buffer ){
+			{ // in case of sync with other aggregators
+				std::lock_guard<std::mutex> lk(write_mutex);
+				final_disk->Write( table_start + first_idx * park_size_bytes, buffers[idx].buf.get(), parks_per_buffer*park_size_bytes );
+			}
+			buffers[idx].started_parks.fetch_sub( parks_per_buffer );
+			buffers[idx].finished_parks.fetch_sub( parks_per_buffer, std::memory_order::relaxed );
+			buffers[idx].finished_parks.notify_all();
+		}
+	}
+
 	~ParkAggregator(){
 		uint64_t idx = (park_first_index.load(std::memory_order::relaxed)/parks_per_buffer)%2;
 		if( buffers[idx].finished_parks > 0 )

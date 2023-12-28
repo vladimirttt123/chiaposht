@@ -467,7 +467,7 @@ Phase3Results RunPhase3(
 				std::atomic_uint64_t global_reading_position = 0, processed_total = 0, bucket_end = 0;
 
 				{ // for park aggregator
-					ParkAggregator park_aggregator( &tmp2_disk, k, table_index, final_table_begin_pointers[table_index], park_size_bytes );
+					ParkAggregator park_aggregator( &tmp2_disk, final_table_begin_pointers[table_index], park_size_bytes );
 					uint32_t max_sort_buf_size = kEntriesPerPark*R_sort_manager->EntrySize();
 					auto parking_thread = [ &R_sort_manager, &line_point_size, &right_sort_key_size,
 																 &sort_key_shift, &index_shift, &L_sort_manager, &k, &table_index,

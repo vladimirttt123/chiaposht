@@ -387,7 +387,7 @@ public:
 										<< "Starting phase 4/4: Write Checkpoint tables into " << tmp_2_filename
 										<< " ... " << Timer::GetNow();
 							Timer p4;
-							b17RunPhase4(k, k + 1, tmp2_disk, res, phases_flags, 16);
+							b17RunPhase4(k, k + 1, tmp2_disk, res, phases_flags, 16 );
 							p4.PrintElapsed("Time for phase 4 =");
 							finalsize = res.final_table_begin_pointers[11];
 					}
@@ -446,7 +446,7 @@ public:
 										<< "Starting phase 4/4: Write Checkpoint tables into " << tmp_2_filename
 										<< " ... " << Timer::GetNow();
 							Timer p4;
-							RunPhase4(k, k + 1, tmp2_disk, res, phases_flags, 16);
+							RunPhase4(k, k + 1, tmp2_disk, res, phases_flags, 16, num_threads);
 							p4.PrintElapsed("Time for phase 4 =");
 							finalsize = res.final_table_begin_pointers[11];
             }
