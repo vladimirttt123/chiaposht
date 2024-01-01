@@ -53,21 +53,27 @@ const uint16_t kBC = kB * kC;
 // compute f5.
 static const uint8_t kVectorLens[] = {0, 0, 1, 2, 4, 4, 3, 2};
 
-uint16_t L_targets[2][kBC][kExtraBitsPow];
-bool initialized = false;
+
+std::unique_ptr<uint16_t, Util::Deleter<uint16_t>> L_targets;
+// uint16_t L_targets[2][kBC][kExtraBitsPow];
+// bool initialized = false;
 void load_tables()
 {
-    for (uint8_t parity = 0; parity < 2; parity++) {
-        for (uint16_t i = 0; i < kBC; i++) {
-            uint16_t indJ = i / kC;
-            for (uint16_t m = 0; m < kExtraBitsPow; m++) {
-                uint16_t yr =
-                    ((indJ + m) % kB) * kC + (((2 * m + parity) * (2 * m + parity) + i) % kC);
-                L_targets[parity][i][m] = yr;
-            }
-        }
-    }
+	if( !L_targets )
+		L_targets = Util::allocate<uint16_t>( 2UL * kBC *kExtraBitsPow );
+
+	for( uint32_t parity = 0; parity < 2; parity += 1 ) {
+		for( uint32_t i = 0; i < kBC; i++ ) {
+			uint16_t indJ = i / kC;
+			for( uint16_t m = 0; m < kExtraBitsPow; m++ ) {
+				uint16_t yr =
+							((indJ + m) % kB) * kC + (((2 * m + parity) * (2 * m + parity) + i) % kC);
+				L_targets.get()[parity*kBC *kExtraBitsPow + i*kExtraBitsPow + m] = yr;
+			}
+		}
+	}
 }
+
 
 // Class to evaluate F1
 class F1Calculator {
@@ -209,10 +215,7 @@ public:
         this->table_index_ = table_index;
 
         this->rmap.resize(kBC);
-        if (!initialized) {
-            load_tables();
-            initialized = true;
-        }
+				if( !L_targets ) load_tables();
     }
 
     inline ~FxCalculator() = default;
@@ -284,7 +287,7 @@ public:
         uint16_t *idx_R)
     {
         int32_t idx_count = 0;
-        uint16_t parity = (bucket_L[0].y / kBC) % 2;
+				const uint32_t parity = ((bucket_L[0].y / kBC) % 2) * kBC * kExtraBitsPow;
 
         for (size_t yl : rmap_clean) {
             this->rmap[yl].count = 0;
@@ -302,11 +305,11 @@ public:
             rmap_clean.push_back(r_y);
         }
 
-        uint64_t remove_y = remove - kBC;
+				uint64_t remove_y = remove - kBC;
         for (size_t pos_L = 0; pos_L < bucket_L.size(); pos_L++) {
-            uint64_t r = bucket_L[pos_L].y - remove_y;
-            for (uint8_t i = 0; i < kExtraBitsPow; i++) {
-                uint16_t r_target = L_targets[parity][r][i];
+						uint64_t r = parity + (bucket_L[pos_L].y - remove_y)*kExtraBitsPow;
+						for (uint64_t i = r + kExtraBitsPow; r < i; r++) {
+								uint16_t r_target = L_targets.get()[r];
                 for (size_t j = 0; j < rmap[r_target].count; j++) {
                     if(idx_L != nullptr) {
                         idx_L[idx_count]=pos_L;

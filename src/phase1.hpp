@@ -775,6 +775,9 @@ std::vector<uint64_t> RunPhase1(
             progress(1, table_index, 6);
         }
 		} // end of for tables[2-7]
+
+		L_targets.reset(); // clear RAM of fxcalculator
+
 		table_sizes[0] = 0;
     globals.R_sort_manager.reset();
 
