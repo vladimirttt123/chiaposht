@@ -75,7 +75,6 @@ struct bitfield
 
 
 		explicit bitfield( int64_t size )
-//				: buffer_(new uint64_t[(size + 63) / 64])
 				: size_((size + 63) / 64), allocated_size(size_)
 				, buffer_( Util::allocate<uint64_t>( size_ ) )
 		{
@@ -105,23 +104,27 @@ struct bitfield
 
 		// copy partially from other
 		bitfield( const bitfield &other, int64_t start_bit, int64_t size )
-				: size_((size + 63) / 64), buffer_(Util::allocate<uint64_t>(0))
+				: size_((size + 63) / 64), allocated_size(other.table_7_max_entry >= 0?0:size_),
+				buffer_(Util::allocate<uint64_t>(allocated_size))
 		{
-			assert((start_bit % 64) == 0);
-			assert( size >= 0 );
-			assert( (start_bit + size) <= other.size() );
-
-			if( other.table_7_max_entry >= 0 )
-				table_7_max_entry = other.table_7_max_entry - start_bit;
-			else{
-				buffer_.reset(new uint64_t[ allocated_size = size_ ]);
-				if( other.file_ == nullptr )
-					memcpy( (uint8_t*)buffer_.get(), ((uint8_t*)other.buffer_.get()) + (start_bit>>3), size_ << 3 );
-				else
-					other.file_->Read( 8 + (start_bit>>3), (uint8_t*)buffer_.get(), size_<<3 );
-			}
+			copy_part_from( other, start_bit, size );
 		}
 
+		inline void copy_part_from( const bitfield &from_other, int64_t start_bit, int64_t size ){
+			assert((start_bit % 64) == 0);
+			assert( size >= 0 );
+			assert( (start_bit + size) <= from_other.size() );
+
+			reset( size );
+			if( from_other.table_7_max_entry >= 0 )
+				table_7_max_entry = from_other.table_7_max_entry - start_bit;
+			else{
+				if( from_other.file_ == nullptr )
+					memcpy( (uint8_t*)buffer_.get(), ((uint8_t*)from_other.buffer_.get()) + (start_bit>>3), size_ << 3 );
+				else
+					from_other.file_->Read( 8 + (start_bit>>3), (uint8_t*)buffer_.get(), size_<<3 );
+			}
+		}
 
 		//---------------------------------------------------
 		void PrepareToThreads( uint32_t num_threads ){
@@ -182,9 +185,11 @@ struct bitfield
 			b_file_.reset(); // clear file
 			table_7_max_entry = -1; // clear table 7 bitfield
 			size_ = (new_size + 63) / 64; // set new size
-			if( size_ > allocated_size ) // reallocate mem if need
+			if( size_ > allocated_size ){ // reallocate mem if need
+				buffer_.reset(); // clear previous before allocating new
 				//buffer_.reset( new uint64_t[ allocated_size = size_ ] );
-				Util::allocate<uint64_t>( allocated_size = size_).swap( buffer_ );
+				buffer_ = Util::allocate<uint64_t>( allocated_size = size_);//.swap( buffer_ );
+			}
 
 			clear();
 		}
@@ -283,7 +288,7 @@ struct bitfield
 			return res * 8;
     }
 
-		// return amount of freed ram
+		// return amount of freed ram in bytes
 		int64_t FlushToDisk( const fs::path &filename, bitfield *transfer_ram_to = nullptr ){
 			if( file_ ) return 0;
 			auto const length = memSize();
@@ -295,14 +300,16 @@ struct bitfield
 			b_file_.reset( new BufferedDisk( file_.get(), length + 8 ) );
 
 			int64_t res = 0;
-			if( transfer_ram_to == nullptr || transfer_ram_to->allocated_size > 0 ){
-				buffer_.reset(); // free memory
+			if( transfer_ram_to == nullptr || transfer_ram_to->allocated_size >= allocated_size ){ // do not transfer ram is other has bigger ram chunk
 				res = allocated_size * 8;
 			}
-			else {
+			else { // transfer ram to other
 				buffer_.swap( transfer_ram_to->buffer_ );
+				res = transfer_ram_to->allocated_size*8; // this amount we will free
 				transfer_ram_to->allocated_size = allocated_size;
 			}
+
+			buffer_.reset(); // free memory
 			allocated_size = 0;
 
 			return res;
@@ -312,7 +319,7 @@ struct bitfield
 		inline bool is_table_7() const { return table_7_max_entry >= 0; }
 private:
 		int64_t size_, allocated_size = 0;
-		std::unique_ptr<uint64_t,Util::Deleter<uint64_t>> buffer_;
+		std::unique_ptr<uint64_t, Util::Deleter<uint64_t>> buffer_;
     // number of 64-bit words
 
 		std::unique_ptr<FileDisk> file_;
@@ -337,7 +344,10 @@ struct bitfieldReader
 	void setLimits( uint64_t start_bit, uint64_t size ){
 		if( src_.is_readonly() ){
 			this->start = start_bit%64;
-			reader.reset( new bitfield( src_, (start_bit>>6) <<6, size + this->start ) );
+			if( !reader )
+				reader.reset( new bitfield( src_, (start_bit>>6) <<6, size + this->start ) );
+			else
+				reader.get()->copy_part_from( src_, (start_bit>>6) <<6, size + this->start );
 		}
 		else {
 			this->start = start_bit;
@@ -345,7 +355,7 @@ struct bitfieldReader
 	}
 
 	// Evaluates correct in limits
-	int64_t count(int64_t const start_bit, int64_t const end_bit) const 	{
+	inline int64_t count(int64_t const start_bit, int64_t const end_bit) const 	{
 		const bitfield * bf = src_.is_readonly()?reader.get():&src_;
 		int64_t start64 = (start+start_bit)&(~(uint64_t)63);
 		return bf->count(start64, end_bit + start) - bf->count( start64, start+start_bit );

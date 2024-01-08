@@ -404,12 +404,12 @@ Phase2Results RunPhase2(
 		// in case sort will suffer from low buffer we flush last bitfield in order to free memory
 		if( (output_files[0]->BiggestBucketSize()*2 + current_bitfield->memSize()) >= memory_manager.getTotalSize() ){
 			std::cout << " Flush bitfield to disk " << std::endl;
-			memory_manager.release( current_bitfield->FlushToDisk( tmp_1_disks[table_index].GetFileName() + ".bitfield.tmp" ) );
+			memory_manager.release( current_bitfield->FlushToDisk( tmp_1_disks[table_index+1/*because this is prev table bitfield*/].GetFileName() + ".bitfield.tmp" ) );
 		}
 
 		// TODO some more check, it can be memory leaks with current_bitfield
 		tmp_1_disks[1].setClearAfterRead(); // next read is last read
-		// BufferedDisk disk_table1(&tmp_1_disks[1], table_size * entry_size);
+
 		return {
 				FilteredDisk( &tmp_1_disks[1], memory_manager, current_bitfield.release(), entry_size_t1, table_size * entry_size_t1, num_threads )
 				, std::make_unique<LastTableReader>( &tmp_1_disks[7], k, new_entry_size,
