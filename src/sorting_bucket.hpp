@@ -44,22 +44,12 @@ struct SortingBucket{
 		// clear statistics
 		memset( statistics, 0, sizeof(STATS_UINT_TYPE)<<bucket_bits_count );
 	}
-#define USE_ATOMIC_WAITS
 	inline uint64_t SortedPosision() const { return sorted_pos; }
 	inline uint32_t SortedPositionWait( uint64_t min_position ){
 		uint32_t wait_times = 0;
-#ifdef USE_ATOMIC_WAITS
 		for( uint64_t current ; (current = sorted_pos.load(std::memory_order::relaxed)) < min_position; ){
 			wait_times++;
 			sorted_pos.wait( current, std::memory_order::relaxed );
-#else // USE_ATOMIC_WAITS
-		uint64_t current = sorted_pos.load(std::memory_order::relaxed), next;
-		while( current < min_position ){
-			wait_times++;
-			while( (next = sorted_pos.load(std::memory_order::relaxed)) == current )
-				std::this_thread::sleep_for(5us); // small sleep to wait
-			current = next;
-#endif // USE_ATOMIC_WAITS
 		};
 		return wait_times;
 	}
@@ -312,9 +302,7 @@ struct SortingBucket{
 									assert( minVal >= sorted_pos );
 
 									sorted_pos.store( minVal, std::memory_order::relaxed );
-#ifdef USE_ATOMIC_WAITS
 									sorted_pos.notify_all();
-#endif // USE_ATOMIC_WAITS
 								}
 							}
 						}
