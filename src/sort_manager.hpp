@@ -263,8 +263,7 @@ public:
 
 		this->num_buckets = num_buckets;
 		const uint64_t thread_mem_by_bucket = SortingBucket::ThreadCacheMemSize( entry_size );
-		if( num_threads > 1 )
-			threads_cache = Util::allocate<uint8_t>( thread_mem_by_bucket * num_buckets );
+		threads_cache = Util::allocate<uint8_t>( thread_mem_by_bucket * num_buckets );
 
 		buckets_ = std::make_unique<std::unique_ptr<SortingBucket>[]>(num_buckets);
 
@@ -287,7 +286,7 @@ public:
 																										 bucket_i, log_num_buckets_,
 																										 entry_size, begin_bits_ + log_num_buckets_, subbucket_bits,
 																										 enable_compaction, sequence_start, parallel_read,
-																										 num_threads <= 1 ? nullptr : (threads_cache.get() + bucket_i*thread_mem_by_bucket) ) );
+																										 threads_cache.get() + bucket_i*thread_mem_by_bucket ) );
 		}
 	}
 
