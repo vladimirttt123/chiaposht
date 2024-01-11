@@ -21,16 +21,21 @@
 
 #define STATS_UINT_TYPE uint16_t
 
+const inline uint32_t SortingBucketCacheSize = 256; // mesured in number of entries
+const inline uint32_t SortingBucketCacheBits = 8; // mesured in number of entries
+const inline uint32_t SortingBucketCacheMask = 511; // mask for double bucket cache
+
 // ==================================================================================================
 struct SortingBucket{
 	bool parallel_read;
 
 	SortingBucket( const std::string &fileName, MemoryManager &memory_manager, STATS_UINT_TYPE* stats_mem,
 								uint16_t bucket_no, uint8_t log_num_buckets, uint16_t entry_size,
-								uint32_t begin_bits, uint8_t bucket_bits_count, bool enable_compression = true, int16_t sequence_start_bit = -1, bool parallel_read = true )
+								uint32_t begin_bits, uint8_t bucket_bits_count, bool enable_compression = true,
+								int16_t sequence_start_bit = -1, bool parallel_read = true,
+								uint8_t * thread_memory = nullptr )
 			: parallel_read(parallel_read)
 			,	disk( new BucketStream( fileName, memory_manager, bucket_no, log_num_buckets, entry_size, begin_bits, enable_compression, sequence_start_bit ) )
-
 #ifndef NDEBUG
 		, bucket_no_( bucket_no )
 		, log_num_buckets_( log_num_buckets )
@@ -40,10 +45,19 @@ struct SortingBucket{
 		, begin_bits_(begin_bits)
 		, statistics( stats_mem )
 		, memory_manager(memory_manager)
+		, thread_entries( thread_memory == nullptr ? nullptr : (thread_memory + 2*SortingBucketCacheSize*sizeof(uint32_t) ) )
+		, thread_stats( (uint32_t*)thread_memory )
 	{
 		// clear statistics
 		memset( statistics, 0, sizeof(STATS_UINT_TYPE)<<bucket_bits_count );
+		half_count[0] = half_count[1] = 0;
 	}
+
+	// memory buffer size need for thread safe adding
+	static inline uint32_t ThreadCacheMemSize( uint16_t entry_size ) {
+		return 2*((SortingBucketCacheSize*entry_size + MEM_SAFE_BUF_SIZE) + SortingBucketCacheSize*sizeof(uint32_t));
+	}
+
 	inline uint64_t SortedPosision() const { return sorted_pos; }
 	inline uint32_t SortedPositionWait( uint64_t min_position ){
 		uint32_t wait_times = 0;
@@ -73,11 +87,40 @@ struct SortingBucket{
 		disk->Write( entry );
 	}
 
+	inline void AddEntryTS( const uint8_t *entry, const uint32_t &stats ){
+		assert( thread_stats != nullptr );
+		assert( Util::ExtractNum( entry, entry_size_, begin_bits_, bucket_bits_count_ ) == stats );
 
+		uint64_t add_pos = next_to_add.fetch_add( 1, std::memory_order::relaxed ), wait;
+		while( add_pos >= (wait = wait_threashold.load(std::memory_order::relaxed) ) )
+			wait_threashold.wait( wait, std::memory_order::relaxed ); // need stats how often waiting and increase chache bucket size if neccessary
+
+		add_pos &= SortingBucketCacheMask;
+		memcpy( thread_entries + add_pos*entry_size_, entry, entry_size_ );
+		thread_stats[add_pos] = stats;
+
+		add_pos >>= SortingBucketCacheBits;
+		if( (SortingBucketCacheSize - 1) == half_count[add_pos].fetch_add( 1, std::memory_order::relaxed ) ){
+			BulkAdd( thread_entries + add_pos*SortingBucketCacheSize*entry_size_,
+							 thread_stats + add_pos*SortingBucketCacheSize, SortingBucketCacheSize );
+			half_count[add_pos].store( 0, std::memory_order::relaxed );
+			wait_threashold.fetch_add( SortingBucketCacheSize, std::memory_order::relaxed );
+			wait_threashold.notify_all();
+		}
+	}
 
 	// Flush current buffer to disk
 	// It should be at end of writting.
+	// WARNING: This is not thread safe and should be executed without threads.
 	void Flush( bool free_memory = false ){
+		if( half_count[0] > 0 )
+			BulkAdd( thread_entries, thread_stats, half_count[0] );
+		if( half_count[1] > 0 )
+			BulkAdd( thread_entries + SortingBucketCacheSize*entry_size_,
+							 thread_stats + SortingBucketCacheSize, half_count[1] );
+		half_count[0] = half_count[1] = 0;
+		thread_entries = nullptr; // this call removes done before clear this ram
+		thread_stats = nullptr;
 
 		if( free_memory ){
 			if( disk ) disk->FlusToDisk();
@@ -349,6 +392,10 @@ private:
 
 	uint64_t total_reads = 0, instant_reads = 0;
 
+	uint8_t *thread_entries;
+	uint32_t *thread_stats;
+	std::atomic_uint64_t next_to_add = 0, wait_threashold = 2*SortingBucketCacheSize-1;
+	std::atomic_uint_fast16_t half_count[2];
 
 
 	/* Used for reading from disk */
@@ -368,7 +415,6 @@ private:
 		}
 	}
 
-	#pragma region CacheBucket support {
 	// This function in particular for CachBucket
 	inline void BulkAdd( uint8_t * entries, const uint32_t * stats, uint32_t count ){
 		assert( disk ); // Check not closed
@@ -386,25 +432,6 @@ private:
 		buf.release();
 		entries_count += count;
 	}
-
-	// This function in particular for CachBucket
-	inline bool TryAddEntriesTS( uint8_t * entries, const uint32_t * stats, uint32_t count ){
-
-		if( !addMutex->try_lock() ) return false;
-
-		BulkAdd( entries, stats, count );
-
-		addMutex->unlock();
-		return true;
-	}
-
-	inline void AddEntriesTS( uint8_t * entries, const uint32_t * stats, uint32_t count ){
-		std::lock_guard<std::mutex> lk( *addMutex.get() );
-		BulkAdd( entries, stats, count );
-	}
-	friend struct CacheBucket;
-	#pragma endregion CacheBucket support }
-
 };
 
 #endif // SRC_CPP_SORTING_BUCKET_HPP_

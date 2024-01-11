@@ -96,7 +96,7 @@ struct PassOneBlockProcessor {
 
 	// returns processed size in bytes
 	uint64_t Process( const uint64_t left_disk_start_idx,	const uint64_t left_table_end_idx, const uint8_t *left_disk,
-					const uint64_t right_disk_size_bytes, const uint8_t * right_disk, SortManager::ThreadWriter &R_sort_manager) {
+					const uint64_t right_disk_size_bytes, const uint8_t * right_disk, SortManager &R_sort_manager) {
 
 		assert( (right_disk_size_bytes%right_entry_size_bytes) == 0 );
 		assert( P3Entry::Pos( right_disk, k ) >= left_disk_start_idx );
@@ -142,7 +142,7 @@ struct PassOneBlockProcessor {
 			// if( entry_buf[0] == 0 && entry_buf[1]==10 && entry_buf[2]==125 && entry_buf[3]==101 ){
 			// 	std::cout << std::endl << "double entry.pos=" << entry.pos << "; entry.new=" << entry.new_pos << "; entry.key=" << entry.sort_key << std::endl;
 			// }
-			R_sort_manager.Add( entry_buf );
+			R_sort_manager.AddToCacheTS( entry_buf );
 		}
 
 		return right_disk_size_bytes; // all done
@@ -162,9 +162,6 @@ void PassOneRegular( const uint8_t k, bool is_table_1, T &left_disk,
 
 	assert( left_disk.CurrentBucketEnd() > kCachedPositionsSize*left_disk.EntrySize() ); // bucket should be bigger than size of cached position
 
-	std::unique_ptr<SortManager::ThreadWriter> writers[num_threads];
-	for( uint32_t i = 0; i < num_threads; i++ )
-		writers[i].reset( new SortManager::ThreadWriter(R_sort_manager) );
 	std::unique_ptr<std::thread> threads[num_threads];
 
 	PassOneBlockProcessor block_processor( k, is_table_1, left_disk.EntrySize(), right_disk.EntrySize(), p2_entry_size_bytes );
@@ -184,7 +181,7 @@ void PassOneRegular( const uint8_t k, bool is_table_1, T &left_disk,
 		for( uint32_t t = 0; t < num_threads; t++ )
 			threads[t].reset( new std::thread([ &chunk_size, &right_bucket_from_pos, &left_disk, &right_disk,
 																					&right_bucket_processed, &block_processor, &k, &left_bucket_end_idx,
-																					&left_bucket_start_idx]( SortManager::ThreadWriter *wri ){
+																					&left_bucket_start_idx, &R_sort_manager ]( ){
 				while(true){
 					uint64_t right_bucket_start = right_bucket_from_pos.fetch_add( chunk_size, std::memory_order::relaxed );
 					if( right_bucket_start >= right_disk.CurrentBucketSize() ) return; // right disk need switch
@@ -199,7 +196,7 @@ void PassOneRegular( const uint8_t k, bool is_table_1, T &left_disk,
 
 					uint64_t processed_to = !left_disk.CurrentBucketIsLast() && is_close_to_left_end ? 0// do not process small chunks that too close to end of left disk unless it is last chunk
 																			 : block_processor.Process( left_bucket_start_idx, left_bucket_end_idx, left_disk.CurrentBucketBuffer(),
-																											right_chunk_size_bytes, right_disk.CurrentBucketBuffer() + right_bucket_start, *wri );
+																											right_chunk_size_bytes, right_disk.CurrentBucketBuffer() + right_bucket_start, R_sort_manager );
 					// std::cout << "processed " << processed_to << " on bucket " << right_disk.CurrentBucketNo() << " from pos " << right_bucket_start << " bucket size " << right_disk.CurrentBucketSize() << std::endl;
 					//assert( processed_to > 0 );
 					right_bucket_processed.fetch_add( processed_to, std::memory_order::relaxed );
@@ -208,7 +205,7 @@ void PassOneRegular( const uint8_t k, bool is_table_1, T &left_disk,
 					if( processed_to < right_chunk_size_bytes )
 						return; // chunk is not finished need left bucket switch
 				}
-			}, writers[t].get() ) );
+			} ) );
 
 		// wait for threads
 		for( uint32_t t = 0; t < num_threads; t++ )
@@ -239,9 +236,9 @@ void PassOneRegular( const uint8_t k, bool is_table_1, T &left_disk,
 				right_bucket_from_pos = right_bucket_processed.load(std::memory_order::relaxed);
 				assert( right_bucket_from_pos < right_disk.CurrentBucketSize() );
 				auto processed = block_processor.Process( left_disk.CurrentBucketStart()/left_disk.EntrySize() - kCachedPositionsSize,
-																													(left_disk.CurrentBucketStart()+to_copy)/left_disk.EntrySize(), left_disk_cache,
-																													right_disk.CurrentBucketSize() - right_bucket_from_pos,
-																													right_disk.CurrentBucketBuffer() + right_bucket_from_pos, *writers[0].get() );
+																									(left_disk.CurrentBucketStart()+to_copy)/left_disk.EntrySize(), left_disk_cache,
+																									right_disk.CurrentBucketSize() - right_bucket_from_pos,
+																									right_disk.CurrentBucketBuffer() + right_bucket_from_pos, R_sort_manager );
 				assert( processed > 0 );
 				right_bucket_processed.fetch_add( processed );
 				assert(  right_bucket_processed <= right_disk.CurrentBucketSize() );
@@ -481,7 +478,6 @@ Phase3Results RunPhase3(
 						auto park_stubs = std::make_unique<std::vector<uint64_t>>();
 						uint128_t last_line_point = 0;
 
-						SortManager::ThreadWriter sort_writer = SortManager::ThreadWriter( *L_sort_manager );
 						uint8_t const* right_reader_entry_buf;
 
 						auto switch_to_next_bucket = [ &R_sort_manager, &last_line_point, &line_point_size, &right_reader_entry_buf, &bucket_end,
@@ -548,7 +544,7 @@ Phase3Results RunPhase3(
 								uint128_t to_write = (uint128_t)sort_key << sort_key_shift;
 								to_write |= (uint128_t)index << index_shift;
 
-								sort_writer.Add( to_write );
+								L_sort_manager->AddToCacheTS( to_write );
 
 								if( (index % kEntriesPerPark) != 0 ) {
 									uint128_t big_delta = line_point - last_line_point;

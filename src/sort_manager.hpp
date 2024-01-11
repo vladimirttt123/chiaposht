@@ -30,49 +30,6 @@ using namespace std::chrono_literals; // for operator""ns;
 #include "exceptions.hpp"
 #include "sorting_bucket.hpp"
 
-const inline uint32_t CacheBucketSize = 256; // mesured in number of entries
-const inline uint32_t CacheBucketSizeLimit = 250; // mesured in number of entries
-
-// Small bucket used in thread writings
-struct CacheBucket{
-	static uint32_t memNeed( uint16_t entry_size ) {
-		return (CacheBucketSize*entry_size + 7)/8*8 + CacheBucketSize*sizeof(uint32_t);
-	}
-
-	explicit CacheBucket( SortingBucket &cacheFor, uint8_t * memory )
-			: entries( memory ), statistics( (uint32_t*)(memory + (CacheBucketSize*cacheFor.EntrySize() + 7)/8*8) )
-			, count(0), parent( cacheFor )
-	{	}
-
-	inline void Add( const uint8_t *entry, const uint32_t &stats ){
-		assert( (entries + count*parent.EntrySize() + parent.EntrySize()) <= ((uint8_t*)statistics) );
-
-		memcpy( entries + count*parent.EntrySize(), entry, parent.EntrySize() );
-		statistics[count++] = stats;
-
-		if( count > CacheBucketSizeLimit ){
-			if( parent.TryAddEntriesTS( entries, statistics, count ) )
-				count = 0;
-			else if( count >= CacheBucketSize ) {
-				parent.AddEntriesTS( entries, statistics, count );
-				count = 0;
-			}
-		}
-	}
-
-	~CacheBucket(){
-		if( count > 0 )
-			parent.AddEntriesTS( entries, statistics, count );
-	}
-
-private:
-	uint8_t* entries;
-	uint32_t *statistics;
-	uint16_t count;
-	SortingBucket &parent;
-};
-
-
 // This is storage for statistics from all buckets
 struct SortStatisticsStorage {
 	const uint8_t k, kSubBucketBits;
@@ -264,8 +221,8 @@ public:
 					2 * (stripe_size + 10 * (kBC / pow(2, kExtraBits))) * entry_size)
 			, num_threads( num_threads )
 			, k_(k), phase_(phase), table_index_(table_index)
+			, threads_cache( Util::allocate<uint8_t>(0) )
 	{
-
 		uint64_t sorting_size = (1ULL<<k)*entry_size;
 		double expected_buckets_no = num_buckets*( phase_==1 ?1.0:( phase_==3?0.64:0.8 ) );
 		const auto expected_bucket_size = sorting_size/(double)expected_buckets_no;
@@ -305,6 +262,10 @@ public:
 		std::vector<fs::path> bucket_filenames = std::vector<fs::path>();
 
 		this->num_buckets = num_buckets;
+		const uint64_t thread_mem_by_bucket = SortingBucket::ThreadCacheMemSize( entry_size );
+		if( num_threads > 1 )
+			threads_cache = Util::allocate<uint8_t>( thread_mem_by_bucket * num_buckets );
+
 		buckets_ = std::make_unique<std::unique_ptr<SortingBucket>[]>(num_buckets);
 
 		for (size_t bucket_i = 0; bucket_i < num_buckets; bucket_i++) {
@@ -323,47 +284,12 @@ public:
 					}
 				}
 				buckets_[bucket_i].reset( new SortingBucket( bucket_filename.string(), memory_manager, full_statistics.forBucket( bucket_i ),
-																							bucket_i, log_num_buckets_,
-																							entry_size, begin_bits_ + log_num_buckets_, subbucket_bits,
-																							enable_compaction, sequence_start, parallel_read ) );
+																										 bucket_i, log_num_buckets_,
+																										 entry_size, begin_bits_ + log_num_buckets_, subbucket_bits,
+																										 enable_compaction, sequence_start, parallel_read,
+																										 num_threads <= 1 ? nullptr : (threads_cache.get() + bucket_i*thread_mem_by_bucket) ) );
 		}
 	}
-
-		// Class to support writing to sort cache by threads in safe way
-		struct ThreadWriter{
-			explicit ThreadWriter( SortManager &parent ) : parent_(parent)
-				, memory( Util::allocate<uint8_t>( (CacheBucket::memNeed( parent.entry_size_ )+7)/8*8 * parent.num_buckets ) )
-				, buckets_cache(new std::unique_ptr<CacheBucket>[parent.num_buckets])
-//						, begin_bytes( parent.begin_bits_/8 ), begin_bits( parent.begin_bits_&7 )
-//						, bits_shift( 32 - parent.log_num_buckets_ - parent.subbucket_bits )
-			{
-				uint64_t mem_per_bucket = (CacheBucket::memNeed( parent.entry_size_ )+7)/8*8;
-				for( uint32_t i = 0; i < parent.num_buckets; i++ )
-					buckets_cache[i].reset( new CacheBucket( *parent.buckets_[i].get(), memory.get() + i*mem_per_bucket ) );
-			}
-
-			inline void Add( const uint8_t *entry ){
-//				uint64_t const bucket_index = Util::ExtractNum32( entry + begin_bytes, begin_bits ) >> bits_shift;
-				uint64_t const bucket_index =
-						Util::ExtractNum64(entry, parent_.begin_bits_, parent_.log_num_buckets_ + parent_.subbucket_bits );
-
-				buckets_cache[bucket_index>>parent_.subbucket_bits]->Add( entry, bucket_index & parent_.stats_mask );
-			}
-
-			inline void Add( uint128_t entry ){
-				uint8_t bytes[16];
-				Util::IntTo16Bytes(bytes, entry);
-				Add( bytes );
-			}
-
-		private:
-			SortManager &parent_;
-			std::unique_ptr<uint8_t, Util::Deleter<uint8_t>> memory;
-			std::unique_ptr<std::unique_ptr<CacheBucket>[]> buckets_cache;
-//			const uint8_t begin_bytes;
-//			const uint8_t begin_bits;
-//			const uint8_t bits_shift;
-		}; // ====== END OF ThreadWriter
 
 		// returned number of entries
 		inline uint64_t Count() const {
@@ -392,6 +318,22 @@ public:
 			buckets_[bucket_index>>subbucket_bits]->AddEntry( entry, bucket_index & stats_mask );
 		}
 
+		inline void AddToCacheTS( uint128_t entry ){
+			// this could be improved by evaluating bucket and stats from uint128
+			uint8_t bytes[16];
+			Util::IntTo16Bytes(bytes, entry);
+			AddToCacheTS( bytes );
+		}
+
+		inline void AddToCacheTS( const uint8_t *entry ){
+			assert( threads_cache );
+			//				uint64_t const bucket_index = Util::ExtractNum32( entry + begin_bytes, begin_bits ) >> bits_shift;
+			uint64_t const bucket_index =
+					Util::ExtractNum64(entry, begin_bits_, log_num_buckets_ + subbucket_bits );
+
+			buckets_[bucket_index>>subbucket_bits]->AddEntryTS( entry, bucket_index & stats_mask );
+		}
+
 		// region Disk inheritance implementaion {
 		uint8_t const* Read(uint64_t begin, uint64_t length) override
     {
@@ -405,14 +347,13 @@ public:
         throw InvalidStateException("Invalid Write() called on SortManager");
     }
 
-    void Truncate(uint64_t new_size) override
+		void Truncate( uint64_t new_size ) override
     {
         if (new_size != 0) {
             assert(false);
             throw InvalidStateException("Invalid Truncate() called on SortManager");
         }
 
-        FlushCache();
         FreeMemory();
     }
 
@@ -420,6 +361,7 @@ public:
 
     void FreeMemory() override
     {
+			FlushCache();
 			prev_bucket_buf_.reset();
 
 			if( sorted_current ){
@@ -557,6 +499,8 @@ public:
 		{
 			for( uint i = 0; i < num_buckets; i++ )
 				buckets_[i]->Flush( isFull );
+
+			threads_cache.reset();
     }
 
 		inline uint64_t BiggestBucketSize() const {
@@ -647,6 +591,8 @@ private:
 	std::chrono::time_point<std::chrono::high_resolution_clock> start_sorting_time;
 
 	uint64_t stream_read_position = 0;
+
+	std::unique_ptr<uint8_t, Util::Deleter<uint8_t>> threads_cache;
 
 	const inline uint8_t* memory_start() const {return sorted_current->buffer();}
 

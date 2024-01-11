@@ -157,10 +157,6 @@ void* phase1_thread(THREADDATA* ptd)
     uint64_t totalstripes = (prevtableentries + globals.stripe_size - 1) / globals.stripe_size;
     uint64_t threadstripes = (totalstripes + globals.num_threads - 1) / globals.num_threads;
 
-		std::unique_ptr<SortManager::ThreadWriter> sort_thread_writer;
-		if( table_index < 6 )
-			sort_thread_writer.reset( new SortManager::ThreadWriter( *globals.R_sort_manager) );
-
     for (uint64_t stripe = 0; stripe < threadstripes; stripe++) {
         uint64_t pos = (stripe * globals.num_threads + ptd->index) * globals.stripe_size;
         uint64_t const endpos = pos + globals.stripe_size + 1;  // one y value overlap
@@ -530,7 +526,7 @@ void* phase1_thread(THREADDATA* ptd)
             }
 
 						if( table_index < 6 )
-							sort_thread_writer->Add( entrybuf );
+							globals.R_sort_manager->AddToCacheTS( entrybuf );
         }
 
 				if( table_index >= 6 ) {
@@ -546,7 +542,6 @@ void* phase1_thread(THREADDATA* ptd)
 void* F1thread( int const index, uint8_t const k, const uint8_t* id )
 {
     uint64_t const max_value = ((uint64_t)1 << (k));
-		SortManager::ThreadWriter writer = SortManager::ThreadWriter(*globals.L_sort_manager.get());
     std::unique_ptr<uint64_t[]> f1_entries(new uint64_t[(1U << kBatchSizes)]);
 
     F1Calculator f1(k, id);
@@ -571,7 +566,7 @@ void* F1thread( int const index, uint8_t const k, const uint8_t* id )
 						entry = (uint128_t)f1_entries[i] << (128 - kExtraBits - k);
 						entry |= (uint128_t)x << (128 - kExtraBits - 2 * k);
 
-						writer.Add( entry );
+						globals.L_sort_manager->AddToCacheTS( entry );
 						x++;
 				}
 		}
