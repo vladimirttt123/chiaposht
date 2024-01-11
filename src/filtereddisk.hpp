@@ -156,3 +156,5 @@ private:
 	FileDisk *underlying_;
 };
 
+#endif // FILTERED_DISK_HPP_
+
