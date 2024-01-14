@@ -139,6 +139,7 @@ inline void SortRegularTableThread( IReadDiskStream * disk, const uint64_t &tabl
 
 	uint64_t buf_size = ((HUGE_MEM_PAGE_SIZE - MEM_SAFE_BUF_SIZE)/entry_size)*entry_size;
 	auto buffer( Util::allocate<uint8_t>( buf_size + MEM_SAFE_BUF_SIZE ) );
+	SortManager::ThreadWriter writer = SortManager::ThreadWriter( *sort_manager );
 	uint64_t proc5_size = table_size*entry_size/20;
 	if( buf_size > proc5_size ) proc5_size = 1; // do not show counters
 
@@ -187,7 +188,7 @@ inline void SortRegularTableThread( IReadDiskStream * disk, const uint64_t &tabl
 			uint128_t new_entry = (uint128_t)write_counter << write_counter_shift;
 			new_entry |= (uint128_t)entry_pos_offset << pos_offset_shift;
 
-			sort_manager->AddToCacheTS( new_entry );
+			writer.Add( new_entry );
 
 			++write_counter;
 		}
@@ -351,16 +352,16 @@ Phase2Results RunPhase2(
 					threads[t].join();
 			}
 
+			assert( (uint64_t)current_bitfield->count(0, table_size) == sort_manager->Count() );
+			assert( write_counter == sort_manager->Count() );
+
+			std::cout << write_counter << " entries ";
+
 			// clear disk caches and memory
 			// TODO real flush by flag.
 			// Table 2 is used immediatly after in phase 3 than do not clean it caches fully.
 			sort_manager->FlushCache( next_stats_idx == 0 /*table_index != 2*/ );  // close all files & flush statisitcs
 			//sort_manager->FreeMemory(); // should do nothing at this point
-
-			assert( (uint64_t)current_bitfield->count(0, table_size) == sort_manager->Count() );
-			assert( write_counter == sort_manager->Count() );
-
-			std::cout << write_counter << " entries ";
 
 			output_files[table_index - 2] = std::move(sort_manager);
 			new_table_sizes[table_index] = write_counter;

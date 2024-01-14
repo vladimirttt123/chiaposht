@@ -49,18 +49,17 @@ vector<unsigned char> intToBytes(uint32_t paramInt, uint32_t numBytes)
 
 static uint128_t to_uint128(uint64_t hi, uint64_t lo) { return (uint128_t)hi << 64 | lo; }
 
-// TEST_CASE( "HUGE_PAGES" ){
-// 		SECTION( "STATS"){
-// 			{
-// 				auto h1G = Util::allocate<uint8_t>( 1UL << 30 );
-// 				auto h2M = Util::allocate<uint8_t>( 1UL << 21 );
-// 				auto x = Util::allocate<uint8_t>( 1UL << 10 );
-// 				h2M = Util::allocate<uint8_t>( 1UL << 22 );
-// 			}
-// 			Util::MemAllocationStats.print();
-// 		}
-// }
-
+TEST_CASE( "HUGE_PAGES" ){
+		SECTION( "STATS"){
+			{
+				auto h1G = Util::allocate<uint8_t>( 1UL << 30 );
+				auto h2M = Util::allocate<uint8_t>( 1UL << 21 );
+				auto x = Util::allocate<uint8_t>( 1UL << 10 );
+				h2M = Util::allocate<uint8_t>( 1UL << 22 );
+			}
+			Util::MemAllocationStats.print();
+		}
+}
 
 TEST_CASE( "DISK_STREAMS" ){
 
@@ -120,6 +119,66 @@ TEST_CASE( "DISK_STREAMS" ){
 		}
 		REQUIRE( i == iterations );
 	}
+//	SECTION( "SortingBucket" ){
+//		const int entry_size = 10;
+//		const uint64_t iteration = 1024*1024*1024/entry_size;
+//		const uint8_t sub_bucket_bits = 21;
+//		const uint8_t begin_bits = 8;
+//		const uint16_t bucket_no = 10;
+//		SortingBucket buck = SortingBucket( "sorting.bucket.tmp", bucket_no, 8, entry_size, begin_bits, sub_bucket_bits, false );
+//		uint8_t entry[entry_size];
+
+//		Timer time_write;
+
+//		entry[0] = bucket_no; // set bucket no. built for begint_bits = 0!!!!!
+//		for( uint64_t i = 0; i < iteration; i++ ){
+//			// random entry
+//			for( uint32_t j = 1; j < entry_size; j++ )
+//				entry[j] = rand()%0xff;
+//			buck.AddEntry( entry, Util::ExtractNum( entry, entry_size, begin_bits, sub_bucket_bits ) );
+//		}
+//		buck.CloseFile();
+//		time_write.PrintElapsed("Write time: ");
+
+//		Timer time_read;
+//		buck.SortToMemory(12);
+//		cout << "Prepare time: " << buck.prepare_time << "Read time: " << buck.read_time << ", Sort time: " << buck.sort_time << std::endl;
+//		time_read.PrintElapsed( "Sort time:" );
+//	}
+
+//	SECTION( "CachedFileStream" ){
+//		uint32_t buf_size = 256*1024; // 256k
+//		uint64_t mem_size = 1UL<<29UL; // 0.5Gb
+//		uint32_t buffers_to_write = mem_size/buf_size*2;
+//		const uint32_t number_of_files = 16;
+
+//		MemoryManager mem_mngr(mem_size);
+//		BlockCachedFile *cfile[number_of_files];
+//		for( uint32_t i = 0; i < number_of_files; i++ )
+//			cfile[i] = new BlockCachedFile( "cached.stream" + std::to_string(i) + ".tmp", mem_mngr, buf_size );
+
+//		for( uint32_t i = 0; i < buffers_to_write; i++ ){
+//			StreamBuffer buf( buf_size );
+//			memset( buf.get(), i, buf_size );
+//			cfile[i%number_of_files]->Write( buf.setUsed(buf_size) );
+//		}
+
+//		std::cout << "request half of the ram: " << mem_mngr.request( mem_size/2, true ) << std::endl;
+
+//		for( uint32_t i = 0; i < buffers_to_write; i++ ){
+//			auto buf = std::make_unique<uint8_t[]>(buf_size);
+//			memset( buf.get(), i, buf_size );
+
+//			StreamBuffer read_buf( buf_size );
+//			REQUIRE( cfile[i%number_of_files]->Read( read_buf ) == buf_size );
+
+//			REQUIRE( memcmp( buf.get(), read_buf.get(), buf_size ) == 0 );
+//		}
+
+//		for( uint32_t i = 0; i < number_of_files; i++ )
+//			delete cfile[i];
+//	}
+
 
 	SECTION( "BucketStream" ){
 		const uint64_t iteration = 6000;
@@ -875,40 +934,6 @@ void PlotAndTestProofOfSpace(
     REQUIRE(remove(filename.c_str()) == 0);
 }
 
-
-TEST_CASE( "BUILD_WITH_STOP" ){
-		uint8_t memo[5] = {1, 2, 3, 4, 5};
-		std::string filename = "cpp-test-plot.dat";
-		uint32_t iterations = 5000;
-		uint8_t k = 22;
-		uint8_t* plot_id = plot_id_3;
-		uint32_t buffer = 40;
-		uint32_t num_proofs = 4932;
-		uint32_t stripe_size = 65536;
-		uint8_t num_threads = 4;
-		uint32_t num_buckets = 16;
-		uint8_t phase_flags = ENABLE_BITFIELD|PARALLEL_READ;
-		uint8_t subbuckets_bits = 11;
-		uint8_t stats_in_mem = 2;
-
-
-		{
-			remove("cpp-test-plot.dat.phase1_result.tmp");
-			DiskPlotter plotter = DiskPlotter();
-			plotter.CreatePlotDiskAdv( ".", ".", ".", filename, k, memo, 5, plot_id, 32,
-																buffer, num_buckets, stripe_size, num_threads, phase_flags | PHASE_1_ONLY, subbuckets_bits, stats_in_mem );
-		}
-		{
-			DiskPlotter plotter = DiskPlotter();
-			plotter.CreatePlotDiskAdv( ".", ".", ".", filename, k, memo, 5, plot_id, 32,
-																buffer, num_buckets, stripe_size, num_threads, phase_flags | SKIP_PHASE_1, subbuckets_bits, stats_in_mem );
-			REQUIRE(remove("cpp-test-plot.dat.phase1_result.tmp") == 0);
-		}
-		TestProofOfSpace(filename, iterations, k, plot_id, num_proofs);
-		REQUIRE(remove(filename.c_str()) == 0);
-}
-
-
 TEST_CASE("PlottingOne")
 {
 	SECTION("Disk plot k22 small buffer in dual-thread")
@@ -1295,13 +1320,14 @@ TEST_CASE( "SortThreads" ){
 		data[i] = rand()&255;
 
 	auto fill_thread = [&data](SortManager * manager, uint8_t thread_no, uint64_t iters ){
+		SortManager::ThreadWriter writer( *manager );
 		for( uint64_t i = 0; i < iters; i++ ){
 			uint8_t buf[entry_size];
 			buf[0] = data[i];
 			((uint64_t*)(buf+1))[0] = i;
 			buf[9] = thread_no;
 
-			manager->AddToCacheTS( buf );
+			writer.Add( buf );
 		}
 	};
 
