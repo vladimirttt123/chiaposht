@@ -498,4 +498,124 @@ private:
 	uint64_t bucket_used = 0, file_read_position = 0;
 };
 
+
+
+struct TableFileWriter {
+	const uint16_t entry_leftover_bits, entry_size_bytes, entry_size_full_bytes;
+
+	TableFileWriter( FileDisk &disk, uint16_t entry_size_bits )
+			: entry_leftover_bits(entry_size_bits%8), entry_size_bytes( (entry_size_bits+7)/8 ),
+			entry_size_full_bytes( entry_size_bits/8 ), disk( disk )
+	{	}
+
+	inline void Write( uint64_t begin, const uint8_t *mem, uint64_t length ){
+
+		if( entry_size_bytes == entry_size_full_bytes )
+			disk.Write( begin, mem, length );
+		else{
+			if( begin != write_position )
+				throw InvalidStateException("incorrect begin of write");
+
+			write_position += length;
+
+			uint8_t buf[length+8];
+			uint32_t buf_position = 0;
+
+			for( uint64_t i = 0; i < length; i += entry_size_bytes ){
+				memcpy( buf + buf_position, mem+i, entry_size_full_bytes ); // copy full bytes
+				buf_position += entry_size_full_bytes; // update buf position
+				leftovers = (leftovers<<entry_leftover_bits) | (mem[i+entry_size_full_bytes]>>(8-entry_leftover_bits));
+				if( leftovers_count == 7 ){
+					buf_position += leftovers_to_buf( buf + buf_position );
+					assert( leftovers == 0 );
+				} else {
+					leftovers_count++;
+				}
+			}
+
+			disk.Write( file_write_position, buf, buf_position );
+			file_write_position += buf_position;
+		}
+	}
+
+	~TableFileWriter(){
+		if( leftovers_count > 0 ) {
+			file_write_position += entry_size_full_bytes*(8-leftovers_count); // allign writing to file
+			leftovers <<= (8-leftovers_count)*entry_leftover_bits;
+
+			uint8_t buf[8];
+			disk.Write(file_write_position, buf, leftovers_to_buf( buf ) );
+		}
+	}
+
+private:
+	FileDisk &disk;
+	uint8_t leftovers_count = 0;
+	uint64_t write_position = 0, file_write_position = 0, leftovers = 0;
+
+	inline uint64_t leftovers_to_buf( uint8_t*buf ){
+		for( uint i = 0; i < entry_leftover_bits; i++, leftovers >>= 8 )
+			buf[i] = leftovers&0xff;
+
+		leftovers_count = 0;
+
+		return entry_leftover_bits;
+	}
+};
+
+struct TableFileReader{
+	const uint16_t entry_leftover_bits, entry_size_bytes, entry_size_full_bytes;
+	const uint64_t block_size, max_position;
+
+	TableFileReader( FileDisk &disk, uint16_t entry_size_bits, uint64_t entries_no = 0 )
+			: entry_leftover_bits(entry_size_bits%8), entry_size_bytes( (entry_size_bits+7)/8 ),
+			entry_size_full_bytes( entry_size_bits/8 ), block_size( entry_size_bits ),
+			max_position( entries_no * entry_size_bytes ), disk( disk )
+	{	}
+
+	inline void Read( uint64_t begin, uint8_t *buf, uint64_t length ){
+		if( entry_size_bytes == entry_size_full_bytes ) {
+			disk.Read( begin, buf, length );
+			return;
+		}
+
+		assert( (begin%(entry_size_bytes*8)) == 0 );
+
+		uint64_t first_entry = begin / entry_size_bytes;
+		uint64_t first_entry_block_no = first_entry/8;
+		uint64_t read_pos = first_entry_block_no*block_size;
+		uint64_t read_blocks = (length / entry_size_bytes + 7 )/8;
+		uint64_t read_blocks_size = read_blocks*block_size;
+		uint8_t inner_buf[read_blocks_size];
+		disk.Read( read_pos, inner_buf, read_blocks_size );
+
+		for( uint64_t i = 0; i < read_blocks; i++ ){
+			uint8_t * block_buf = inner_buf + i*block_size;
+
+			uint64_t leftovers = 0;
+			for( uint64_t l = 1; l <= entry_leftover_bits; l++ )
+				leftovers = (leftovers<<8) | block_buf[block_size-l];
+			uint8_t leftovers_bytes[8];
+			for( int l = 7; l >= 0; l--, leftovers>>=entry_leftover_bits )
+				leftovers_bytes[l] = (leftovers&0xff)<<(8-entry_leftover_bits);
+
+			for( uint64_t buf_pos = i*8*entry_size_bytes, e = 0; e < 8 && buf_pos < length; e++, buf_pos+=entry_size_bytes ){
+				memcpy( buf + buf_pos, block_buf + e*entry_size_full_bytes, entry_size_full_bytes );
+				buf[buf_pos+entry_size_full_bytes] = leftovers_bytes[e];
+			}
+		}
+	}
+	inline uint32_t Read( uint8_t * buf, uint64_t length ){
+		uint32_t real_length = std::min( length, max_position - read_position );
+		if( real_length )
+			Read( read_position, buf, real_length );
+		read_position += real_length;
+		return real_length;
+	}
+
+private:
+	FileDisk &disk;
+	uint64_t read_position = 0;
+};
+
 #endif // SRC_CPP_LAST_TABLE_FILE_HPP_

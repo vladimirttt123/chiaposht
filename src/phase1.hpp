@@ -62,7 +62,8 @@ struct THREADDATA {
     uint8_t pos_size;
     uint64_t prevtableentries;
     uint32_t compressed_entry_size_bytes;
-    std::vector<FileDisk>* ptmp_1_disks;
+		//std::vector<FileDisk>* ptmp_1_disks;
+		TableFileWriter** ptmp_1_disks;
 };
 
 struct GlobalData {
@@ -132,7 +133,6 @@ void* phase1_thread(THREADDATA* ptd)
     uint8_t const pos_size = ptd->pos_size;
     uint64_t const prevtableentries = ptd->prevtableentries;
     uint32_t const compressed_entry_size_bytes = ptd->compressed_entry_size_bytes;
-    std::vector<FileDisk>* ptmp_1_disks = ptd->ptmp_1_disks;
 
     // Streams to read and right to tables. We will have handles to two tables. We will
     // read through the left table, compute matches, and evaluate f for matching entries,
@@ -504,7 +504,7 @@ void* phase1_thread(THREADDATA* ptd)
 				globals.right_writer += right_writer_count * right_entry_size_bytes;
 				globals.right_writer_count += right_writer_count;
 
-				(*ptmp_1_disks)[table_index].Write(
+				ptd->ptmp_1_disks[table_index]->Write(
 						globals.left_writer, left_writer_buf.get(), left_writer_count * compressed_entry_size_bytes);
 				globals.left_writer += left_writer_count * compressed_entry_size_bytes;
 				globals.left_writer_count += left_writer_count;
@@ -512,8 +512,7 @@ void* phase1_thread(THREADDATA* ptd)
 				globals.matches += matches;
 
 				// tables 1-6 written to sort manager and can be done in parallele with others
-				//if( table_index < 6 )
-					Sem::Post(ptd->mine);
+				Sem::Post(ptd->mine);
 
         // Correct positions
         for (uint32_t i = 0; i < right_writer_count; i++) {
@@ -536,7 +535,6 @@ void* phase1_thread(THREADDATA* ptd)
 				if( table_index >= 6 ) {
             // Writes out the right table for table 7
 						globals.table7->Write( write_position, right_writer_buf.get(), right_writer_count * right_entry_size_bytes );
-						//Sem::Post(ptd->mine);
 				}
     }
 
@@ -649,6 +647,16 @@ std::vector<uint64_t> RunPhase1(
     // the next table. This is the left table index.
     double progress_percent[] = {0.06, 0.12, 0.2, 0.28, 0.36, 0.42};
 
+		std::unique_ptr<TableFileWriter> table_writers[7];
+		TableFileWriter* table_writers_array[7];
+
+		table_writers[1].reset( table_writers_array[1] =
+													 new TableFileWriter( tmp_1_disks[1], 8*EntrySizes::GetMaxEntrySize(k, 1, false) ) ); // do not support table 1 for now
+		for( int i = 2; i < 7; i++ )
+				table_writers[i].reset( table_writers_array[i] =
+										new TableFileWriter( tmp_1_disks[i],
+														(flags & ENABLE_BITFIELD) ? (k + kOffsetSize) : (8*EntrySizes::GetMaxEntrySize(k, i, false) ) ) );
+
 		for (uint8_t table_index = 1; table_index < 7; table_index++) {
         Timer table_timer;
 
@@ -667,8 +675,7 @@ std::vector<uint64_t> RunPhase1(
         right_entry_size_bytes = EntrySizes::GetMaxEntrySize(k, table_index + 1, true);
 
         if (flags & ENABLE_BITFIELD && table_index != 1) {
-            // We only write pos and offset to tables 2-6 after removing
-            // metadata
+						// We only write pos and offset to tables 2-6 after removing metadata
             compressed_entry_size_bytes = cdiv(k + kOffsetSize, 8);
             if (table_index == 6) {
                 // Table 7 will contain f7, pos and offset
@@ -715,6 +722,7 @@ std::vector<uint64_t> RunPhase1(
             mutex[i] = Sem::Create();
         }
 
+
         for (int i = 0; i < num_threads; i++) {
             td[i].index = i;
             td[i].mine = &mutex[i];
@@ -728,7 +736,8 @@ std::vector<uint64_t> RunPhase1(
             td[i].entry_size_bytes = entry_size_bytes;
             td[i].pos_size = pos_size;
             td[i].compressed_entry_size_bytes = compressed_entry_size_bytes;
-            td[i].ptmp_1_disks = &tmp_1_disks;
+						//td[i].ptmp_1_disks = &tmp_1_disks;
+						td[i].ptmp_1_disks = table_writers_array;
 
             threads.emplace_back(phase1_thread, &td[i]);
         }
@@ -750,9 +759,6 @@ std::vector<uint64_t> RunPhase1(
         table_sizes[table_index] = globals.left_writer_count;
         table_sizes[table_index + 1] = globals.right_writer_count;
 
-        // Truncates the file after the final write position, deleting no longer useful
-        // working space
-        tmp_1_disks[table_index].Truncate(globals.left_writer);
 				globals.L_sort_manager.reset();
 				if (table_index < 6) {
 						globals.R_sort_manager->FlushCache( full_stats_next == NULL );

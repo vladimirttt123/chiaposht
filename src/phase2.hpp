@@ -42,22 +42,22 @@ struct Phase2Results
 };
 
 
-inline void ScanTable( FileDisk *disk, int64_t const table_size, int16_t const &entry_size,
+inline void ScanTable( FileDisk *disk, int64_t const table_size, const int16_t entry_size_bits,
 											 bitfield &current_bitfield, bitfield &next_bitfield,
 											 const uint32_t &num_threads, uint8_t const pos_offset_size, bool parallel_read ){
-	// next_bitfield.clear(); next_bitfield should be cleared outside!!!!
 
+	const uint16_t entry_size = (entry_size_bits+7)/8;
 	std::atomic_uint64_t read_cursor = 0;
 	const auto max_threads = std::max((uint32_t)1, num_threads);
 	auto threads = std::make_unique<std::thread[]>( max_threads );
 	std::mutex read_mutex[2];
-	const uint64_t read_bufsize = ((HUGE_MEM_PAGE_SIZE-MEM_SAFE_BUF_SIZE)/entry_size)*entry_size; // allign size to entry length
+	const uint64_t read_bufsize = ((HUGE_MEM_PAGE_SIZE-MEM_SAFE_BUF_SIZE)/entry_size/8)*entry_size*8; // allign size to entry length
 	const uint64_t to_read_size = table_size * entry_size;
 
 #ifndef __GNUC__
 	next_bitfield.PrepareToThreads( max_threads );
 #endif // __GNUC__
-	auto thread_func = [ entry_size, pos_offset_size, read_bufsize, &read_mutex, &table_size, &to_read_size, &parallel_read]
+	auto thread_func = [ entry_size, pos_offset_size, read_bufsize, &read_mutex, &table_size, &to_read_size, &parallel_read, &entry_size_bits]
 			(FileDisk *src_disk, std::atomic_uint64_t *read_cursor, const bitfield * current_bitfield, bitfield *next_bitfield ){
 
 				auto buffer( Util::allocate<uint8_t>(read_bufsize + MEM_SAFE_BUF_SIZE) );
@@ -66,7 +66,7 @@ inline void ScanTable( FileDisk *disk, int64_t const table_size, int16_t const &
 				uint64_t buf_size = 0, buf_start = 0;
 				std::unique_ptr<FileDisk> pdisk;
 				if( parallel_read ) pdisk.reset( new FileDisk( src_disk->GetFileName(), false ) );
-				auto disk = parallel_read ?pdisk.get() : src_disk;
+				TableFileReader disk( *(parallel_read ?pdisk.get() : src_disk), entry_size_bits );
 #ifndef __GNUC__
 				auto writer = bitfield::ThreadWriter( *next_bitfield );
 #endif // __GNUC__
@@ -81,7 +81,7 @@ inline void ScanTable( FileDisk *disk, int64_t const table_size, int16_t const &
 					}
 					buf_size = std::min( read_bufsize, to_read_size - buf_start );
 					assert( (buf_size % entry_size) == 0 );
-					disk->Read( buf_start, buffer.get(), buf_size );
+					disk.Read( buf_start, buffer.get(), buf_size );
 					if( !parallel_read )read_mutex[0].unlock();
 
 					// Setting limits could read data from file than need a mutex
@@ -127,7 +127,7 @@ inline void ScanTable( FileDisk *disk, int64_t const table_size, int16_t const &
 		threads[i].join();
 }
 
-inline void SortRegularTableThread( IReadDiskStream * disk, const uint64_t &table_size,
+inline void SortRegularTableThread( TableFileReader * disk, const uint64_t &table_size,
 																		const int16_t &entry_size, const int16_t &new_entry_size,
 																		uint64_t *read_position, uint64_t *global_write_counter,
 																		const bitfield *current_bitfield, const bitfield_index *index,
@@ -137,7 +137,7 @@ inline void SortRegularTableThread( IReadDiskStream * disk, const uint64_t &tabl
 	uint8_t const write_counter_shift = 128 - k;
 	uint8_t const pos_offset_shift = write_counter_shift - pos_offset_size;
 
-	uint64_t buf_size = ((HUGE_MEM_PAGE_SIZE - MEM_SAFE_BUF_SIZE)/entry_size)*entry_size;
+	uint64_t buf_size = ((HUGE_MEM_PAGE_SIZE - MEM_SAFE_BUF_SIZE)/entry_size/8)*entry_size*8;
 	auto buffer( Util::allocate<uint8_t>( buf_size + MEM_SAFE_BUF_SIZE ) );
 	SortManager::ThreadWriter writer = SortManager::ThreadWriter( *sort_manager );
 	uint64_t proc5_size = table_size*entry_size/20;
@@ -296,7 +296,7 @@ Phase2Results RunPhase2(
 				Timer scan_timer;
 				std::cout << "\ttable " << table_index << ": scan " << std::flush;
 
-				ScanTable( &tmp_1_disks[table_index], table_size, entry_size, *current_bitfield.get(), *next_bitfield.get(),
+				ScanTable( &tmp_1_disks[table_index], table_size, k + kOffsetSize, *current_bitfield.get(), *next_bitfield.get(),
 									 max_threads, pos_offset_size, flags&PARALLEL_READ );
 
 				scan_timer.PrintElapsed( "time =" );
@@ -337,7 +337,7 @@ Phase2Results RunPhase2(
 
 			{	// scope for reader stream
 				tmp_1_disks[table_index].setClearAfterRead(); // after this read we do not need the data anymore
-				auto table_stream = ReadFileStream( &tmp_1_disks[table_index], table_size*entry_size );
+				auto table_stream = TableFileReader( tmp_1_disks[table_index], k + kOffsetSize, table_size );
 				for( uint64_t t = 0; t < max_threads - 1; t++ )
 					threads[t] = std::thread(	SortRegularTableThread, &table_stream,
 																		table_size, entry_size, new_entry_size,

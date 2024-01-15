@@ -63,6 +63,40 @@ TEST_CASE( "HUGE_PAGES" ){
 
 TEST_CASE( "DISK_STREAMS" ){
 
+	SECTION( "TABLE_STREAMS" ){
+
+			for( uint16_t entry_size_bits = 38; entry_size_bits < 48; entry_size_bits++ ){
+				const uint64_t entry_size_bytes = (entry_size_bits+7)/8;
+				const uint64_t buf_size = entry_size_bytes * 1024;
+				uint8_t buf[buf_size + MEM_SAFE_BUF_SIZE];
+
+				{
+					FileDisk disk( "tX.tmp" );
+					TableFileWriter wri( disk, entry_size_bits );
+					for( uint64_t i = 0; i < entry_size_bits*8192; i++ ){
+						assert( (i%1024)*entry_size_bytes < buf_size );
+						Bits( i, entry_size_bits ).ToBytes( buf + (i%1024)*entry_size_bytes );
+						if( ((i+1)%1024) == 0 )
+							wri.Write( (i-1023)*entry_size_bytes, buf, 1024*entry_size_bytes );
+					}
+					Bits( 0x112233UL, entry_size_bits).ToBytes(buf);
+					wri.Write( entry_size_bits*8192*entry_size_bytes, buf, entry_size_bytes );
+				}
+
+				FileDisk disk( "tX.tmp", false );
+				TableFileReader rd( disk, entry_size_bits );
+				for( uint64_t i = 0; i < entry_size_bits*8192; i++ ){
+					if( (i%1024)==0 )
+						rd.Read( i*entry_size_bytes, buf, 1024*entry_size_bytes );
+					uint64_t val = Util::ExtractNum64( buf + (i%1024)*entry_size_bytes, 0, entry_size_bits );
+					assert( val == i );
+				}
+				rd.Read( entry_size_bits*8192*entry_size_bytes, buf, entry_size_bytes );
+				uint64_t val = Util::ExtractNum64( buf, 0, entry_size_bits );
+				assert( val == 0x112233 );
+			}
+	}
+
 	SECTION("BLOCK_READ_WRITE"){
 		const uint64_t write_size = BUF_SIZE*2;
 		StreamBuffer wbuf;
