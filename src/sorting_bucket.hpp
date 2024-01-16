@@ -20,6 +20,70 @@
 #include "disk_streams.hpp"
 
 #define STATS_UINT_TYPE uint16_t
+const inline uint32_t CacheBucketSize = 64; // mesured in number of entries
+const inline uint32_t CacheBucketSizeLimit = 60; // mesured in number of entries
+
+struct EntriesCache{
+	uint8_t * memory;
+	const uint16_t entry_size, start_bit;
+	const uint32_t entries_count;
+	uint32_t used_count = 0;
+
+
+	EntriesCache( uint8_t* memory, const uint16_t entry_size, const uint32_t entries_count, const uint16_t start_bit )
+			: memory( memory ), entry_size(entry_size), start_bit(start_bit), entries_count(entries_count)
+	{	}
+
+	// returns is cache full
+	inline bool merge( uint8_t *entries, uint16_t count ){
+		assert( used_count + count <= entries_count );
+		assert( BucketSort::CheckSort( entries, entry_size, start_bit, count ) == 0 );
+		assert( BucketSort::CheckSort( get(), entry_size, start_bit, used_count ) == 0 );
+
+		uint8_t *dst = memory + (entries_count-count-used_count)*entry_size;
+
+		if( used_count == 0 ){
+			memcpy( dst, entries, count*entry_size );
+		} else {
+			for( uint8_t *src = get(), *src_end = memory + entries_count*entry_size , *end = entries + count*entry_size;
+					 entries < end; dst += entry_size ){
+				assert( dst + entry_size <= src_end );
+
+				if( Util::MemCmpBits( src, entries, entry_size, start_bit ) < 0 ){
+					memcpy( dst, src, entry_size );
+					src += entry_size;
+					if( src == src_end ){
+						assert( dst + entry_size + (end - entries) == src_end );
+						memcpy( dst + entry_size, entries, end - entries );
+						entries = end; // to halt the loop
+					}
+				} else {
+					memcpy( dst, entries, entry_size );
+					entries += entry_size;
+				}
+			}
+		}
+
+		used_count += count;
+
+		assert( BucketSort::CheckSort( get(), entry_size, start_bit, used_count ) == 0 );
+
+		return ( entries_count - used_count ) < CacheBucketSize;
+	}
+
+	inline uint8_t * shift( uint32_t count ){
+		assert( BucketSort::CheckSort( get(), entry_size, start_bit, entries_count ) == 0 );
+		assert( count <= used_count );
+
+		used_count -= count;
+		return memory + (entries_count-used_count - count)*entry_size;
+	}
+
+	inline uint8_t * get(){
+		assert( used_count <= entries_count );
+		return memory + (entries_count-used_count)*entry_size;
+	}
+};
 
 // ==================================================================================================
 struct SortingBucket{
@@ -27,19 +91,21 @@ struct SortingBucket{
 
 	SortingBucket( const std::string &fileName, MemoryManager &memory_manager, STATS_UINT_TYPE* stats_mem,
 								uint16_t bucket_no, uint8_t log_num_buckets, uint16_t entry_size,
-								uint32_t begin_bits, uint8_t bucket_bits_count, bool enable_compression = true, int16_t sequence_start_bit = -1, bool parallel_read = true )
-			: parallel_read(parallel_read)
-			,	disk( new BucketStream( fileName, memory_manager, bucket_no, log_num_buckets, entry_size, begin_bits, enable_compression, sequence_start_bit ) )
-
+								uint32_t begin_bits, uint8_t bucket_bits_count,
+								bool enable_compression = true, int16_t sequence_start_bit = -1, bool parallel_read = true,
+								uint8_t *presort_cache = nullptr, uint32_t presort_cache_entries_no = 0 )
+			: parallel_read(parallel_read),
+				disk( new BucketStream( fileName, memory_manager, bucket_no, log_num_buckets, entry_size, begin_bits, enable_compression, sequence_start_bit ) ),
 #ifndef NDEBUG
-		, bucket_no_( bucket_no )
-		, log_num_buckets_( log_num_buckets )
+				bucket_no_( bucket_no ),
+				log_num_buckets_( log_num_buckets ),
 #endif
-		, bucket_bits_count_(bucket_bits_count)
-		, entry_size_(entry_size)
-		, begin_bits_(begin_bits)
-		, statistics( stats_mem )
-		, memory_manager(memory_manager)
+				bucket_bits_count_(bucket_bits_count),
+				entry_size_(entry_size),
+				begin_bits_(begin_bits),
+				statistics( stats_mem ),
+				memory_manager(memory_manager),
+				entries_cache( presort_cache, entry_size, presort_cache_entries_no, sequence_start_bit )
 	{
 		// clear statistics
 		memset( statistics, 0, sizeof(STATS_UINT_TYPE)<<bucket_bits_count );
@@ -78,6 +144,14 @@ struct SortingBucket{
 	// Flush current buffer to disk
 	// It should be at end of writting.
 	void Flush( bool free_memory = false ){
+
+		if( entries_cache.used_count > 0 ){
+			StreamBuffer buf( 0 );
+			buf.reset( entries_cache.get(), entries_cache.used_count * entry_size_, entries_cache.used_count * entry_size_ );
+			disk->Write( buf );
+			buf.release();
+			entries_cache.used_count = 0;
+		}
 
 		if( free_memory ){
 			if( disk ) disk->FlusToDisk();
@@ -347,6 +421,8 @@ private:
 	std::atomic_uint64_t sorted_pos = 0;
 	MemoryManager &memory_manager;
 
+	EntriesCache entries_cache;
+
 	uint64_t total_reads = 0, instant_reads = 0;
 
 
@@ -380,9 +456,16 @@ private:
 		}
 
 		StreamBuffer buf( 0 );
-		// try to do without copy... may be need to change that write recieves const stream buffer
-		buf.reset( entries, count * entry_size_, count * entry_size_ );
-		disk->Write( buf );
+		if( entries_cache.memory != nullptr ){
+			if( entries_cache.merge( entries, count ) ){
+				buf.reset( entries_cache.shift( count ), count * entry_size_, count * entry_size_ );
+				disk->Write( buf );
+			}
+		} else {
+			// try to do without copy... may be need to change that write recieves const stream buffer
+			buf.reset( entries, count * entry_size_, count * entry_size_ );
+			disk->Write( buf );
+		}
 		buf.release();
 		entries_count += count;
 	}
