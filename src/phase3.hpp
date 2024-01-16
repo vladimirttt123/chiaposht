@@ -418,6 +418,9 @@ Phase3Results RunPhase3(
 					}
 				}
 
+				// right_disk is a SortManager than need to clear sorting buffers
+				right_disk.FreeMemory();
+
 				// Flush cache so all entries are written to buckets
 				R_sort_manager->FlushCache( !full_stats[1] );
 				R_sort_manager->FreeMemory();
@@ -616,7 +619,6 @@ Phase3Results RunPhase3(
 
 				table_timer.PrintElapsed("Total compress table time:");
 
-				right_disk.FreeMemory();
 				if (flags & SHOW_PROGRESS) { progress(3, table_index, 6); }
 		}
 
