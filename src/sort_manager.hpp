@@ -30,6 +30,8 @@ using namespace std::chrono_literals; // for operator""ns;
 #include "exceptions.hpp"
 #include "sorting_bucket.hpp"
 
+const inline uint32_t CacheBucketSize = 256; // mesured in number of entries
+const inline uint32_t CacheBucketSizeLimit = 250; // mesured in number of entries
 
 // Small bucket used in thread writings
 struct CacheBucket{
@@ -51,8 +53,7 @@ struct CacheBucket{
 		if( count > CacheBucketSizeLimit ){
 			if( parent.TryAddEntriesTS( entries, statistics, count ) )
 				count = 0;
-			else
-			if( count >= CacheBucketSize ) {
+			else if( count >= CacheBucketSize ) {
 				parent.AddEntriesTS( entries, statistics, count );
 				count = 0;
 			}
@@ -306,33 +307,25 @@ public:
 		this->num_buckets = num_buckets;
 		buckets_ = std::make_unique<std::unique_ptr<SortingBucket>[]>(num_buckets);
 
-		uint16_t sequence_start = -1;
-		uint32_t bucket_entries_cache_count = 0;
-		if( enable_compaction && k >= 32 ){ // for k < 32 sqeunce compaction not working. it need long enough entry size
-			switch (phase) {
-			case 1: sequence_start = table_index == 1 ? k : (k+kExtraBits); break;
-			case 2: sequence_start = 0; break;
-			case 4: sequence_start = k; break;
-			}
-
-			if( sequence_start > 0 ){
-				bucket_entries_cache_count = CacheBucketSize*num_threads;
-				presort_bucket_entries_cache = Util::allocate<uint8_t>( bucket_entries_cache_count*num_buckets*entry_size + MEM_SAFE_BUF_SIZE );
-			}
-		}
-		StreamBuffer a;
 		for (size_t bucket_i = 0; bucket_i < num_buckets; bucket_i++) {
 				std::ostringstream bucket_number_padded;
 				bucket_number_padded << std::internal << std::setfill('0') << std::setw(3) << bucket_i;
 
-				fs::path const bucket_filename = fs::path(tmp_dirname) /
+				fs::path const bucket_filename =
+						fs::path(tmp_dirname) /
 						fs::path(filename + ".sort_bucket_" + bucket_number_padded.str() + ".tmp");
-
+				uint16_t sequence_start = -1;
+				if( k >= 32 ){ // for k < 32 sqeunce compaction not working. it need long enough entry size
+					switch (phase) {
+						case 1: sequence_start = table_index == 1 ? k : (k+kExtraBits); break;
+						case 2: sequence_start = 0; break;
+						case 4: sequence_start = k; break;
+					}
+				}
 				buckets_[bucket_i].reset( new SortingBucket( bucket_filename.string(), memory_manager, full_statistics.forBucket( bucket_i ),
-																										 bucket_i, log_num_buckets_,
-																										 entry_size, begin_bits_ + log_num_buckets_, subbucket_bits,
-																										 enable_compaction, sequence_start, parallel_read,
-																										 presort_bucket_entries_cache.get() + bucket_entries_cache_count*bucket_i*entry_size, bucket_entries_cache_count ) );
+																							bucket_i, log_num_buckets_,
+																							entry_size, begin_bits_ + log_num_buckets_, subbucket_bits,
+																							enable_compaction, sequence_start, parallel_read ) );
 		}
 	}
 
@@ -564,7 +557,6 @@ public:
 		{
 			for( uint i = 0; i < num_buckets; i++ )
 				buckets_[i]->Flush( isFull );
-			presort_bucket_entries_cache.reset(); // clear flushed cache
     }
 
 		inline uint64_t BiggestBucketSize() const {
@@ -658,8 +650,6 @@ private:
 
 	const inline uint8_t* memory_start() const {return sorted_current->buffer();}
 
-	// to allow better compaction entries presorted before sended to save
-	std::unique_ptr<uint8_t,Util::Deleter<uint8_t>> presort_bucket_entries_cache;
 
 	bool StartSorting(){
 		if( sorted_current ) return false;
