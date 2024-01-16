@@ -501,14 +501,15 @@ private:
 
 
 struct TableFileWriter {
-	const uint16_t entry_leftover_bits, entry_size_bytes, entry_size_full_bytes;
+	const uint16_t entry_leftover_bits, entry_size_bytes, entry_size_full_bytes, block_size_bytes;
 
 	TableFileWriter( FileDisk &disk, uint16_t entry_size_bits )
 			: entry_leftover_bits(entry_size_bits%8), entry_size_bytes( (entry_size_bits+7)/8 ),
-			entry_size_full_bytes( entry_size_bits/8 ), disk( disk )
+			entry_size_full_bytes( entry_size_bits/8 ), block_size_bytes( entry_size_bits ), disk( disk )
 	{	}
 
-	inline void Write( uint64_t begin, const uint8_t *mem, uint64_t length ){
+	// Warning! content of mem parameter changed by this function
+	inline void Write( uint64_t begin, uint8_t *mem, uint64_t length ){
 
 		if( entry_size_bytes == entry_size_full_bytes )
 			disk.Write( begin, mem, length );
@@ -518,22 +519,22 @@ struct TableFileWriter {
 
 			write_position += length;
 
-			uint8_t buf[length+8];
-			uint32_t buf_position = 0;
-
-			for( uint64_t i = 0; i < length; i += entry_size_bytes ){
-				memcpy( buf + buf_position, mem+i, entry_size_full_bytes ); // copy full bytes
-				buf_position += entry_size_full_bytes; // update buf position
-				leftovers = (leftovers<<entry_leftover_bits) | (mem[i+entry_size_full_bytes]>>(8-entry_leftover_bits));
-				if( leftovers_count == 7 ){
-					buf_position += leftovers_to_buf( buf + buf_position );
-					assert( leftovers == 0 );
-				} else {
-					leftovers_count++;
-				}
+			uint64_t mem_pos = 0;
+			{	// the first block
+				uint8_t buf[block_size_bytes];
+				uint64_t buf_pos = 0;
+				for( ; mem_pos < length && (mem_pos == 0 || leftovers_count != 0); mem_pos += entry_size_bytes )
+					buf_pos += add_entry_to_buf( buf + buf_pos, mem + mem_pos );
+				disk.Write( file_write_position, buf, buf_pos );
+				file_write_position += buf_pos;
 			}
 
-			disk.Write( file_write_position, buf, buf_position );
+			// next blocks
+			uint32_t buf_position = 0;
+			for( ; mem_pos < length; mem_pos += entry_size_bytes )
+				buf_position += add_entry_to_buf( mem + buf_position, mem + mem_pos );
+
+			disk.Write( file_write_position, mem, buf_position );
 			file_write_position += buf_position;
 		}
 	}
@@ -553,7 +554,18 @@ private:
 	uint8_t leftovers_count = 0;
 	uint64_t write_position = 0, file_write_position = 0, leftovers = 0;
 
-	inline uint64_t leftovers_to_buf( uint8_t*buf ){
+	inline uint64_t add_entry_to_buf( uint8_t* dst, const uint8_t * src ){
+		memcpy( dst, src, entry_size_full_bytes ); // copy full bytes
+		leftovers = (leftovers<<entry_leftover_bits) | (src[entry_size_full_bytes]>>(8-entry_leftover_bits));
+		if( leftovers_count == 7 ){
+			return  entry_size_full_bytes + leftovers_to_buf( dst + entry_size_full_bytes );
+		} else {
+			leftovers_count++;
+		}
+		return entry_size_full_bytes;
+	}
+
+	inline uint64_t leftovers_to_buf( uint8_t *buf ){
 		for( uint i = 0; i < entry_leftover_bits; i++, leftovers >>= 8 )
 			buf[i] = leftovers&0xff;
 
@@ -564,12 +576,12 @@ private:
 };
 
 struct TableFileReader{
-	const uint16_t entry_leftover_bits, entry_size_bytes, entry_size_full_bytes;
-	const uint64_t block_size, max_position;
+	const uint16_t entry_leftover_bits, entry_size_bytes, entry_size_full_bytes, block_size_bytes;
+	const uint64_t max_position;
 
 	TableFileReader( FileDisk &disk, uint16_t entry_size_bits, uint64_t entries_no = 0 )
 			: entry_leftover_bits(entry_size_bits%8), entry_size_bytes( (entry_size_bits+7)/8 ),
-			entry_size_full_bytes( entry_size_bits/8 ), block_size( entry_size_bits ),
+			entry_size_full_bytes( entry_size_bits/8 ), block_size_bytes( entry_size_bits ),
 			max_position( entries_no * entry_size_bytes ), disk( disk )
 	{	}
 
@@ -583,22 +595,22 @@ struct TableFileReader{
 
 		uint64_t first_entry = begin / entry_size_bytes;
 		uint64_t first_entry_block_no = first_entry/8;
-		uint64_t read_pos = first_entry_block_no*block_size;
+		uint64_t read_pos = first_entry_block_no*block_size_bytes;
 		uint64_t read_blocks = (length / entry_size_bytes + 7 )/8;
 
 		if( length / entry_size_bytes > 8 ){
-			uint64_t read_blocks_size = (read_blocks-1)*block_size;
+			uint64_t read_blocks_size = (read_blocks-1)*block_size_bytes;
 			uint8_t* inner_buf = buf + length - read_blocks_size;
 			disk.Read( read_pos, inner_buf, read_blocks_size );
 			read_pos += read_blocks_size;
 
-			for( uint64_t i = 0; i < read_blocks-1; i++, inner_buf += block_size )
+			for( uint64_t i = 0; i < read_blocks-1; i++, inner_buf += block_size_bytes )
 				buf = extract_block( inner_buf, buf );
 		}
 
 		// the last one
-		uint8_t last_block_buf[block_size];
-		disk.Read( read_pos, last_block_buf, block_size );
+		uint8_t last_block_buf[block_size_bytes];
+		disk.Read( read_pos, last_block_buf, block_size_bytes );
 		extract_block( last_block_buf, buf, ((length/entry_size_bytes)%8 == 0)
 																					 ? 8 : ((length/entry_size_bytes)%8) );
 	}
@@ -614,7 +626,7 @@ struct TableFileReader{
 	inline uint8_t* extract_block( uint8_t * block_buf, uint8_t *dst_buf, uint8_t entries_no = 8 ){
 		uint64_t leftovers = 0;
 		for( uint64_t l = 1; l <= entry_leftover_bits; l++ )
-			leftovers = (leftovers<<8) | block_buf[block_size-l];
+			leftovers = (leftovers<<8) | block_buf[block_size_bytes-l];
 		uint8_t leftovers_bytes[8];
 		for( int l = 7; l >= 0; l--, leftovers>>=entry_leftover_bits )
 			leftovers_bytes[l] = (leftovers&0xff)<<(8-entry_leftover_bits);
