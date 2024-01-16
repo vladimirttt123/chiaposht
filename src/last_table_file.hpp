@@ -585,26 +585,24 @@ struct TableFileReader{
 		uint64_t first_entry_block_no = first_entry/8;
 		uint64_t read_pos = first_entry_block_no*block_size;
 		uint64_t read_blocks = (length / entry_size_bytes + 7 )/8;
-		uint64_t read_blocks_size = read_blocks*block_size;
-		uint8_t inner_buf[read_blocks_size];
-		disk.Read( read_pos, inner_buf, read_blocks_size );
 
-		for( uint64_t i = 0; i < read_blocks; i++ ){
-			uint8_t * block_buf = inner_buf + i*block_size;
+		if( length / entry_size_bytes > 8 ){
+			uint64_t read_blocks_size = (read_blocks-1)*block_size;
+			uint8_t* inner_buf = buf + length - read_blocks_size;
+			disk.Read( read_pos, inner_buf, read_blocks_size );
+			read_pos += read_blocks_size;
 
-			uint64_t leftovers = 0;
-			for( uint64_t l = 1; l <= entry_leftover_bits; l++ )
-				leftovers = (leftovers<<8) | block_buf[block_size-l];
-			uint8_t leftovers_bytes[8];
-			for( int l = 7; l >= 0; l--, leftovers>>=entry_leftover_bits )
-				leftovers_bytes[l] = (leftovers&0xff)<<(8-entry_leftover_bits);
-
-			for( uint64_t buf_pos = i*8*entry_size_bytes, e = 0; e < 8 && buf_pos < length; e++, buf_pos+=entry_size_bytes ){
-				memcpy( buf + buf_pos, block_buf + e*entry_size_full_bytes, entry_size_full_bytes );
-				buf[buf_pos+entry_size_full_bytes] = leftovers_bytes[e];
-			}
+			for( uint64_t i = 0; i < read_blocks-1; i++, inner_buf += block_size )
+				buf = extract_block( inner_buf, buf );
 		}
+
+		// the last one
+		uint8_t last_block_buf[block_size];
+		disk.Read( read_pos, last_block_buf, block_size );
+		extract_block( last_block_buf, buf, ((length/entry_size_bytes)%8 == 0)
+																					 ? 8 : ((length/entry_size_bytes)%8) );
 	}
+
 	inline uint32_t Read( uint8_t * buf, uint64_t length ){
 		uint32_t real_length = std::min( length, max_position - read_position );
 		if( real_length )
@@ -613,6 +611,20 @@ struct TableFileReader{
 		return real_length;
 	}
 
+	inline uint8_t* extract_block( uint8_t * block_buf, uint8_t *dst_buf, uint8_t entries_no = 8 ){
+		uint64_t leftovers = 0;
+		for( uint64_t l = 1; l <= entry_leftover_bits; l++ )
+			leftovers = (leftovers<<8) | block_buf[block_size-l];
+		uint8_t leftovers_bytes[8];
+		for( int l = 7; l >= 0; l--, leftovers>>=entry_leftover_bits )
+			leftovers_bytes[l] = (leftovers&0xff)<<(8-entry_leftover_bits);
+
+		for( uint8_t e = 0; e < entries_no; e++, dst_buf += entry_size_bytes ){
+			memcpy( dst_buf, block_buf + e*entry_size_full_bytes, entry_size_full_bytes );
+			dst_buf[entry_size_full_bytes] = leftovers_bytes[e];
+		}
+		return dst_buf;
+	}
 private:
 	FileDisk &disk;
 	uint64_t read_position = 0;
