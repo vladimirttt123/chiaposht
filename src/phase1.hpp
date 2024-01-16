@@ -651,7 +651,8 @@ std::vector<uint64_t> RunPhase1(
 		TableFileWriter* table_writers_array[7];
 
 		table_writers[1].reset( table_writers_array[1] =
-													 new TableFileWriter( tmp_1_disks[1], 8*EntrySizes::GetMaxEntrySize(k, 1, false) ) ); // do not support table 1 for now
+													 new TableFileWriter( tmp_1_disks[1],
+																								(flags & ENABLE_BITFIELD)?k:(8*EntrySizes::GetMaxEntrySize(k, 1, false)) ) );
 		for( int i = 2; i < 7; i++ )
 				table_writers[i].reset( table_writers_array[i] =
 										new TableFileWriter( tmp_1_disks[i],
