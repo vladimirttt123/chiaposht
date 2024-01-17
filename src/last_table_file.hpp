@@ -509,10 +509,11 @@ struct TableFileWriter {
 	{	}
 
 	// Warning! content of mem parameter changed by this function
-	inline void Write( uint64_t begin, uint8_t *mem, uint64_t length ){
+	// this function shoulb be syncronized outside!!!
+	inline void StartWrite( uint64_t begin, uint8_t *mem, uint64_t length ){
 
 		if( entry_size_bytes == entry_size_full_bytes )
-			disk.Write( begin, mem, length );
+			return;
 		else{
 			if( begin != write_position )
 				throw InvalidStateException("incorrect begin of write");
@@ -520,22 +521,64 @@ struct TableFileWriter {
 			write_position += length;
 
 			uint64_t mem_pos = 0;
+			uint8_t buf[block_size_bytes];
+			uint64_t buf_pos = 0;
 			{	// the first block
-				uint8_t buf[block_size_bytes];
-				uint64_t buf_pos = 0;
 				for( ; mem_pos < length && (mem_pos == 0 || leftovers_count != 0); mem_pos += entry_size_bytes )
 					buf_pos += add_entry_to_buf( buf + buf_pos, mem + mem_pos );
-				disk.Write( file_write_position, buf, buf_pos );
+
+				assert( mem_pos == length || mem_pos == entry_size_bytes*8 - (begin%(entry_size_bytes*8)) );
+
+				{
+					std::lock_guard<std::mutex> lk(write_sync);
+					disk.Write( file_write_position, buf, buf_pos );
+				}
+
+
 				file_write_position += buf_pos;
 			}
 
+			if( mem_pos >= length ) return; // no need to continue everything is written;
+
+			assert( leftovers_count == 0 );
+
+			// first block written now need to start fill last block
+			uint64_t last_block_idx = (begin+length)/entry_size_bytes/8;
+			file_write_position = last_block_idx * block_size_bytes;
+
+			buf_pos = 0;
+			for( mem_pos = last_block_idx*entry_size_bytes*8 - begin; mem_pos < length; mem_pos += entry_size_bytes )
+				buf_pos += add_entry_to_buf( buf + buf_pos, mem + mem_pos );
+
+			{
+				std::lock_guard<std::mutex> lk(write_sync);
+				disk.Write( file_write_position, buf, buf_pos );
+			}
+			file_write_position += buf_pos;
+		}
+	}
+
+	inline void EndWrite( uint64_t begin, uint8_t *mem, uint64_t length ){
+		if( entry_size_bytes == entry_size_full_bytes ){
+			std::lock_guard<std::mutex> lk(write_sync);
+			disk.Write( begin, mem, length );
+		} else {
+			uint64_t mem_pos = entry_size_bytes*8 - (begin%(entry_size_bytes*8));
+			if( mem_pos == 0 ) mem_pos = entry_size_bytes*8; // first block always processed on start
+			if( mem_pos >= length ) return; // nothing to do
+			uint64_t write_pos = (begin+mem_pos)/entry_size_bytes/8*block_size_bytes;
 			// next blocks
 			uint32_t buf_position = 0;
-			for( ; mem_pos < length; mem_pos += entry_size_bytes )
-				buf_position += add_entry_to_buf( mem + buf_position, mem + mem_pos );
+			uint64_t local_leftovers = 0;
+			uint8_t local_leftovers_count = 0;
+			for( uint64_t up_to = (begin+length)/entry_size_bytes/8*entry_size_bytes*8 - begin; mem_pos < up_to; mem_pos += entry_size_bytes )
+				buf_position += add_entry_to_buf( mem + buf_position, mem + mem_pos, local_leftovers, local_leftovers_count );
 
-			disk.Write( file_write_position, mem, buf_position );
-			file_write_position += buf_position;
+			assert(local_leftovers_count == 0 );
+			{
+				std::lock_guard<std::mutex> lk(write_sync);
+				disk.Write( write_pos, mem, buf_position );
+			}
 		}
 	}
 
@@ -545,31 +588,43 @@ struct TableFileWriter {
 			leftovers <<= (8-leftovers_count)*entry_leftover_bits;
 
 			uint8_t buf[8];
-			disk.Write(file_write_position, buf, leftovers_to_buf( buf ) );
+			{
+				std::lock_guard<std::mutex> lk(write_sync);
+				disk.Write(file_write_position, buf, leftovers_to_buf( buf ) );
+			}
 		}
 	}
 
 private:
 	FileDisk &disk;
+	std::mutex write_sync;
+
 	uint8_t leftovers_count = 0;
 	uint64_t write_position = 0, file_write_position = 0, leftovers = 0;
 
 	inline uint64_t add_entry_to_buf( uint8_t* dst, const uint8_t * src ){
+		return add_entry_to_buf( dst, src, leftovers, leftovers_count);
+	}
+
+	inline uint64_t add_entry_to_buf( uint8_t* dst, const uint8_t * src, uint64_t &l, uint8_t &l_count ){
 		memcpy( dst, src, entry_size_full_bytes ); // copy full bytes
-		leftovers = (leftovers<<entry_leftover_bits) | (src[entry_size_full_bytes]>>(8-entry_leftover_bits));
-		if( leftovers_count == 7 ){
-			return  entry_size_full_bytes + leftovers_to_buf( dst + entry_size_full_bytes );
+		l = (l<<entry_leftover_bits) | (src[entry_size_full_bytes]>>(8-entry_leftover_bits));
+		if( l_count == 7 ){
+			return  entry_size_full_bytes + leftovers_to_buf( dst + entry_size_full_bytes, l, l_count );
 		} else {
-			leftovers_count++;
+			l_count++;
 		}
 		return entry_size_full_bytes;
 	}
 
 	inline uint64_t leftovers_to_buf( uint8_t *buf ){
-		for( uint i = 0; i < entry_leftover_bits; i++, leftovers >>= 8 )
-			buf[i] = leftovers&0xff;
+		return leftovers_to_buf( buf, leftovers, leftovers_count );
+	}
+	inline uint64_t leftovers_to_buf( uint8_t *buf, uint64_t &l, uint8_t &l_count ){
+		for( uint i = 0; i < entry_leftover_bits; i++, l >>= 8 )
+			buf[i] = l&0xff;
 
-		leftovers_count = 0;
+		l_count = 0;
 
 		return entry_leftover_bits;
 	}

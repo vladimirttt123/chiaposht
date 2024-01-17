@@ -76,11 +76,14 @@ TEST_CASE( "DISK_STREAMS" ){
 					for( uint64_t i = 0; i < entry_size_bits*8192; i++ ){
 						assert( (i%1024)*entry_size_bytes < buf_size );
 						Bits( i, entry_size_bits ).ToBytes( buf + (i%1024)*entry_size_bytes );
-						if( ((i+1)%1024) == 0 )
-							wri.Write( (i-1023)*entry_size_bytes, buf, 1024*entry_size_bytes );
+						if( ((i+1)%1024) == 0 ){
+							wri.StartWrite( (i-1023)*entry_size_bytes, buf, 1024*entry_size_bytes );
+							wri.EndWrite((i-1023)*entry_size_bytes, buf, 1024*entry_size_bytes);
+						}
 					}
 					Bits( 0x112233UL, entry_size_bits).ToBytes(buf);
-					wri.Write( entry_size_bits*8192*entry_size_bytes, buf, entry_size_bytes );
+					wri.StartWrite( entry_size_bits*8192*entry_size_bytes, buf, entry_size_bytes );
+					wri.EndWrite( entry_size_bits*8192*entry_size_bytes, buf, entry_size_bytes );
 				}
 
 				FileDisk disk( "tX.tmp", false );

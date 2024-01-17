@@ -504,7 +504,8 @@ void* phase1_thread(THREADDATA* ptd)
 				globals.right_writer += right_writer_count * right_entry_size_bytes;
 				globals.right_writer_count += right_writer_count;
 
-				ptd->ptmp_1_disks[table_index]->Write(
+				uint64_t left_write_pos = globals.left_writer;
+				ptd->ptmp_1_disks[table_index]->StartWrite(
 						globals.left_writer, left_writer_buf.get(), left_writer_count * compressed_entry_size_bytes);
 				globals.left_writer += left_writer_count * compressed_entry_size_bytes;
 				globals.left_writer_count += left_writer_count;
@@ -513,6 +514,9 @@ void* phase1_thread(THREADDATA* ptd)
 
 				// tables 1-6 written to sort manager and can be done in parallele with others
 				Sem::Post(ptd->mine);
+
+				ptd->ptmp_1_disks[table_index]->EndWrite(
+						left_write_pos, left_writer_buf.get(), left_writer_count * compressed_entry_size_bytes);
 
         // Correct positions
         for (uint32_t i = 0; i < right_writer_count; i++) {
