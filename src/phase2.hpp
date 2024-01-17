@@ -166,8 +166,8 @@ inline void SortRegularTableThread( FileDisk * src_disk,  const uint64_t read_bu
 		cur_bitfield.setLimits( read_pos/entry_size, buf_size/entry_size ); // this can read from disk
 		if( bitfield_mutex ) bitfield_mutex->unlock();
 
-		if( buf_size < proc5_size && *read_position > 0 && *read_position/proc5_size != (*read_position-buf_size)/proc5_size )
-			std::cout << (((*read_position/proc5_size)%5) == 0 ? "*" : "-" ) << std::flush;
+		if( buf_size < proc5_size && read_pos > 0 && read_pos/proc5_size != (read_pos-buf_size)/proc5_size )
+			std::cout << (((read_pos/proc5_size)%5) == 0 ? "*" : "-" ) << std::flush;
 
 		uint8_t const* entry = buffer.get();
 		for( uint64_t i = 0, up_to = buf_size/entry_size; i < up_to; i++, entry += entry_size ){
