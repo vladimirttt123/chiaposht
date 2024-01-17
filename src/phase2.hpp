@@ -148,7 +148,10 @@ inline void SortRegularTableThread( FileDisk * src_disk,  const uint64_t read_bu
 	const uint64_t size_to_read = table_size*entry_size;
 
 	std::unique_ptr<FileDisk> pdisk;
-	if( read_mutex == nullptr ) pdisk.reset( new FileDisk( src_disk->GetFileName(), false ) );
+	if( read_mutex == nullptr ) {
+		pdisk.reset( new FileDisk( src_disk->GetFileName(), false ) );
+		pdisk->setClearAfterRead();
+	}
 	TableFileReader disk( *(read_mutex == nullptr ? pdisk.get() : src_disk), k + kOffsetSize );
 
 	while( true ){
