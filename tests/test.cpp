@@ -88,6 +88,7 @@ TEST_CASE( "DISK_STREAMS" ){
 
 				FileDisk disk( "tX.tmp", false );
 				TableFileReader rd( disk, entry_size_bits );
+
 				for( uint64_t i = 0; i < entry_size_bits*8192; i++ ){
 					if( (i%1024)==0 )
 						rd.Read( i*entry_size_bytes, buf, 1024*entry_size_bytes );
@@ -97,6 +98,17 @@ TEST_CASE( "DISK_STREAMS" ){
 				rd.Read( entry_size_bits*8192*entry_size_bytes, buf, entry_size_bytes );
 				uint64_t val = Util::ExtractNum64( buf, 0, entry_size_bits );
 				assert( val == 0x112233 );
+
+				for( uint64_t i = 0; i < entry_size_bits*8192; i++ ){
+					if( (i%1024)==0 )
+						rd.ReadBuffer( i*entry_size_bytes, buf, 1024*entry_size_bytes );
+					uint64_t val = rd.extractFromBuffer( buf, i%1024 );
+					assert( val == i );
+				}
+				rd.ReadBuffer( entry_size_bits*8192*entry_size_bytes, buf, entry_size_bytes );
+				val = rd.extractFromBuffer( buf, 0 );
+				assert( val == 0x112233 );
+
 			}
 	}
 

@@ -525,7 +525,7 @@ struct TableFileWriter {
 			uint64_t buf_pos = 0;
 			{	// the first block
 				for( ; mem_pos < length && (mem_pos == 0 || leftovers_count != 0); mem_pos += entry_size_bytes )
-					buf_pos += add_entry_to_buf( buf + buf_pos, mem + mem_pos );
+					buf_pos += add_entry_to_buf( buf + buf_pos, mem + mem_pos, leftovers, leftovers_count  );
 
 				assert( mem_pos == length || mem_pos == entry_size_bytes*8 - (begin%(entry_size_bytes*8)) );
 
@@ -548,7 +548,7 @@ struct TableFileWriter {
 
 			buf_pos = 0;
 			for( mem_pos = last_block_idx*entry_size_bytes*8 - begin; mem_pos < length; mem_pos += entry_size_bytes )
-				buf_pos += add_entry_to_buf( buf + buf_pos, mem + mem_pos );
+				buf_pos += add_entry_to_buf( buf + buf_pos, mem + mem_pos, leftovers, leftovers_count  );
 
 			{
 				std::lock_guard<std::mutex> lk(write_sync);
@@ -590,7 +590,7 @@ struct TableFileWriter {
 			uint8_t buf[8];
 			{
 				std::lock_guard<std::mutex> lk(write_sync);
-				disk.Write(file_write_position, buf, leftovers_to_buf( buf ) );
+				disk.Write( file_write_position, buf, leftovers_to_buf( buf, leftovers, leftovers_count ) );
 			}
 		}
 	}
@@ -601,10 +601,6 @@ private:
 
 	uint8_t leftovers_count = 0;
 	uint64_t write_position = 0, file_write_position = 0, leftovers = 0;
-
-	inline uint64_t add_entry_to_buf( uint8_t* dst, const uint8_t * src ){
-		return add_entry_to_buf( dst, src, leftovers, leftovers_count);
-	}
 
 	inline uint64_t add_entry_to_buf( uint8_t* dst, const uint8_t * src, uint64_t &l, uint8_t &l_count ){
 		memcpy( dst, src, entry_size_full_bytes ); // copy full bytes
@@ -617,27 +613,24 @@ private:
 		return entry_size_full_bytes;
 	}
 
-	inline uint64_t leftovers_to_buf( uint8_t *buf ){
-		return leftovers_to_buf( buf, leftovers, leftovers_count );
-	}
 	inline uint64_t leftovers_to_buf( uint8_t *buf, uint64_t &l, uint8_t &l_count ){
-		for( uint i = 0; i < entry_leftover_bits; i++, l >>= 8 )
-			buf[i] = l&0xff;
-
+		*((uint64_t*)buf) = l; // WARNING! it works for little endians only and need extara buffer that reseted
 		l_count = 0;
-
 		return entry_leftover_bits;
 	}
 };
 
+
+// -------------------------------------------------------------------------------- //
 struct TableFileReader{
 	const uint16_t entry_leftover_bits, entry_size_bytes, entry_size_full_bytes, block_size_bytes;
-	const uint64_t max_position;
+	const uint64_t main_shift, left_over_mask;
 
 	TableFileReader( FileDisk &disk, uint16_t entry_size_bits, uint64_t entries_no = 0 )
 			: entry_leftover_bits(entry_size_bits%8), entry_size_bytes( (entry_size_bits+7)/8 ),
 			entry_size_full_bytes( entry_size_bits/8 ), block_size_bytes( entry_size_bits ),
-			max_position( entries_no * entry_size_bytes ), disk( disk )
+			main_shift( 64 - entry_size_bits + entry_leftover_bits ), left_over_mask( 255>>(8-entry_leftover_bits)),
+			disk( disk )
 	{	}
 
 	inline void Read( uint64_t begin, uint8_t *buf, uint64_t length ){
@@ -670,31 +663,47 @@ struct TableFileReader{
 																					 ? 8 : ((length/entry_size_bytes)%8) );
 	}
 
-	inline uint32_t Read( uint8_t * buf, uint64_t length ){
-		uint32_t real_length = std::min( length, max_position - read_position );
-		if( real_length )
-			Read( read_position, buf, real_length );
-		read_position += real_length;
-		return real_length;
+	// Warning! memory allocated to buf should be at least block_size_bytes no metter what length is
+	//		begin parameter should be alligned to 8 entries
+	inline void ReadBuffer( uint64_t begin, uint8_t *buf, uint64_t length ){
+		if( entry_size_bytes == entry_size_full_bytes ) {
+			disk.Read( begin, buf, length );
+			return;
+		}
+
+		assert( (begin%(entry_size_bytes*8)) == 0 );
+
+		uint64_t first_entry = begin / entry_size_bytes;
+		uint64_t first_entry_block_no = first_entry/8;
+		uint64_t read_pos = first_entry_block_no*block_size_bytes;
+		uint64_t read_blocks = (length / entry_size_bytes + 7 )/8;
+
+		disk.Read( read_pos, buf, read_blocks*block_size_bytes );
+	}
+
+	inline uint64_t extractFromBuffer( uint8_t *buf, uint64_t idx_in_buffer ){
+		if( entry_size_bytes == entry_size_full_bytes )
+			return Util::SliceInt64FromBytes( buf + idx_in_buffer*entry_size_bytes, block_size_bytes );
+
+
+		uint64_t block_no = idx_in_buffer>>3, entry_in_block = idx_in_buffer&7;
+		buf += block_no*block_size_bytes; // move buffer to block start
+		uint64_t leftovers = *((uint64_t*)(buf + block_size_bytes-entry_leftover_bits));
+		return ( (bswap_64(	*((const uint64_t*)(buf +  entry_in_block * entry_size_full_bytes) ) ) >> main_shift) << entry_leftover_bits )
+								 | ((leftovers>>(entry_leftover_bits*(7-entry_in_block)))&left_over_mask);
 	}
 
 	inline uint8_t* extract_block( uint8_t * block_buf, uint8_t *dst_buf, uint8_t entries_no = 8 ){
-		uint64_t leftovers = 0;
-		for( uint64_t l = 1; l <= entry_leftover_bits; l++ )
-			leftovers = (leftovers<<8) | block_buf[block_size_bytes-l];
-		uint8_t leftovers_bytes[8];
-		for( int l = 7; l >= 0; l--, leftovers>>=entry_leftover_bits )
-			leftovers_bytes[l] = (leftovers&0xff)<<(8-entry_leftover_bits);
+		uint64_t leftovers = *((uint64_t*)(block_buf+block_size_bytes-entry_leftover_bits));
 
 		for( uint8_t e = 0; e < entries_no; e++, dst_buf += entry_size_bytes ){
 			memcpy( dst_buf, block_buf + e*entry_size_full_bytes, entry_size_full_bytes );
-			dst_buf[entry_size_full_bytes] = leftovers_bytes[e];
+			dst_buf[entry_size_full_bytes] = ((leftovers >> (( 7-e )*entry_leftover_bits))&left_over_mask)<<(8-entry_leftover_bits);
 		}
 		return dst_buf;
 	}
 private:
 	FileDisk &disk;
-	uint64_t read_position = 0;
 };
 
 #endif // SRC_CPP_LAST_TABLE_FILE_HPP_

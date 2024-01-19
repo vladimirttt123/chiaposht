@@ -60,6 +60,7 @@ inline void ScanTable( FileDisk *disk, int64_t const table_size, const int16_t e
 			(FileDisk *src_disk, std::atomic_uint64_t *read_cursor, const bitfield * current_bitfield, bitfield *next_bitfield ){
 
 				auto buffer( Util::allocate<uint8_t>(read_buf_size + MEM_SAFE_BUF_SIZE) );
+				//auto buffer2( Util::allocate<uint8_t>(read_buf_size + MEM_SAFE_BUF_SIZE) );
 				bitfieldReader cur_bitfield( *current_bitfield );
 				const uint64_t proc5_size = table_size*entry_size/20;
 				uint64_t buf_size = 0, buf_start = 0;
@@ -81,7 +82,8 @@ inline void ScanTable( FileDisk *disk, int64_t const table_size, const int16_t e
 					assert( (buf_size % entry_size) == 0 );
 
 					if( !parallel_read ) read_mutex[0].lock();
-					disk.Read( buf_start, buffer.get(), buf_size );
+					//disk.Read( buf_start, buffer.get(), buf_size );
+					disk.ReadBuffer( buf_start, buffer.get(), buf_size );
 					if( !parallel_read ) read_mutex[0].unlock();
 
 					// Setting limits could read data from file than need a mutex
@@ -94,13 +96,14 @@ inline void ScanTable( FileDisk *disk, int64_t const table_size, const int16_t e
 
 					uint64_t dropped_entries = 0;
 					// Convert buffer to numbers in final bitfield
-					for( uint64_t buf_ptr = 0, entry_pos_offset = 0; buf_ptr < buf_size; buf_ptr += entry_size ){
-						if( !cur_bitfield.get( buf_ptr/entry_size ) )
+					for( uint64_t buf_idx = 0, entry_pos_offset = 0, buf_count = buf_size/entry_size; buf_idx < buf_count; buf_idx ++ ){
+						if( !cur_bitfield.get( buf_idx ) )
 						{ // This entry should be dropped.
 							dropped_entries++;
 							continue;
 						}
-						entry_pos_offset = Util::SliceInt64FromBytes( buffer.get() + buf_ptr, pos_offset_size);
+						// entry_pos_offset = Util::SliceInt64FromBytes( buffer.get() + buf_idx*entry_size, pos_offset_size);
+						entry_pos_offset = disk.extractFromBuffer( buffer.get(), buf_idx );
 
 						uint64_t entry_pos = entry_pos_offset >> kOffsetSize;
 						uint64_t entry_offset = entry_pos_offset & ((1U << kOffsetSize) - 1);
@@ -161,7 +164,7 @@ inline void SortRegularTableThread( FileDisk * src_disk,  const uint64_t read_bu
 		uint64_t buf_size = std::min( read_buf_size, size_to_read - read_pos );
 
 		if( read_mutex ) read_mutex->lock(); // Lock for reading
-		disk.Read( read_pos, buffer.get(), buf_size );
+		disk.ReadBuffer( read_pos, buffer.get(), buf_size );
 		if( read_mutex ) read_mutex->unlock(); // reading done unlock
 		uint64_t write_counter =  read_bufs_index[read_pos/read_buf_size];
 
@@ -172,13 +175,14 @@ inline void SortRegularTableThread( FileDisk * src_disk,  const uint64_t read_bu
 		if( buf_size < proc5_size && read_pos > 0 && read_pos/proc5_size != (read_pos-buf_size)/proc5_size )
 			std::cout << (((read_pos/proc5_size)%5) == 0 ? "*" : "-" ) << std::flush;
 
-		uint8_t const* entry = buffer.get();
-		for( uint64_t i = 0, up_to = buf_size/entry_size; i < up_to; i++, entry += entry_size ){
+		//uint8_t const* entry = buffer.get();
+		for( uint64_t i = 0, up_to = buf_size/entry_size; i < up_to; i++/*, entry += entry_size*/ ){
 
 			if( !cur_bitfield.get( i ) )
 				continue; // skipping
 
-			uint64_t entry_pos_offset = Util::SliceInt64FromBytes( entry, pos_offset_size );
+			//uint64_t entry_pos_offset = Util::SliceInt64FromBytes( entry, pos_offset_size );
+			uint64_t entry_pos_offset = disk.extractFromBuffer( buffer.get(), i );
 			uint64_t entry_pos = entry_pos_offset >> kOffsetSize;
 			uint64_t entry_offset = entry_pos_offset & ((1U << kOffsetSize) - 1);
 
