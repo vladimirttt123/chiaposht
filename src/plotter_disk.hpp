@@ -123,9 +123,9 @@ public:
 				uint32_t num_buckets;
 				uint16_t num_threads = num_threads_input != 0 ? num_threads_input : 2;
 
-        if (buf_megabytes < 10) {
-            throw InsufficientMemoryException("Please provide at least 10MiB of ram");
-        }
+				// if( buf_megabytes < 10 ) {
+				//     throw InsufficientMemoryException("Please provide at least 10MiB of ram");
+				// }
 
         // Subtract some ram to account for dynamic allocation through the code
         uint64_t thread_memory = num_threads * (2 * (stripe_size + 5000)) *
@@ -254,7 +254,7 @@ public:
         fs::path tmp_2_filename = fs::path(tmp2_dirname) / fs::path(filename + ".2.tmp");
         fs::path final_2_filename = fs::path(final_dirname) / fs::path(filename + ".2.tmp");
 				fs::path final_filename = fs::path(final_dirname) / fs::path(filename);
-				fs::path phase1_result_filename = fs::path(final_dirname) / fs::path( filename + ".phase1_result.tmp" );
+				fs::path phase1_result_filename = fs::path(tmp_dirname) / fs::path( filename + ".phase1_result.tmp" );
 
         // Check if the paths exist
         if (!fs::exists(tmp_dirname)) {
