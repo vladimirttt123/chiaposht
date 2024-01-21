@@ -69,12 +69,13 @@ private:
 };
 
 struct P3Entry{
-	uint64_t sort_key = 0, pos = 0, new_pos /*pos+offset*/= 0;
+	uint64_t sort_key = 0, pos = 0, new_pos /*pos+offset*/= 0, left_new_pos_1 = -1, left_new_pos_2 = -1;
 
 	inline void Set( uint8_t const* entry_buf, const uint8_t k ){
 		sort_key = Util::SliceInt64FromBytes( entry_buf, /*sort_key_size*/k);
 		pos = Util::SliceInt64FromBytes( entry_buf, /*sort_key_size*/k, /*pos_size*/k );
 		new_pos = pos + /*offset*/ Util::SliceInt64FromBytes( entry_buf, /*sort_key_size*/k + /*pos_size*/k, kOffsetSize);
+		left_new_pos_1 = -1;
 	}
 
 	static inline uint64_t Pos( uint8_t const* entry_buf, const uint8_t k ){
@@ -301,6 +302,169 @@ void PassOneSingleThreaded( const uint8_t k, const uint64_t left_table_count,
 	}
 }
 
+
+struct RigthDiskReader{
+	const uint8_t k;
+
+	RigthDiskReader( SortManager& right_disk, uint32_t num_threads, uint8_t k )
+			: k(k), right_disk(right_disk) , num_threads(num_threads), num_waiting_next_bucket_threads(0)
+	{
+		right_disk.EnsureSortingStarted();
+		bucket_end = right_disk.CurrentBucketEnd();
+	}
+
+	inline bool ReadAt( uint64_t global_pos, P3Entry &entry ){
+		while( global_pos >= right_disk.CurrentBucketEnd() ){
+			if( right_disk.CurrentBucketIsLast() ){
+				num_threads.fetch_sub( 1,std::memory_order::relaxed );
+				return false; // no next bucket thread is done
+			}
+			// need to wait next bucket
+			uint64_t cur_bucket_end = right_disk.CurrentBucketEnd();
+			if( num_threads - 1 == num_waiting_next_bucket_threads.fetch_add( 1, std::memory_order::relaxed) ){
+				// we can switch everyone wait for this
+				right_disk.SwitchNextBucket();
+				bucket_end.store( right_disk.CurrentBucketEnd(), std::memory_order::relaxed );
+				bucket_end.notify_all();
+			} else { // wait here for next right bucket
+				bucket_end.wait( cur_bucket_end, std::memory_order::relaxed );
+			}
+			uint32_t waits = num_waiting_next_bucket_threads.fetch_sub( 1, std::memory_order::relaxed ) - 1;
+			num_waiting_next_bucket_threads.notify_all();
+			// wait for all threads continued
+			for( ; waits > 0; waits = num_waiting_next_bucket_threads.load(std::memory_order::relaxed) )
+				num_waiting_next_bucket_threads.wait( waits, std::memory_order::relaxed );
+		}
+
+		assert( global_pos >= right_disk.CurrentBucketStart() );
+		assert( global_pos < right_disk.CurrentBucketEnd() );
+
+		entry.Set( right_disk.CurrentBucketBuffer( global_pos + 1 ) + global_pos - right_disk.CurrentBucketStart(), k );
+		return true;
+	}
+
+private:
+	SortManager& right_disk;
+	std::atomic_uint32_t num_threads, num_waiting_next_bucket_threads;
+	std::atomic_uint64_t bucket_end;
+};
+
+struct LeftDiskReader{
+	const uint8_t k;
+	const uint32_t right_sort_key_size;
+
+	LeftDiskReader( SortManager& left_disk, uint32_t num_threads, uint8_t k, uint32_t right_sort_key_size )
+			: k(k), right_sort_key_size(right_sort_key_size), left_disk(left_disk), num_threads(num_threads)
+	{
+		left_disk.EnsureSortingStarted();
+		bucket_end = left_disk.CurrentBucketEnd();
+	}
+
+	bool ReadPositions( P3Entry &entry ){
+		if( entry.left_new_pos_1 == (uint64_t)-1 ){
+			uint64_t global_pos = entry.pos*left_disk.EntrySize();
+
+			if( global_pos >= left_disk.CurrentBucketEnd() ){
+				// since left disk sorted by entry.pos here we because need to switch to next left bucket
+				if( left_disk.CurrentBucketIsLast() )
+					throw InvalidStateException( "Trying to read left disk after end" );
+
+				uint64_t cur_bucket_end = left_disk.CurrentBucketEnd();
+				uint32_t waitings = num_waiting_next_bucket_threads.fetch_add( 1, std::memory_order::relaxed);
+				if( num_threads == waitings + 1 ){
+					// we can switch everyone wait for this
+					left_disk.SwitchNextBucket();
+					bucket_end.store( left_disk.CurrentBucketEnd(), std::memory_order::relaxed );
+					bucket_end.notify_all();
+				} else { // wait here for next right bucket
+					bucket_end.wait( cur_bucket_end, std::memory_order::relaxed );
+				}
+				uint32_t waits = num_waiting_next_bucket_threads.fetch_sub( 1, std::memory_order::relaxed ) - 1;
+				num_waiting_next_bucket_threads.notify_all();
+				// wait for all threads continued
+				for( ; waits > 0; waits = num_waiting_next_bucket_threads.load(std::memory_order::relaxed) )
+					num_waiting_next_bucket_threads.wait( waits, std::memory_order::relaxed );
+
+				assert( global_pos < left_disk.CurrentBucketEnd() ); // suppose buckets are big enough to not wait twice
+				assert( global_pos >= left_disk.CurrentBucketStart() ); // suppose buckets are big enough to not wait twice
+			}
+
+			assert( global_pos < left_disk.CurrentBucketEnd() ); // suppose buckets are big enough to not wait twice
+			assert( global_pos >= left_disk.CurrentBucketStart() ); // suppose buckets are big enough to not wait twice
+
+			entry.left_new_pos_1 = Util::SliceInt64FromBytes( left_disk.CurrentBucketBuffer( global_pos + 1 ) + global_pos - left_disk.CurrentBucketStart(), right_sort_key_size, k );
+		}
+
+		uint64_t pos2 = entry.new_pos*left_disk.EntrySize();
+		if( pos2 < left_disk.CurrentBucketEnd() ){
+			entry.left_new_pos_2 = Util::SliceInt64FromBytes( left_disk.CurrentBucketBuffer( pos2  + 1) + pos2 - left_disk.CurrentBucketStart(), right_sort_key_size, k );
+			return true;
+		} else {
+			if( left_disk.CurrentBucketIsLast() )
+				throw InvalidStateException( "Trying to read left disk after end for new pos" );
+		}
+
+		return false;
+	}
+
+private:
+	SortManager& left_disk;
+	std::atomic_uint32_t num_threads, num_waiting_next_bucket_threads;
+	std::atomic_uint64_t bucket_end;
+};
+
+//template<class T>
+void PassOneThread( const uint8_t k, const uint32_t num_threads, const uint32_t thread_no,
+										LeftDiskReader * left_disk, const uint32_t p2_entry_size_bytes,
+										const uint32_t right_sort_key_size,
+										RigthDiskReader * right_disk, SortManager * R_sort_manager ){
+
+	const uint64_t POSITION_LIMIT = (uint64_t)1 << k;
+	const uint8_t line_point_size = 2 * k - 1;
+	SortManager::ThreadWriter r_writer = SortManager::ThreadWriter( *R_sort_manager );
+	uint8_t entry_buf[R_sort_manager->EntrySize() + MEM_SAFE_BUF_SIZE];
+
+	std::vector<P3Entry> not_processed;
+	P3Entry entry;
+
+	for( uint64_t right_pos = thread_no*p2_entry_size_bytes; right_disk->ReadAt( right_pos, entry );
+			 right_pos += num_threads*p2_entry_size_bytes ){
+
+		bool processed = false;
+		while( !processed && left_disk->ReadPositions( entry ) ){
+			processed = true;
+			// A line point is an encoding of two k bit values into one 2k bit value.
+			uint128_t line_point = Encoding::SquareToLinePoint( entry.left_new_pos_1, entry.left_new_pos_2 );
+
+			if( entry.left_new_pos_1 > POSITION_LIMIT || entry.left_new_pos_2 > POSITION_LIMIT ) {
+				std::cout << "left or right positions too large" << std::endl;
+				std::cout << (line_point > ((uint128_t)1 << (2 * k)));
+				if ((line_point > ((uint128_t)1 << (2 * k)))) {
+					std::cout << "L, R: " << entry.left_new_pos_1 << " " << entry.left_new_pos_2 << std::endl;
+					std::cout << "Line point: " << line_point << std::endl;
+					abort();
+				}
+			}
+
+			Bits to_write = Bits(line_point, line_point_size);
+			to_write.AppendValue( entry.sort_key, right_sort_key_size );
+
+			to_write.ToBytes( entry_buf );
+
+			r_writer.Add( entry_buf );
+
+			if( not_processed.size() > 0 ){ // try to processe not processed
+				entry = not_processed.back();
+				not_processed.pop_back();
+				processed = false;
+			}
+		}
+		if( !processed )
+			not_processed.push_back( entry );
+	}
+	assert( not_processed.size() == 0 );
+}
+
 // Compresses the plot file tables into the final file. In order to do this, entries must be
 // reorganized from the (pos, offset) bucket sorting order, to a more free line_point sorting
 // order. In (pos, offset ordering), we store two pointers two the previous table, (x, y) which
@@ -347,7 +511,6 @@ Phase3Results RunPhase3(
 		// is k bits, and for all other tables the number of entries does not
 		// exceed 0.865 * 2^k on average.
 		const uint32_t right_sort_key_size = k;
-
 		const uint32_t p2_entry_size_bytes = EntrySizes::GetKeyPosOffsetSize(k);
 
 		// Iterates through all tables, starting at 1, with L and R pointers.
@@ -407,10 +570,19 @@ Phase3Results RunPhase3(
 										right_entry_size_bytes, /*right_table_size:*/ p2_entry_size_bytes * res2.table_sizes[table_index + 1],
 										right_disk, R_sort_manager.get() );
 					} else {
-						if( table_index < 6 )
-							PassOneRegular( k, false, *L_sort_manager.get(), p2_entry_size_bytes, right_sort_key_size,
-													 (SortManager&)right_disk, *R_sort_manager.get(), num_threads );
-						else{
+						if( table_index < 6 ){
+							// num_threads = 1;
+							RigthDiskReader right_reader( (SortManager&)right_disk, num_threads, k );
+							LeftDiskReader left_reader( *L_sort_manager.get(), num_threads, k, right_sort_key_size );
+							std::unique_ptr<std::thread> threads[num_threads];
+							for( uint32_t t = 0; t < num_threads; t++ )
+								threads[t].reset( new std::thread( PassOneThread, k, num_threads, t, &left_reader, p2_entry_size_bytes, right_sort_key_size, &right_reader, R_sort_manager.get() ) );
+								//PassOneThread( k, num_threads, t, left_reader, p2_entry_size_bytes, right_sort_key_size, right_reader, R_sort_manager.get() );
+							for( uint32_t t = 0; t < num_threads; t++ )
+								threads[t]->join();
+							// PassOneRegular( k, false, *L_sort_manager.get(), p2_entry_size_bytes, right_sort_key_size,
+							// 						 (SortManager&)right_disk, *R_sort_manager.get(), num_threads );
+						} else{
 							LastTableBucketReader bucket_reader( (LastTableReader&)right_disk, HUGE_MEM_PAGE_SIZE*num_threads );
 							PassOneRegular( k, false, *L_sort_manager.get(), p2_entry_size_bytes, right_sort_key_size,
 															bucket_reader, *R_sort_manager.get(), num_threads );
