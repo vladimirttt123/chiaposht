@@ -41,7 +41,9 @@ struct Phase3Results {
 };
 
 struct NewPosTable1Reader{
-	NewPosTable1Reader( const uint8_t k, FilteredDisk & disk ) : k(k), disk(disk) {	}
+	NewPosTable1Reader( const uint8_t k, FilteredDisk & disk ) : k(k), disk(disk) {
+		disk.EnsureSortingStarted();
+	}
 
 	// The left entries are in the new format: (sort_key, new_pos), except for table 1: (y, x).
 	// Only k bits, since this is x
