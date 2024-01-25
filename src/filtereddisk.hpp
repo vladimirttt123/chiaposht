@@ -18,10 +18,11 @@ struct FilteredDisk
 		uint64_t file_read_pos, buf_used = 0;
 	};
 
-	FilteredDisk( FileDisk* underlying, MemoryManager &memory_manager, bitfield *filter, uint16_t entry_size_bits, uint64_t file_size, uint32_t num_threads )
+	FilteredDisk( FileDisk* underlying, MemoryManager &memory_manager, bitfield *filter, uint16_t entry_size_bits,
+							 uint64_t file_size, uint32_t num_threads, bool parallel_read )
 		: entry_size_((entry_size_bits+7)/8), file_size(file_size), num_threads(num_threads)
 		, chunk_size( (HUGE_MEM_PAGE_SIZE - MEM_SAFE_BUF_SIZE)/entry_size_/8*entry_size_*8 ), num_chunks(num_threads+1)
-		, chunks( new Chunk[num_chunks] ), num_empty_chunks(num_chunks)
+		, parallel_read(parallel_read), chunks( new Chunk[num_chunks] ), num_empty_chunks(num_chunks)
 		, memory_manager(memory_manager), filter_( filter ), underlying_(underlying)
 		, table_reader( *underlying, entry_size_bits )
 	{
@@ -90,6 +91,15 @@ struct FilteredDisk
 	inline void ReadChunkThread(){
 		auto read_buf = Util::allocate<uint8_t>( chunk_size + MEM_SAFE_BUF_SIZE );
 		bitfieldReader filter_reader( *filter_ );
+		std::unique_ptr<FileDisk> local_disk;
+		std::unique_ptr<TableFileReader> tbl_rd( &table_reader );
+		if( parallel_read ){
+			local_disk.reset( new FileDisk( underlying_->GetFileName(), false ) );
+			local_disk->setClearAfterRead();
+			tbl_rd.release();// release previous to not free it
+			tbl_rd.reset( new TableFileReader( *local_disk.get(), table_reader.block_size_bytes ) );
+		}
+
 		for( bool done = false; !done; ){
 			num_empty_chunks.wait( 0, std::memory_order::relaxed );
 			for( uint32_t i = 0; i < num_chunks; i++ ){
@@ -99,25 +109,28 @@ struct FilteredDisk
 					uint8_t expected_state = 0;
 					if( chunks[i].state.compare_exchange_weak( expected_state, 1, std::memory_order::relaxed ) ){
 						num_empty_chunks.fetch_sub( 1, std::memory_order_relaxed );
-						ReadChunk( chunks[i], read_buf.get(), filter_reader );
+						ReadChunk( chunks[i], read_buf.get(), filter_reader, tbl_rd.get() );
 						chunks[i].state.store( 2, std::memory_order::relaxed );
 						chunks[i].state.notify_all();
 					}
 				}
 			}
 		}
+		if( !parallel_read ) tbl_rd.release(); // shouldn't free
 	}
 
-	inline void ReadChunk( Chunk & chunk, uint8_t * read_buf, bitfieldReader &filter_reader ){
+	inline void ReadChunk( Chunk & chunk, uint8_t * read_buf, bitfieldReader &filter_reader, TableFileReader *tbl_rd ){
 		const uint64_t read_size = std::min( (uint64_t)chunk_size, file_size - chunk.file_read_pos );
 
-		{ // TODO support parallel reading
-			std::lock_guard<std::mutex> lk(table_read_mutex);
-			table_reader.ReadBuffer( chunk.file_read_pos, read_buf, read_size );
+		if( filter_->is_readonly() ) filter_read_mutex.lock();// for readonly filter set limits should be done under mutex!
+		filter_reader.setLimits( chunk.file_read_pos/entry_size_, read_size/entry_size_ );
+		if( filter_->is_readonly() ) filter_read_mutex.unlock();
 
-			if( filter_->is_readonly() ) // for readonly filter set limits should be done under mutex!
-				filter_reader.setLimits( chunk.file_read_pos/entry_size_, read_size/entry_size_ );
-		}
+		if( !parallel_read ) table_read_mutex.lock();
+		tbl_rd->ReadBuffer( chunk.file_read_pos, read_buf, read_size );
+		if( !parallel_read ) table_read_mutex.unlock();
+
+
 		if( !filter_->is_readonly() )
 			filter_reader.setLimits( chunk.file_read_pos/entry_size_, read_size/entry_size_ );
 
@@ -159,12 +172,13 @@ private:
 	const uint64_t file_size;
 	const uint32_t num_threads;
 	const uint32_t chunk_size, num_chunks;
+	const bool parallel_read;
 
 	std::unique_ptr<Chunk[]> chunks;
 	uint64_t cur_chunk_start_pos = 0;
 	uint32_t cur_chunk_no = 0;
 	std::atomic_int_fast32_t num_empty_chunks;
-	std::mutex table_read_mutex;
+	std::mutex table_read_mutex, filter_read_mutex;
 	std::vector<std::thread*> running_threads;
 
 	uint64_t read_next_last_pos = 0;

@@ -593,6 +593,7 @@ struct TableFileWriter {
 				disk.Write( file_write_position, buf, leftovers_to_buf( buf, leftovers, leftovers_count ) );
 			}
 		}
+		disk.Flush(); // essential for parallel reading
 	}
 
 private:
