@@ -326,16 +326,12 @@ struct RigthDiskReader{
 			if( num_threads - 1 == num_waiting_next_bucket_threads.fetch_add( 1, std::memory_order::relaxed) ){
 				// we can switch everyone wait for this
 				right_disk.SwitchNextBucket();
+				num_waiting_next_bucket_threads.store(0, std::memory_order::relaxed);
 				bucket_end.store( right_disk.CurrentBucketEnd(), std::memory_order::relaxed );
 				bucket_end.notify_all();
 			} else { // wait here for next right bucket
 				bucket_end.wait( cur_bucket_end, std::memory_order::relaxed );
 			}
-			uint32_t waits = num_waiting_next_bucket_threads.fetch_sub( 1, std::memory_order::relaxed ) - 1;
-			num_waiting_next_bucket_threads.notify_all();
-			// wait for all threads continued
-			for( ; waits > 0; waits = num_waiting_next_bucket_threads.load(std::memory_order::relaxed) )
-				num_waiting_next_bucket_threads.wait( waits, std::memory_order::relaxed );
 		}
 
 		assert( global_pos >= right_disk.CurrentBucketStart() );
@@ -372,20 +368,15 @@ struct LeftDiskReader{
 					throw InvalidStateException( "Trying to read left disk after end" );
 
 				uint64_t cur_bucket_end = left_disk.CurrentBucketEnd();
-				uint32_t waitings = num_waiting_next_bucket_threads.fetch_add( 1, std::memory_order::relaxed);
-				if( num_threads == waitings + 1 ){
+				if( num_threads == num_waiting_next_bucket_threads.fetch_add( 1, std::memory_order::relaxed) + 1 ){
 					// we can switch everyone wait for this
 					left_disk.SwitchNextBucket();
+					num_waiting_next_bucket_threads.store( 0, std::memory_order::relaxed );
 					bucket_end.store( left_disk.CurrentBucketEnd(), std::memory_order::relaxed );
 					bucket_end.notify_all();
 				} else { // wait here for next right bucket
 					bucket_end.wait( cur_bucket_end, std::memory_order::relaxed );
 				}
-				uint32_t waits = num_waiting_next_bucket_threads.fetch_sub( 1, std::memory_order::relaxed ) - 1;
-				num_waiting_next_bucket_threads.notify_all();
-				// wait for all threads continued
-				for( ; waits > 0; waits = num_waiting_next_bucket_threads.load(std::memory_order::relaxed) )
-					num_waiting_next_bucket_threads.wait( waits, std::memory_order::relaxed );
 
 				assert( global_pos < left_disk.CurrentBucketEnd() ); // suppose buckets are big enough to not wait twice
 				assert( global_pos >= left_disk.CurrentBucketStart() ); // suppose buckets are big enough to not wait twice
