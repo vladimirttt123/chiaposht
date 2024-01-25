@@ -309,7 +309,7 @@ struct RigthDiskReader{
 	const uint8_t k;
 
 	RigthDiskReader( SortManager& right_disk, uint32_t num_threads, uint8_t k )
-			: k(k), right_disk(right_disk) , num_threads(num_threads), num_waiting_next_bucket_threads(0)
+			: k(k), right_disk(right_disk) , num_threads_before_switch(num_threads-1), num_waiting_next_bucket_threads(0)
 	{
 		right_disk.EnsureSortingStarted();
 		bucket_end = right_disk.CurrentBucketEnd();
@@ -318,12 +318,12 @@ struct RigthDiskReader{
 	inline bool ReadAt( uint64_t global_pos, P3Entry &entry ){
 		while( global_pos >= right_disk.CurrentBucketEnd() ){
 			if( right_disk.CurrentBucketIsLast() ){
-				num_threads.fetch_sub( 1,std::memory_order::relaxed );
+				//num_threads.fetch_sub( 1,std::memory_order::relaxed );
 				return false; // no next bucket thread is done
 			}
 			// need to wait next bucket
 			uint64_t cur_bucket_end = right_disk.CurrentBucketEnd();
-			if( num_threads - 1 == num_waiting_next_bucket_threads.fetch_add( 1, std::memory_order::relaxed) ){
+			if( num_threads_before_switch == num_waiting_next_bucket_threads.fetch_add( 1, std::memory_order::relaxed ) ){
 				// we can switch everyone wait for this
 				right_disk.SwitchNextBucket();
 				num_waiting_next_bucket_threads.store(0, std::memory_order::relaxed);
@@ -343,7 +343,8 @@ struct RigthDiskReader{
 
 private:
 	SortManager& right_disk;
-	std::atomic_uint32_t num_threads, num_waiting_next_bucket_threads;
+	const uint32_t num_threads_before_switch;
+	std::atomic_uint32_t num_waiting_next_bucket_threads;
 	std::atomic_uint64_t bucket_end;
 };
 
@@ -352,13 +353,13 @@ struct LeftDiskReader{
 	const uint32_t right_sort_key_size;
 
 	LeftDiskReader( SortManager& left_disk, uint32_t num_threads, uint8_t k, uint32_t right_sort_key_size )
-			: k(k), right_sort_key_size(right_sort_key_size), left_disk(left_disk), num_threads(num_threads)
+			: k(k), right_sort_key_size(right_sort_key_size), left_disk(left_disk), num_threads_before_switch( num_threads - 1)
 	{
 		left_disk.EnsureSortingStarted();
 		bucket_end = left_disk.CurrentBucketEnd();
 	}
 
-	bool ReadPositions( P3Entry &entry ){
+	inline bool ReadPositions( P3Entry &entry ){
 		if( entry.left_new_pos_1 == (uint64_t)-1 ){
 			uint64_t global_pos = entry.pos*left_disk.EntrySize();
 
@@ -368,7 +369,7 @@ struct LeftDiskReader{
 					throw InvalidStateException( "Trying to read left disk after end" );
 
 				uint64_t cur_bucket_end = left_disk.CurrentBucketEnd();
-				if( num_threads == num_waiting_next_bucket_threads.fetch_add( 1, std::memory_order::relaxed) + 1 ){
+				if( num_threads_before_switch == num_waiting_next_bucket_threads.fetch_add( 1, std::memory_order::relaxed) ){
 					// we can switch everyone wait for this
 					left_disk.SwitchNextBucket();
 					num_waiting_next_bucket_threads.store( 0, std::memory_order::relaxed );
@@ -402,7 +403,8 @@ struct LeftDiskReader{
 
 private:
 	SortManager& left_disk;
-	std::atomic_uint32_t num_threads, num_waiting_next_bucket_threads;
+	const uint32_t num_threads_before_switch;
+	std::atomic_uint32_t num_waiting_next_bucket_threads;
 	std::atomic_uint64_t bucket_end;
 };
 

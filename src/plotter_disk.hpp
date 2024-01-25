@@ -85,7 +85,7 @@ public:
 			CreatePlotDiskAdv( tmp_dirname, tmp2_dirname, final_dirname, filename,
 												k, memo, memo_len, id, id_len, buf_megabytes_input,
 												num_buckets_input, stripe_size_input,
-												num_threads_input, phases_flags );
+												num_threads_input, phases_flags|PARALLEL_READ );
 		}
 
     // This method creates a plot on disk with the filename. Many temporary files
