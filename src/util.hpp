@@ -613,6 +613,16 @@ namespace Util {
 			}
 #endif
 		}
+		template<class T>
+		inline bool waitForValue( std::atomic<T> &atm, T value ){
+			bool waited = false;
+			for( T cur_state = atm.load( std::memory_order::relaxed );
+					 cur_state != value; cur_state = atm.load( std::memory_order::relaxed ) ){
+				waited = true;
+				atm.wait( cur_state, std::memory_order::relaxed );
+			}
+			return waited;
+		}
 } // end of namespac Util
 
 #endif  // SRC_CPP_UTIL_HPP_

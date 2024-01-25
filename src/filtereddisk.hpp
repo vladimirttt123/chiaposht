@@ -12,150 +12,162 @@
 
 struct FilteredDisk
 {
-		FilteredDisk( FileDisk* underlying, MemoryManager &memory_manager, bitfield *filter, int entry_size_bits, uint64_t file_size, uint32_t num_threads )
-			: entry_size_((entry_size_bits+7)/8), bucket_size( (HUGE_MEM_PAGE_SIZE - MEM_SAFE_BUF_SIZE)/2/entry_size_/8*entry_size_*8*std::max(1U,num_threads))
-			, file_size(file_size)
-			, buckets_buf( Util::allocate<uint8_t>( bucket_size*2 + MEM_SAFE_BUF_SIZE ) ), bucket_buf_start( bucket_size )
-			, last_pos_in_buffer(-entry_size_), memory_manager(memory_manager), filter_( filter ), underlying_(underlying)
-			, table_reader( *underlying, entry_size_bits )
-		{
-			assert( entry_size_ > 0 );
-			assert( (file_size%entry_size_) == 0 );
+	struct Chunk{
+		std::unique_ptr<uint8_t,Util::Deleter<uint8_t>> buf;
+		std::atomic_uint_fast8_t state = 0; // 0 - empty, 1 - processing, 2 - ready
+		uint64_t file_read_pos, buf_used = 0;
+	};
 
-			underlying_->setClearAfterRead();
+	FilteredDisk( FileDisk* underlying, MemoryManager &memory_manager, bitfield *filter, uint16_t entry_size_bits, uint64_t file_size, uint32_t num_threads )
+		: entry_size_((entry_size_bits+7)/8), file_size(file_size), num_threads(num_threads)
+		, chunk_size( (HUGE_MEM_PAGE_SIZE - MEM_SAFE_BUF_SIZE)/entry_size_/8*entry_size_*8 ), num_chunks(num_threads+1)
+		, chunks( new Chunk[num_chunks] ), num_empty_chunks(num_chunks)
+		, memory_manager(memory_manager), filter_( filter ), underlying_(underlying)
+		, table_reader( *underlying, entry_size_bits )
+	{
+		assert( entry_size_ > 0 );
+		assert( (file_size%entry_size_) == 0 );
+
+		underlying_->setClearAfterRead();
+		for( uint64_t i = 0; i < num_chunks; i++ ){
+			chunks[i].file_read_pos = i * chunk_size;
+			chunks[i].buf = Util::allocate<uint8_t>( chunk_size + MEM_SAFE_BUF_SIZE );
 		}
+	}
 
-		inline uint8_t EntrySize() const { return entry_size_; }
-		inline uint64_t CurrentBucketStart() const { return bucket_end_pos - bucket_buf_used; }
-		inline uint64_t CurrentBucketEnd() const { return bucket_end_pos; }
-		inline uint64_t CurrentBucketSize() const { return bucket_buf_used; }
-		inline bool CurrentBucketIsLast() const { return is_bucket_last; }
-		inline const uint8_t * CurrentBucketBuffer() const { return buckets_buf.get() + bucket_buf_start; }
-		inline void EnsureSortingStarted() {
-			if( read_thread ) return;
-			read_thread.reset( new std::thread( [this](){
-				uint64_t file_read_buf_used = 0, file_read_buf_size = HUGE_MEM_PAGE_SIZE/entry_size_/8*entry_size_*8;
-				auto file_read_buf = Util::allocate<uint8_t>( file_read_buf_size );
+	inline uint8_t EntrySize() const { return entry_size_; }
+	inline uint64_t CurrentBucketStart() const { return cur_chunk_start_pos; }
+	inline uint64_t CurrentBucketEnd() const { return cur_chunk_start_pos + chunks[cur_chunk_no].buf_used; }
+	inline uint64_t CurrentBucketSize() const { return chunks[cur_chunk_no].buf_used; }
+	inline bool CurrentBucketIsLast() const { return chunks[(cur_chunk_no+1)%num_chunks].file_read_pos >= file_size; }
+	inline const uint8_t * CurrentBucketBuffer() const { return chunks[cur_chunk_no].buf.get(); }
+	inline void EnsureSortingStarted() {
+		if( running_threads.size() == 0 ){
+			RunChunkThread();
+			Util::waitForValue( chunks[0].state, (uint8_t)2 ); // wait for first bucket be ready
+			assert( chunks[0].state == 2 );
+		}
+	}
 
-				// position in buffer where next entry starts
-				int64_t pos_in_buffer = -entry_size_;
-				// no of entry to be read
-				int64_t next_entry_no = -1;
+	inline void SwitchNextBucket(){
+		if( CurrentBucketIsLast() )
+			throw InvalidValueException( "Switching after last bucket" );
+		cur_chunk_start_pos += chunks[cur_chunk_no].buf_used;
+		chunks[cur_chunk_no].file_read_pos += chunk_size*(uint64_t)num_chunks;
+		chunks[cur_chunk_no].state.store( 0, std::memory_order::relaxed ); // free current
+		num_empty_chunks.fetch_add( 1, std::memory_order::relaxed );
+		num_empty_chunks.notify_all();
 
-				uint64_t file_read_pos = 0;
-				uint32_t basket_buf_start_pos = 0;
+		// wait for ready
+		cur_chunk_no = (cur_chunk_no+1)%num_chunks; // switch index
+		if( Util::waitForValue( chunks[cur_chunk_no].state, (uint8_t)2 ) )
+			RunChunkThread();
+	}
 
-				while( !stop_read_thread ) {
-
-					next_bucket_ready.wait( true, std::memory_order::relaxed );
-
-					uint64_t i = 0;
-					for( ; i < bucket_size; i+=entry_size_ ){
-						// find next entry
-						do {
-							pos_in_buffer += entry_size_;
-
-							if( file_read_buf_used <= pos_in_buffer ) {// read next buffer
-								pos_in_buffer -= file_read_buf_used;
-
-								file_read_buf_used = std::min( file_read_buf_size, this->file_size - file_read_pos );
-								if( file_read_buf_used == 0 ){
-									is_next_bucket_last = true;
-									next_bucket_size = i;
-									next_bucket_ready.store( true, std::memory_order::relaxed );
-									next_bucket_ready.notify_all();
-									return;
-								}
-
-								table_reader.Read( file_read_pos, file_read_buf.get(), file_read_buf_used );
-								file_read_pos += file_read_buf_used;
-							} // reading from file
-						} while( !filter_->get( ++next_entry_no ) );
-
-
-						memcpy( buckets_buf.get() + basket_buf_start_pos + i, file_read_buf.get() + pos_in_buffer, entry_size_ );
-					} // end of loop filling global buffer
-
-					basket_buf_start_pos ^= bucket_size; // switch to next global buffer for next read
-					is_next_bucket_last = pos_in_buffer >= file_read_buf_used && this->file_size == file_read_pos;
-					next_bucket_size = i;
-
-					next_bucket_ready.store( true, std::memory_order::relaxed );
-					next_bucket_ready.notify_all();
-				}
-			} ) );
-
+	inline uint8_t const* ReadNext()
+	{
+		if( read_next_last_pos >= CurrentBucketEnd() )
 			SwitchNextBucket();
+
+		auto res = CurrentBucketBuffer() + read_next_last_pos - CurrentBucketStart();
+
+		read_next_last_pos += entry_size_;
+
+		return res;
+	}
+
+	inline void RunChunkThread(){
+		if( running_threads.size() < num_threads ){
+			running_threads.push_back( new std::thread([this](){ReadChunkThread();}) );
+			std::cout << "\rtable1 adding read thread " << running_threads.size() << " of " << num_threads
+#ifndef NDEBUG
+								<< std::endl
+#endif
+					;
 		}
+	}
 
-		inline void SwitchNextBucket(){
-			assert( read_thread );
-			next_bucket_ready.wait( false, std::memory_order::relaxed );
-			bucket_buf_start ^= bucket_size;
-			is_bucket_last = is_next_bucket_last;
-			bucket_buf_used = next_bucket_size;
-			bucket_end_pos += next_bucket_size;
-			next_bucket_ready.store( false, std::memory_order::relaxed );
-			next_bucket_ready.notify_all();
-		}
-
-		inline uint8_t const* ReadNext()
-		{
-			assert( !read_thread );
-			assert( last_pos_in_buffer < bucket_buf_used || position_in_file < file_size );
-
-			do {
-				last_pos_in_buffer += entry_size_;
-			}while( !filter_->get( ++last_entry_idx ) );
-
-
-			while( last_pos_in_buffer >= bucket_buf_used ) {// read next buffer
-				last_pos_in_buffer -= bucket_buf_used;
-
-				bucket_buf_used = std::min( (uint64_t)bucket_size, file_size - position_in_file );
-				assert( bucket_buf_used > 0 );
-				table_reader.Read( position_in_file, buckets_buf.get(), bucket_buf_used );
-				position_in_file += bucket_buf_used;
-			} // reading from file
-
-			assert( last_pos_in_buffer < bucket_buf_used );
-			return buckets_buf.get() + last_pos_in_buffer;
-		}
-
-		void FreeMemory()
-		{
-			if( filter_ != nullptr ){
-				if( read_thread ){
-					stop_read_thread = true;
-					read_thread->join();
-					read_thread.reset();
+	inline void ReadChunkThread(){
+		auto read_buf = Util::allocate<uint8_t>( chunk_size + MEM_SAFE_BUF_SIZE );
+		bitfieldReader filter_reader( *filter_ );
+		for( bool done = false; !done; ){
+			num_empty_chunks.wait( 0, std::memory_order::relaxed );
+			for( uint32_t i = 0; i < num_chunks; i++ ){
+				if( chunks[i].file_read_pos >= file_size )
+					done = true;
+				else {
+					uint8_t expected_state = 0;
+					if( chunks[i].state.compare_exchange_weak( expected_state, 1, std::memory_order::relaxed ) ){
+						num_empty_chunks.fetch_sub( 1, std::memory_order_relaxed );
+						ReadChunk( chunks[i], read_buf.get(), filter_reader );
+						chunks[i].state.store( 2, std::memory_order::relaxed );
+						chunks[i].state.notify_all();
+					}
 				}
-
-				memory_manager.release( filter_->memSize() );
-				filter_->RemoveFile();
-				delete filter_;
-				filter_ = nullptr;
-
-				underlying_->Remove();
-
-				buckets_buf.reset();
 			}
 		}
+	}
+
+	inline void ReadChunk( Chunk & chunk, uint8_t * read_buf, bitfieldReader &filter_reader ){
+		const uint64_t read_size = std::min( (uint64_t)chunk_size, file_size - chunk.file_read_pos );
+
+		{ // TODO support parallel reading
+			std::lock_guard<std::mutex> lk(table_read_mutex);
+			table_reader.ReadBuffer( chunk.file_read_pos, read_buf, read_size );
+
+			if( filter_->is_readonly() ) // for readonly filter set limits should be done under mutex!
+				filter_reader.setLimits( chunk.file_read_pos/entry_size_, read_size/entry_size_ );
+		}
+		if( !filter_->is_readonly() )
+			filter_reader.setLimits( chunk.file_read_pos/entry_size_, read_size/entry_size_ );
+
+		chunk.buf_used = 0; // clear the chunk buffer
+		for( uint64_t pos_idx = 0, up_to = read_size/entry_size_; pos_idx < up_to; pos_idx++ ){
+			if( filter_reader.get(pos_idx) ){
+				table_reader.restore_to( read_buf, pos_idx, chunk.buf.get() + chunk.buf_used );
+				chunk.buf_used += entry_size_;
+			}
+		}
+	}
+
+	void FreeMemory()
+	{
+		if( filter_ != nullptr ){
+			while( running_threads.size() > 0 ){
+				chunks[0].file_read_pos = file_size + 1; // set stopping condition
+				num_empty_chunks = num_threads + 2;
+				num_empty_chunks.notify_all();// send stopping signal
+
+				running_threads.back()->join();
+				delete running_threads.back();
+				running_threads.pop_back();
+			}
+
+			memory_manager.release( filter_->memSize() );
+			filter_->RemoveFile();
+			delete filter_;
+			filter_ = nullptr;
+
+			underlying_->Remove();
+
+			chunks.reset();
+		}
+	}
 
 private:
 	const uint16_t entry_size_;
-	const uint32_t bucket_size;
 	const uint64_t file_size;
+	const uint32_t num_threads;
+	const uint32_t chunk_size, num_chunks;
 
-	std::unique_ptr<uint8_t, Util::Deleter<uint8_t>> buckets_buf;
-	uint32_t bucket_buf_used = 0, bucket_buf_start;
-	std::atomic_bool next_bucket_ready = false;
-	uint64_t bucket_end_pos = 0, position_in_file = 0, next_bucket_size = 0;
-	uint64_t last_pos_in_buffer, last_entry_idx = -1;
+	std::unique_ptr<Chunk[]> chunks;
+	uint64_t cur_chunk_start_pos = 0;
+	uint32_t cur_chunk_no = 0;
+	std::atomic_int_fast32_t num_empty_chunks;
+	std::mutex table_read_mutex;
+	std::vector<std::thread*> running_threads;
 
-	std::unique_ptr<std::thread>read_thread;
-	bool is_bucket_last = false, is_next_bucket_last = false;
-	bool stop_read_thread = false;
+	uint64_t read_next_last_pos = 0;
 
 	MemoryManager &memory_manager;
 	// only entries whose bit is set should be read

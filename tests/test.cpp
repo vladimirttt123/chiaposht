@@ -70,7 +70,7 @@ TEST_CASE( "DISK_STREAMS" ){
 				const uint64_t buf_size = entry_size_bytes * 1024;
 				uint8_t buf[buf_size + MEM_SAFE_BUF_SIZE];
 
-				{
+				{ // write the file
 					FileDisk disk( "tX.tmp" );
 					TableFileWriter wri( disk, entry_size_bits );
 					for( uint64_t i = 0; i < entry_size_bits*8192; i++ ){
@@ -89,6 +89,7 @@ TEST_CASE( "DISK_STREAMS" ){
 				FileDisk disk( "tX.tmp", false );
 				TableFileReader rd( disk, entry_size_bits );
 
+				// test full buffers unpack
 				for( uint64_t i = 0; i < entry_size_bits*8192; i++ ){
 					if( (i%1024)==0 )
 						rd.Read( i*entry_size_bytes, buf, 1024*entry_size_bytes );
@@ -99,15 +100,26 @@ TEST_CASE( "DISK_STREAMS" ){
 				uint64_t val = Util::ExtractNum64( buf, 0, entry_size_bits );
 				assert( val == 0x112233 );
 
+				// test buffer extraction
 				for( uint64_t i = 0; i < entry_size_bits*8192; i++ ){
 					if( (i%1024)==0 )
 						rd.ReadBuffer( i*entry_size_bytes, buf, 1024*entry_size_bytes );
 					uint64_t val = rd.extractFromBuffer( buf, i%1024 );
 					assert( val == i );
+					uint8_t entry[entry_size_bytes + MEM_SAFE_BUF_SIZE];
+					rd.restore_to( buf, i%1024, entry );
+					val = Util::ExtractNum64( entry, 0, entry_size_bits );
+					assert( val == i );
 				}
 				rd.ReadBuffer( entry_size_bits*8192*entry_size_bytes, buf, entry_size_bytes );
 				val = rd.extractFromBuffer( buf, 0 );
 				assert( val == 0x112233 );
+
+				uint8_t entry[entry_size_bytes + MEM_SAFE_BUF_SIZE];
+				rd.restore_to( buf, 0, entry );
+				val = Util::ExtractNum64( entry, 0, entry_size_bits );
+				assert( val == 0x112233 );
+
 
 			}
 	}

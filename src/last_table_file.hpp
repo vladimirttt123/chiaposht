@@ -693,6 +693,20 @@ struct TableFileReader{
 								 | ((leftovers>>(entry_leftover_bits*(7-entry_in_block)))&left_over_mask);
 	}
 
+	// need accessible extra space at end of dst that will be changed
+	inline void restore_to( uint8_t * buf, uint64_t idx_in_buffer, uint8_t * dst_buf ){
+		if( entry_size_bytes == entry_size_full_bytes ){
+			memcpy( dst_buf, buf + idx_in_buffer*entry_size_bytes, entry_size_bytes );
+			return;
+		}
+
+		uint64_t block_no = idx_in_buffer>>3, entry_in_block = idx_in_buffer&7;
+		buf += block_no*block_size_bytes; // move buffer to block start
+		uint64_t leftovers = *((uint64_t*)(buf + block_size_bytes-entry_leftover_bits));
+		*((uint64_t*)dst_buf) = *((uint64_t*)(buf + entry_in_block * entry_size_full_bytes));
+		dst_buf[entry_size_full_bytes] = ((uint8_t)(leftovers >> (( 7-entry_in_block )*entry_leftover_bits)))<<(8-entry_leftover_bits);
+	}
+
 	inline uint8_t* extract_block( uint8_t * block_buf, uint8_t *dst_buf, uint8_t entries_no = 8 ){
 		uint64_t leftovers = *((uint64_t*)(block_buf+block_size_bytes-entry_leftover_bits));
 
