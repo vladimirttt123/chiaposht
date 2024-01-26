@@ -385,6 +385,12 @@ public:
 			return sorted_current->buffer(); }
 		inline const bool CurrentBucketIsLast() const { return sorted_current->BucketNo() + 1 >= (int)num_buckets || buckets_[sorted_current->BucketNo() + 1]->Count() == 0; }
 
+		inline const uint8_t * NextBucketBuffer( uint64_t sorted_to_global_pos = 0 ){
+			if( !sorted_next ) return nullptr;
+			sorted_next->WaitForSortedTo( sorted_to_global_pos ? sorted_to_global_pos : sorted_next->EndPosition() );
+			return sorted_next->buffer();
+		}
+
 		inline void AddToCache( StreamBuffer &entry )
     {
 			uint64_t const bucket_index =

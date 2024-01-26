@@ -321,14 +321,15 @@ public:
         }
     }
 
-    void ToBytes(uint8_t buffer[]) const
+		inline void ToBytes(uint8_t buffer[]) const
     {
-        int i;
+				// Return if nothing to work on
+				if (!values_.size())
+						return;
+
+				int i;
         uint8_t tmp[8];
 
-        // Return if nothing to work on
-        if (!values_.size())
-            return;
 
         for (i = 0; i < (int)values_.size() - 1; i++) {
             Util::IntToEightBytes(buffer + i * 8, values_[i]);

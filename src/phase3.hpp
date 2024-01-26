@@ -142,9 +142,6 @@ struct PassOneBlockProcessor {
 
 			to_write.ToBytes( entry_buf );
 
-			// if( entry_buf[0] == 0 && entry_buf[1]==10 && entry_buf[2]==125 && entry_buf[3]==101 ){
-			// 	std::cout << std::endl << "double entry.pos=" << entry.pos << "; entry.new=" << entry.new_pos << "; entry.key=" << entry.sort_key << std::endl;
-			// }
 			R_sort_manager.Add( entry_buf );
 		}
 
@@ -396,6 +393,11 @@ struct LeftDiskReader{
 		} else {
 			if( left_disk.CurrentBucketIsLast() )
 				throw InvalidStateException( "Trying to read left disk after end for new pos" );
+			const uint8_t * next = left_disk.NextBucketBuffer( pos2 + 1 );
+			if( next != nullptr ){
+				entry.left_new_pos_2 = Util::SliceInt64FromBytes( next + pos2 - left_disk.CurrentBucketEnd(), right_sort_key_size, k );
+				return true;
+			}
 		}
 
 		return false;
@@ -445,7 +447,6 @@ void PassOneThread( const uint8_t k, const uint32_t num_threads, const uint32_t 
 			to_write.AppendValue( entry.sort_key, right_sort_key_size );
 
 			to_write.ToBytes( entry_buf );
-
 			r_writer.Add( entry_buf );
 
 			if( not_processed.size() > 0 ){ // try to processe not processed
