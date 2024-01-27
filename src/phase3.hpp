@@ -55,7 +55,9 @@ private:
 
 struct NewPosSortManagerReader{
 	NewPosSortManagerReader( const uint8_t k, const uint32_t right_sort_key_size, SortManager * sm)
-			: k(k), right_sort_key_size(right_sort_key_size), sm(sm){}
+			: k(k), right_sort_key_size(right_sort_key_size), sm(sm){
+		sm->EnsureSortingStarted();
+	}
 
 	inline uint64_t ReadNext() {
 		auto left_entry_disk_buf = sm->ReadEntry(left_reader);
@@ -310,6 +312,7 @@ struct RigthDiskReader{
 	{
 		right_disk.EnsureSortingStarted();
 		bucket_end = right_disk.CurrentBucketEnd();
+		current_buf = right_disk.CurrentBucketBuffer(0);
 	}
 
 	inline bool ReadAt( uint64_t global_pos, P3Entry &entry ){
@@ -323,6 +326,7 @@ struct RigthDiskReader{
 			if( num_threads_before_switch == num_waiting_next_bucket_threads.fetch_add( 1, std::memory_order::relaxed ) ){
 				// we can switch everyone wait for this
 				right_disk.SwitchNextBucket();
+				current_buf = right_disk.CurrentBucketBuffer(0) - right_disk.CurrentBucketStart();
 				num_waiting_next_bucket_threads.store(0, std::memory_order::relaxed);
 				bucket_end.store( right_disk.CurrentBucketEnd(), std::memory_order::relaxed );
 				bucket_end.notify_all();
@@ -334,7 +338,8 @@ struct RigthDiskReader{
 		assert( global_pos >= right_disk.CurrentBucketStart() );
 		assert( global_pos < right_disk.CurrentBucketEnd() );
 
-		entry.Set( right_disk.CurrentBucketBuffer( global_pos + 1 ) + global_pos - right_disk.CurrentBucketStart(), k );
+		entry.Set( current_buf + global_pos, k );
+
 		return true;
 	}
 
@@ -343,6 +348,7 @@ private:
 	const uint32_t num_threads_before_switch;
 	std::atomic_uint32_t num_waiting_next_bucket_threads;
 	std::atomic_uint64_t bucket_end;
+	const uint8_t * current_buf = nullptr;
 };
 
 struct LeftDiskReader{
@@ -354,6 +360,7 @@ struct LeftDiskReader{
 	{
 		left_disk.EnsureSortingStarted();
 		bucket_end = left_disk.CurrentBucketEnd();
+		current_buf = left_disk.CurrentBucketBuffer(0);
 	}
 
 	inline bool ReadPositions( P3Entry &entry ){
@@ -367,8 +374,8 @@ struct LeftDiskReader{
 
 				uint64_t cur_bucket_end = left_disk.CurrentBucketEnd();
 				if( num_threads_before_switch == num_waiting_next_bucket_threads.fetch_add( 1, std::memory_order::relaxed) ){
-					// we can switch everyone wait for this
-					left_disk.SwitchNextBucket();
+					left_disk.SwitchNextBucket(); // we can switch everyone wait for this
+					current_buf = left_disk.CurrentBucketBuffer(0) - left_disk.CurrentBucketStart();
 					num_waiting_next_bucket_threads.store( 0, std::memory_order::relaxed );
 					bucket_end.store( left_disk.CurrentBucketEnd(), std::memory_order::relaxed );
 					bucket_end.notify_all();
@@ -383,21 +390,16 @@ struct LeftDiskReader{
 			assert( global_pos < left_disk.CurrentBucketEnd() ); // suppose buckets are big enough to not wait twice
 			assert( global_pos >= left_disk.CurrentBucketStart() ); // suppose buckets are big enough to not wait twice
 
-			entry.left_new_pos_1 = Util::SliceInt64FromBytes( left_disk.CurrentBucketBuffer( global_pos + 1 ) + global_pos - left_disk.CurrentBucketStart(), right_sort_key_size, k );
+			entry.left_new_pos_1 = Util::SliceInt64FromBytes( current_buf + global_pos, right_sort_key_size, k );
 		}
 
 		uint64_t pos2 = entry.new_pos*left_disk.EntrySize();
 		if( pos2 < left_disk.CurrentBucketEnd() ){
-			entry.left_new_pos_2 = Util::SliceInt64FromBytes( left_disk.CurrentBucketBuffer( pos2  + 1) + pos2 - left_disk.CurrentBucketStart(), right_sort_key_size, k );
+			entry.left_new_pos_2 = Util::SliceInt64FromBytes( current_buf + pos2/* - left_disk.CurrentBucketStart()*/, right_sort_key_size, k );
 			return true;
 		} else {
 			if( left_disk.CurrentBucketIsLast() )
 				throw InvalidStateException( "Trying to read left disk after end for new pos" );
-			const uint8_t * next = left_disk.NextBucketBuffer( pos2 + 1 );
-			if( next != nullptr ){
-				entry.left_new_pos_2 = Util::SliceInt64FromBytes( next + pos2 - left_disk.CurrentBucketEnd(), right_sort_key_size, k );
-				return true;
-			}
 		}
 
 		return false;
@@ -408,6 +410,7 @@ private:
 	const uint32_t num_threads_before_switch;
 	std::atomic_uint32_t num_waiting_next_bucket_threads;
 	std::atomic_uint64_t bucket_end;
+	const uint8_t * current_buf = nullptr;
 };
 
 //template<class T>

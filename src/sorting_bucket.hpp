@@ -44,15 +44,7 @@ struct SortingBucket{
 		// clear statistics
 		memset( statistics, 0, sizeof(STATS_UINT_TYPE)<<bucket_bits_count );
 	}
-	inline uint64_t SortedPosision() const { return sorted_pos; }
-	inline uint32_t SortedPositionWait( uint64_t min_position ){
-		uint32_t wait_times = 0;
-		for( uint64_t current ; (current = sorted_pos.load(std::memory_order::relaxed)) < min_position; ){
-			wait_times++;
-			sorted_pos.wait( current, std::memory_order::relaxed );
-		};
-		return wait_times;
-	}
+
 	inline uint64_t Size() const { return entry_size_*entries_count; }
 	inline uint64_t Count() const { return entries_count; }
 	inline uint16_t EntrySize() const { return entry_size_; }
@@ -272,39 +264,14 @@ struct SortingBucket{
 		}else {
 			// Sort in threads
 			auto threads = std::make_unique<std::thread[]>(num_threads);
-			uint64_t sorted_positions[num_threads];
-			memset( sorted_positions, 0, num_threads*8 ); // init for zeros...
 
 			for( uint32_t i = 0; i < num_threads; i++ )
-				threads[i] = std::thread( [&num_threads, &subbuckets_count, this, &subbucket_positions, &memory, &stats, &sorted_positions ]( uint32_t thread_no ){
+				threads[i] = std::thread( [&num_threads, &subbuckets_count, this, &subbucket_positions, &memory, &stats ]( uint32_t thread_no ){
 						for( uint32_t t = thread_no; t < subbuckets_count; t += num_threads ){
 							assert( t == 0 || subbucket_positions[t] == (subbucket_positions[t-1] + stats[t]*entry_size_) ); // check any bucket is full
 
 							uint64_t start_pos = t == 0 ? 0 : subbucket_positions[t-1];
-
 							QuickSort::Sort( memory + start_pos, entry_size_, stats[t], begin_bits_ + bucket_bits_count_ );
-
-							// now update global sorted position
-							sorted_positions[thread_no] = subbucket_positions[t];
-
-							if( thread_no == 0 ){ // only 1st thread updates
-
-								uint64_t minVal = sorted_positions[0];
-								for( uint j = 1; j < num_threads; j++ )
-									if( minVal > sorted_positions[j] )
-										minVal = sorted_positions[j];
-
-								bool isMin = true;
-								for( uint j = 0; isMin && j < num_threads; j++ )
-									isMin = minVal <= sorted_positions[j];
-
-								if( isMin ){
-									assert( minVal >= sorted_pos );
-
-									sorted_pos.store( minVal, std::memory_order::relaxed );
-									sorted_pos.notify_all();
-								}
-							}
 						}
 					}, i );
 

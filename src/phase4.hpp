@@ -108,6 +108,7 @@ void RunPhase4(uint8_t k, uint8_t pos_size, FileDisk &tmp2_disk, Phase3Results &
 
 		std::cout << "Progress update: 0.98" << std::endl;
     std::cout << "\tStarting to write C1 and C3 tables" << std::endl;
+		res.table7_sm->EnsureSortingStarted();
 
 		std::vector<uint8_t> deltas_to_write;
 		if( num_threads <= 1 ){
@@ -206,7 +207,6 @@ void RunPhase4(uint8_t k, uint8_t pos_size, FileDisk &tmp2_disk, Phase3Results &
 			delete[] C1_entry_buf;
 			delete[] C3_entry_buf;
 		} else { // num_threads > 1
-			res.table7_sm->EnsureSortingStarted();
 			std::mutex write_mutex;
 			p4_syncer thread_sync( res.table7_sm->CurrentBucketEnd() );
 
