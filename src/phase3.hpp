@@ -549,6 +549,8 @@ Phase3Results RunPhase3(
 				if( table_index == 1){
 					if( num_threads <= 1 ){
 						NewPosTable1Reader t1(k, res2.table1 );
+						((SortManager&)right_disk).EnsureSortingStarted();
+
 						PassOneSingleThreaded( k, /*left table count:*/ res2.table_sizes[table_index], t1,
 										p2_entry_size_bytes, right_sort_key_size,
 										right_entry_size_bytes, /*right_table_size:*/ p2_entry_size_bytes * res2.table_sizes[table_index + 1],
@@ -564,6 +566,7 @@ Phase3Results RunPhase3(
 				}else{
 					if( num_threads <= 1  ){
 						NewPosSortManagerReader sr( k, right_sort_key_size, L_sort_manager.get() );
+						if( table_index < 6 ) ((SortManager&)right_disk).EnsureSortingStarted();
 						PassOneSingleThreaded( k, /*left table count:*/ res2.table_sizes[table_index], sr,
 										p2_entry_size_bytes, right_sort_key_size,
 										right_entry_size_bytes, /*right_table_size:*/ p2_entry_size_bytes * res2.table_sizes[table_index + 1],
@@ -573,12 +576,10 @@ Phase3Results RunPhase3(
 							// num_threads = 1;
 							RigthDiskReader right_reader( (SortManager&)right_disk, num_threads, k );
 							LeftDiskReader left_reader( *L_sort_manager.get(), num_threads, k, right_sort_key_size );
-							std::unique_ptr<std::thread> threads[num_threads];
-							for( uint32_t t = 0; t < num_threads; t++ )
-								threads[t].reset( new std::thread( PassOneThread, k, num_threads, t, &left_reader, p2_entry_size_bytes, right_sort_key_size, &right_reader, R_sort_manager.get() ) );
-								//PassOneThread( k, num_threads, t, left_reader, p2_entry_size_bytes, right_sort_key_size, right_reader, R_sort_manager.get() );
-							for( uint32_t t = 0; t < num_threads; t++ )
-								threads[t]->join();
+							RunByThreads( num_threads, [&k, &left_reader, &num_threads, &p2_entry_size_bytes,
+																						 &right_reader, &right_sort_key_size, &R_sort_manager](uint32_t t){
+								PassOneThread( k, num_threads, t, &left_reader, p2_entry_size_bytes, right_sort_key_size, &right_reader, R_sort_manager.get() );
+							});
 							// PassOneRegular( k, false, *L_sort_manager.get(), p2_entry_size_bytes, right_sort_key_size,
 							// 						 (SortManager&)right_disk, *R_sort_manager.get(), num_threads );
 						} else{

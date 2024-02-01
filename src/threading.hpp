@@ -5,6 +5,10 @@
 #ifndef CHIAPOS_THREADING_HPP
 #define CHIAPOS_THREADING_HPP
 
+#include <atomic>
+#include <thread>
+#include <functional>
+
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define VC_EXTRALEAN
@@ -63,6 +67,40 @@ namespace Sem {
 #endif
 
 };
+
+struct ThreadHolder{
+
+		inline ThreadHolder( std::thread *th = nullptr ) : holding(th){}
+
+		inline void reset( std::thread *th = nullptr ){ free(); holding = th; }
+		inline ~ThreadHolder(){ free(); }
+	private:
+		std::thread * holding;
+		inline void free(){
+			if( holding != nullptr ) {
+				holding->join();
+				delete holding;
+			}
+		}
+};
+
+template<class T>
+inline bool waitForValue( std::atomic<T> &atm, T value ){
+		bool waited = false;
+		for( T cur_state = atm.load( std::memory_order::relaxed );
+				 cur_state != value; cur_state = atm.load( std::memory_order::relaxed ) ){
+			waited = true;
+			atm.wait( cur_state, std::memory_order::relaxed );
+		}
+		return waited;
+}
+
+inline void RunByThreads( uint32_t num_threads, std::function<void(uint32_t)> func ){
+		ThreadHolder threads[num_threads];
+		for( uint32_t i = 1; i < num_threads; i++ )
+			threads[i].reset( new std::thread( func, i ) );
+		func(0); // start single thread
+}
 
 //        std::cout << ptd->index << " waited 0" << std::endl;
 #endif  // CHIAPOS_THREADING_HPP

@@ -489,7 +489,7 @@ struct LastTableBucketReader{
 	inline void EnsureSortingStarted(){ SwitchNextBucket(); }
 
 	inline void SwitchNextBucket(){
-		for( bucket_used = 0; bucket_used < bucket_size && file_read_position < file_size ;bucket_used+=reader.EntrySize(), file_read_position += reader.EntrySize() )
+		for( bucket_used = 0; bucket_used < bucket_size && file_read_position < file_size; bucket_used+=reader.EntrySize(), file_read_position += reader.EntrySize() )
 			memcpy( bucket.get() + bucket_used, reader.Read( file_read_position, reader.EntrySize() ), reader.EntrySize() );
 	}
 

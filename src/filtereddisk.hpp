@@ -45,7 +45,7 @@ struct FilteredDisk
 	inline void EnsureSortingStarted() {
 		if( running_threads.size() == 0 ){
 			RunChunkThread();
-			Util::waitForValue( chunks[0].state, (uint8_t)2 ); // wait for first bucket be ready
+			waitForValue( chunks[0].state, (uint8_t)2 ); // wait for first bucket be ready
 			assert( chunks[0].state == 2 );
 		}
 	}
@@ -61,7 +61,7 @@ struct FilteredDisk
 
 		// wait for ready
 		cur_chunk_no = (cur_chunk_no+1)%num_chunks; // switch index
-		if( Util::waitForValue( chunks[cur_chunk_no].state, (uint8_t)2 ) )
+		if( waitForValue( chunks[cur_chunk_no].state, (uint8_t)2 ) )
 			RunChunkThread();
 	}
 

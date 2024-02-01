@@ -127,7 +127,7 @@ namespace BucketSort {
 		inline uint32_t CheckSort( uint8_t *memory, uint32_t entry_len, uint32_t const bits_begin, uint32_t entries_number ){
 			for( uint32_t i = entry_len; i < entries_number*entry_len; i+=entry_len ){
 					if( Util::MemCmpBits( memory + i - entry_len, memory + i, entry_len, bits_begin) > 0)
-						return 1;
+						return i/entry_len;
 
 					//if( Util::MemCmpBits( memory + i - entry_len, memory + i, entry_len, bits_begin) == 0 ) std::cout << "equals!!" << std::endl;
 				}

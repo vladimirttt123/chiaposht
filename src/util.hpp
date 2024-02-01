@@ -30,9 +30,9 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
-#include <functional>
 
 #ifndef _WIN32
 #include <sys/resource.h>
@@ -152,6 +152,10 @@ private:
 #endif
 		uint64_t write_byte_start;
 };
+
+
+
+
 
 #define MEM_SAFE_BUF_SIZE  7
 
@@ -613,16 +617,8 @@ namespace Util {
 			}
 #endif
 		}
-		template<class T>
-		inline bool waitForValue( std::atomic<T> &atm, T value ){
-			bool waited = false;
-			for( T cur_state = atm.load( std::memory_order::relaxed );
-					 cur_state != value; cur_state = atm.load( std::memory_order::relaxed ) ){
-				waited = true;
-				atm.wait( cur_state, std::memory_order::relaxed );
-			}
-			return waited;
-		}
+
+
 } // end of namespac Util
 
 #endif  // SRC_CPP_UTIL_HPP_
