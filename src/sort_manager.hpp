@@ -227,9 +227,9 @@ public:
 			MemoryManager &memory_manager,
 			SortStatisticsStorage &full_statistics,
 			uint32_t  num_buckets,
-			uint16_t const entry_size,
 			const std::string &tmp_dirname,
 			const std::string &filename,
+			uint16_t const entry_size_bits,
 			uint32_t const begin_bits,
 			uint64_t const stripe_size,
 			uint8_t k, uint8_t phase, uint8_t table_index,
@@ -238,14 +238,14 @@ public:
 			bool parallel_read = true )
 
 			: memory_manager(memory_manager)
-			, entry_size_(entry_size), begin_bits_(begin_bits)
+			, entry_size_((entry_size_bits+7)/8), begin_bits_(begin_bits)
 			, prev_bucket_buf_size(
-					2 * (stripe_size + 10 * (kBC / pow(2, kExtraBits))) * entry_size)
+					2 * (stripe_size + 10 * (kBC / pow(2, kExtraBits))) * entry_size_)
 			, num_threads( num_threads )
 			, k_(k), phase_(phase), table_index_(table_index)
 	{
 
-		uint64_t sorting_size = (1ULL<<k)*entry_size;
+		uint64_t sorting_size = (1ULL<<k)*entry_size_;
 		double expected_buckets_no = num_buckets*( phase_==1 ?1.0:( phase_==3?0.64:0.8 ) );
 		const auto expected_bucket_size = sorting_size/(double)expected_buckets_no;
 		const auto memory_size = memory_manager.getTotalSize()/(isSingleSort()?1:2);
@@ -303,7 +303,7 @@ public:
 				}
 				buckets_[bucket_i].reset( new SortingBucket( bucket_filename.string(), memory_manager, full_statistics.forBucket( bucket_i ),
 																							bucket_i, log_num_buckets_,
-																							entry_size, begin_bits_ + log_num_buckets_, subbucket_bits,
+																							entry_size_, begin_bits_ + log_num_buckets_, subbucket_bits,
 																							enable_compaction, sequence_start, parallel_read ) );
 		}
 	}

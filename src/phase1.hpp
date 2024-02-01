@@ -609,15 +609,14 @@ std::vector<uint64_t> RunPhase1(
     F1Calculator f1(k, id);
     uint64_t x = 0;
 
-    uint32_t const t1_entry_size_bytes = EntrySizes::GetMaxEntrySize(k, 1, true);
     globals.L_sort_manager = std::make_unique<SortManager>(
 				memory_manager,
 				*full_stats,
         num_buckets,
-        t1_entry_size_bytes,
         tmp_dirname,
         filename + ".p1.t1",
-        0,
+				EntrySizes::GetMaxEntrySizeBits( k, 1, true ),
+				0,
 				globals.stripe_size,
 				k, 1 /* Phase */, 2 /* table */,
 				num_threads,
@@ -645,7 +644,6 @@ std::vector<uint64_t> RunPhase1(
 
     // Store positions to previous tables, in k bits.
     uint8_t pos_size = k;
-    uint32_t right_entry_size_bytes = 0;
 
     // For tables 1 through 6, sort the table, calculate matches, and write
     // the next table. This is the left table index.
@@ -677,14 +675,14 @@ std::vector<uint64_t> RunPhase1(
         // Determines how many bytes the entries in our left and right tables will take up.
         uint32_t const entry_size_bytes = EntrySizes::GetMaxEntrySize(k, table_index, true);
         uint32_t compressed_entry_size_bytes = EntrySizes::GetMaxEntrySize(k, table_index, false);
-        right_entry_size_bytes = EntrySizes::GetMaxEntrySize(k, table_index + 1, true);
+				uint32_t right_entry_size_bits = EntrySizes::GetMaxEntrySizeBits( k, table_index + 1, true );
 
         if (flags & ENABLE_BITFIELD && table_index != 1) {
 						// We only write pos and offset to tables 2-6 after removing metadata
             compressed_entry_size_bytes = cdiv(k + kOffsetSize, 8);
             if (table_index == 6) {
                 // Table 7 will contain f7, pos and offset
-                right_entry_size_bytes = EntrySizes::GetKeyPosOffsetSize(k);
+								right_entry_size_bits = EntrySizes::GetKeyPosOffsetSizeBits(k);
             }
         }
 
@@ -705,10 +703,10 @@ std::vector<uint64_t> RunPhase1(
 						memory_manager,
 						*((full_stats_next != NULL && (table_index%2)==1)?full_stats_next:full_stats),
             num_buckets,
-            right_entry_size_bytes,
             tmp_dirname,
             filename + ".p1.t" + std::to_string(table_index + 1),
-            0,
+						right_entry_size_bits,
+						0,
 						globals.stripe_size,
 						k, 1/* Phase */, table_index+2,
 						num_threads,
@@ -734,7 +732,7 @@ std::vector<uint64_t> RunPhase1(
             td[i].theirs = &mutex[(num_threads + i - 1) % num_threads];
 
             td[i].prevtableentries = prevtableentries;
-            td[i].right_entry_size_bytes = right_entry_size_bytes;
+						td[i].right_entry_size_bytes = (right_entry_size_bits+7)/8;
             td[i].k = k;
             td[i].table_index = table_index;
             td[i].metadata_size = metadata_size;

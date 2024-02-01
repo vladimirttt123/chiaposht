@@ -999,8 +999,8 @@ TEST_CASE("PlottingOne")
 {
 	SECTION("Disk plot k22 small buffer in dual-thread")
 	{
-			PlotAndTestProofOfSpace("cpp-test-plot.dat", 5000, 22, plot_id_3, 40 , 4932,
-															65536, 4, 16, ENABLE_BITFIELD |  BUFFER_AS_CACHE | PARALLEL_READ );
+		PlotAndTestProofOfSpace("cpp-test-plot.dat", 5000, 22, plot_id_3, 40 , 4932,
+														65536, 4, 16, ENABLE_BITFIELD |  BUFFER_AS_CACHE | PARALLEL_READ );
 	}
 }
 TEST_CASE("Plotting")
@@ -1206,7 +1206,7 @@ TEST_CASE("Sort on disk")
 					vector<Bits> input;
 					MemoryManager memory_manager = MemoryManager( memory_len );
 					SortStatisticsStorage full_stats( k, 8, 16 );
-					SortManager manager(memory_manager, full_stats, 16, size, ".", "test-files", 0, 1, k, 1, 1, threads_num);
+					SortManager manager( memory_manager, full_stats, 16, ".", "test-files", size*8, 0, 1, k, 1, 1, threads_num);
 					for (uint32_t i = 0; i < iters; i++) {
 							vector<unsigned char> hash_input = intToBytes(i, 4);
 							vector<unsigned char> hash(picosha2::k_digest_size);
@@ -1239,7 +1239,7 @@ TEST_CASE("Sort on disk")
 					vector<Bits> input;
 					MemoryManager memory_manager = MemoryManager( memory_len );
 					SortStatisticsStorage full_stats( k, 8, 16 );
-					SortManager manager(memory_manager, full_stats, 16, size, ".", "test-files", 0, 1, k, 1, threads_num);
+					SortManager manager(memory_manager, full_stats, 16, ".", "test-files", size*8, 0, 1, k, 1, threads_num);
 					for (uint32_t i = 0; i < iters; i++) {
 							vector<unsigned char> hash_input = intToBytes(i, 4);
 							vector<unsigned char> hash(picosha2::k_digest_size);
@@ -1271,7 +1271,7 @@ TEST_CASE("Sort on disk")
 
 				MemoryManager memory_manager = MemoryManager( memory_len );
 				SortStatisticsStorage full_stats( k, 8, 16);
-				SortManager manager(memory_manager, full_stats, 16, size, ".", "test-files", 0, 1, k, 1, 1 );
+				SortManager manager(memory_manager, full_stats, 16, ".", "test-files", size*8, 0, 1, k, 1, 1 );
         for (uint32_t i = 0; i < iters; i++) {
             vector<unsigned char> hash_input = intToBytes(i, 4);
             vector<unsigned char> hash(picosha2::k_digest_size);
@@ -1400,7 +1400,7 @@ TEST_CASE( "SortThreads" ){
 
 		MemoryManager memory_manager = MemoryManager( memory_len );
 		SortStatisticsStorage full_stats( k, 11, num_buckets );
-		SortManager manager1( memory_manager, full_stats, num_buckets, entry_size, "." /*temp_dir*/, "test-files1" /*file name*/, 0, 1, k, threads_num, 1, threads_num );
+		SortManager manager1( memory_manager, full_stats, num_buckets, "." /*temp_dir*/, "test-files1" /*file name*/, entry_size*8, 0, 1, k, threads_num, 1, threads_num );
 		auto threads = std::make_unique<std::thread[]>(threads_num);
 
 		Timer fill_timer1;

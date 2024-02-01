@@ -500,7 +500,7 @@ Phase3Results RunPhase3(
 		Util::IntToEightBytes(table_pointer_bytes, final_table_begin_pointers[1]);
 		tmp2_disk.Write(header_size - 10 * 8, table_pointer_bytes, 8);
 
-		uint32_t new_pos_entry_size_bytes = 0;
+		uint32_t new_pos_entry_size_bits = 0;
 
 		uint32_t next_stats_idx = 0;
 		std::unique_ptr<SortManager> L_sort_manager;
@@ -527,7 +527,7 @@ Phase3Results RunPhase3(
 
 				Disk& right_disk = res2.disk_for_table(table_index + 1);
 
-				const uint32_t right_entry_size_bytes = EntrySizes::GetMaxEntrySize(k, table_index + 1, false);
+				const uint32_t right_entry_size_bits = EntrySizes::GetMaxEntrySizeBits( k, table_index + 1, false );
 
 
 				if (table_index > 1)
@@ -536,13 +536,11 @@ Phase3Results RunPhase3(
 				// We read only from this SortManager during the second pass, so all
 				// memory is available
 				R_sort_manager = std::make_unique<SortManager>(
-						memory_manager,			*full_stats[next_stats_idx].get(),
-						num_buckets,
-						right_entry_size_bytes,
-						tmp_dirname,				filename + ".p3.t" + std::to_string(table_index + 1),
-						0/* begin_bits */,	0/* stripe_size*/,
-						k/* plot size */,		3/* Phase */,
-						table_index,				num_threads,
+						memory_manager,					*full_stats[next_stats_idx].get(),
+						num_buckets,						tmp_dirname,				filename + ".p3.t" + std::to_string(table_index + 1),
+						right_entry_size_bits,	0/* begin_bits */,	0/* stripe_size*/,
+						k/* plot size */,				3/* Phase */,
+						table_index,						num_threads,
 						(flags&NO_COMPACTION)==0, (flags&PARALLEL_READ)!=0 );
 				next_stats_idx = !full_stats[1] ? 0 : (next_stats_idx + 1)%2;
 
@@ -553,7 +551,7 @@ Phase3Results RunPhase3(
 
 						PassOneSingleThreaded( k, /*left table count:*/ res2.table_sizes[table_index], t1,
 										p2_entry_size_bytes, right_sort_key_size,
-										right_entry_size_bytes, /*right_table_size:*/ p2_entry_size_bytes * res2.table_sizes[table_index + 1],
+										(right_entry_size_bits+7)/8, /*right_table_size:*/ p2_entry_size_bytes * res2.table_sizes[table_index + 1],
 										right_disk, R_sort_manager.get() );
 					} else {
 						PassOneRegular( k, true, res2.table1, p2_entry_size_bytes, right_sort_key_size,
@@ -569,7 +567,7 @@ Phase3Results RunPhase3(
 						if( table_index < 6 ) ((SortManager&)right_disk).EnsureSortingStarted();
 						PassOneSingleThreaded( k, /*left table count:*/ res2.table_sizes[table_index], sr,
 										p2_entry_size_bytes, right_sort_key_size,
-										right_entry_size_bytes, /*right_table_size:*/ p2_entry_size_bytes * res2.table_sizes[table_index + 1],
+										(right_entry_size_bits+7)/8, /*right_table_size:*/ p2_entry_size_bytes * res2.table_sizes[table_index + 1],
 										right_disk, R_sort_manager.get() );
 					} else {
 						if( table_index < 6 ){
@@ -611,14 +609,12 @@ Phase3Results RunPhase3(
 				// newly written table consists of (sort_key, new_pos). Add one extra
 				// bit for 'new_pos' to the 7-th table as it may have more than 2^k
 				// entries.
-				new_pos_entry_size_bytes = cdiv(2 * k + (table_index == 6 ? 1 : 0), 8);
+				new_pos_entry_size_bits = 2 * k + (table_index == 6 ? 1 : 0);
 
 				L_sort_manager = std::make_unique<SortManager>(
-						memory_manager,		*full_stats[next_stats_idx].get(),
-						num_buckets,
-						new_pos_entry_size_bytes,
-						tmp_dirname,					filename + ".p3s.t" + std::to_string(table_index + 1),
-						0/* bits_begin */,		0/* strip_size */,
+						memory_manager,					*full_stats[next_stats_idx].get(),
+						num_buckets,						tmp_dirname,					filename + ".p3s.t" + std::to_string(table_index + 1),
+						new_pos_entry_size_bits, 0/* bits_begin */,		0/* strip_size */,
 						k/* plot size */,			4/* Phase */,
 						table_index + 1,			num_threads,
 						(flags&NO_COMPACTION)==0, (flags&PARALLEL_READ)!=0 );
@@ -801,7 +797,7 @@ Phase3Results RunPhase3(
 		return Phase3Results{
 				final_table_begin_pointers,
 				L_sort_manager->Count(),
-				new_pos_entry_size_bytes * 8,
+				(new_pos_entry_size_bits+7)/8 * 8,
 				header_size,
 				std::move(L_sort_manager)};
 }

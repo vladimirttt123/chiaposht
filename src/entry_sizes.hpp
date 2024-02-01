@@ -74,11 +74,18 @@ public:
 			return cdiv( k + (table_index == 1 ? 0 : kOffsetSize ), 8 );
 		}
 
-    // Get size of entries containing (sort_key, pos, offset). Such entries are
+		// Get size of entries containing (sort_key, pos, offset). Such entries are
+		// written to table 7 in phase 1 and to tables 2-7 in phase 2.
+		static uint32_t GetKeyPosOffsetSizeBits(uint8_t k)
+		{
+			return 2 * k + kOffsetSize;
+		}
+
+		// Get size of entries containing (sort_key, pos, offset). Such entries are
     // written to table 7 in phase 1 and to tables 2-7 in phase 2.
     static uint32_t GetKeyPosOffsetSize(uint8_t k)
     {
-        return cdiv(2 * k + kOffsetSize, 8);
+			return cdiv( GetKeyPosOffsetSizeBits(k), 8);
     }
 
     // Calculates the size of one C3 park. This will store bits for each f7 between

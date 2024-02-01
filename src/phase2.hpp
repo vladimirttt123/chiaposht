@@ -230,7 +230,7 @@ Phase2Results RunPhase2(
     // average
     uint8_t const pos_size = k;
 		uint8_t const pos_offset_size = pos_size + kOffsetSize;
-    uint8_t const new_entry_size = EntrySizes::GetKeyPosOffsetSize(k);
+		uint8_t const new_entry_size_bits = EntrySizes::GetKeyPosOffsetSizeBits( k );
 
     std::vector<uint64_t> new_table_sizes(8, 0);
     new_table_sizes[7] = table_sizes[7];
@@ -342,11 +342,10 @@ Phase2Results RunPhase2(
 			if( !full_stats[next_stats_idx] ) next_stats_idx = 0;
 
 			auto sort_manager = std::make_unique<SortManager>(
-					memory_manager,		*full_stats[next_stats_idx].get(),
-					num_buckets,			new_entry_size,
-					tmp_dirname,			filename + ".p2.t" + std::to_string(table_index),
-					uint32_t(k) /* bits_begin */, 0, // strip_size
-					k, 2/* Phase */, table_index,
+					memory_manager,			*full_stats[next_stats_idx].get(),
+					num_buckets,				tmp_dirname,			filename + ".p2.t" + std::to_string(table_index),
+					new_entry_size_bits, uint32_t(k) /* bits_begin */, 0, // strip_size
+					k, 2/* Phase */,		table_index,
 					num_threads, (flags&NO_COMPACTION)==0, (flags&PARALLEL_READ)!=0 );
 
 			std::atomic_uint64_t read_position = 0;
@@ -362,12 +361,12 @@ Phase2Results RunPhase2(
 			tmp_1_disks[table_index].setClearAfterRead(); // after this read we do not need the data anymore
 			for( uint64_t t = 0; t < max_threads - 1; t++ )
 				threads[t] = std::thread(	SortRegularTableThread, &(tmp_1_disks[table_index]),
-																	read_bufsize, buffers_index.get(), table_size, entry_size, new_entry_size,
+																	read_bufsize, buffers_index.get(), table_size, entry_size, (new_entry_size_bits+7)/8,
 																	&read_position, current_bitfield.get(), &index, sort_manager.get(),
 																 read_mutext.get(), bitfield_mutex.get(), pos_offset_size, k );
 
 			SortRegularTableThread( &(tmp_1_disks[table_index]), read_bufsize, buffers_index.get(),
-															table_size, entry_size, new_entry_size,
+															table_size, entry_size, (new_entry_size_bits+7)/8,
 															&read_position, current_bitfield.get(), &index, sort_manager.get(),
 															read_mutext.get(), bitfield_mutex.get(), pos_offset_size, k );
 
@@ -432,7 +431,7 @@ Phase2Results RunPhase2(
 
 		return {
 				FilteredDisk( &tmp_1_disks[1], memory_manager, current_bitfield.release(), k, table_size * entry_size_t1, num_threads, flags&PARALLEL_READ )
-				, std::make_unique<LastTableReader>( &tmp_1_disks[7], k, new_entry_size,
+				, std::make_unique<LastTableReader>( &tmp_1_disks[7], k, (new_entry_size_bits+7)/8,
 														new_table_sizes[7], (flags&NO_COMPACTION)==0, num_threads )
         , std::move(output_files)
         , std::move(new_table_sizes)
