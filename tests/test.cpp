@@ -1219,6 +1219,7 @@ TEST_CASE("Sort on disk")
 					manager.FlushCache();
 					uint8_t buf[size];
 					sort(input.begin(), input.end());
+					manager.EnsureSortingStarted();
 					for (uint32_t i = 0; i < iters; i++) {
 							auto buf3 = manager.ReadEntry(i * size);
 							input[i].ToBytes(buf);
@@ -1252,6 +1253,7 @@ TEST_CASE("Sort on disk")
 					manager.FlushCache();
 					uint8_t buf[size];
 					sort(input.begin(), input.end());
+					manager.EnsureSortingStarted();
 					for (uint32_t i = 0; i < iters; i++) {
 							auto buf3 = manager.ReadEntry(i * size);
 							input[i].ToBytes(buf);
@@ -1284,7 +1286,8 @@ TEST_CASE("Sort on disk")
         manager.FlushCache();
         uint8_t buf[size];
         sort(input.begin(), input.end());
-        for (uint32_t i = 0; i < iters; i++) {
+				manager.EnsureSortingStarted();
+				for (uint32_t i = 0; i < iters; i++) {
 						auto buf3 = manager.ReadEntry(i * size);
             input[i].ToBytes(buf);
             REQUIRE(memcmp(buf, buf3, size) == 0);
@@ -1415,6 +1418,7 @@ TEST_CASE( "SortThreads" ){
 		Timer sort_timer;
 		REQUIRE( manager1.Count() == iters/threads_num * threads_num );
 		uint8_t prev_entry[entry_size];
+		manager1.EnsureSortingStarted();
 		memcpy( prev_entry, manager1.ReadEntry(0), entry_size );
 		for( uint64_t i = 1; i < manager1.Count(); i ++ ){
 			auto mem1 = manager1.ReadEntry(i*entry_size);
