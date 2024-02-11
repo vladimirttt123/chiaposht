@@ -37,6 +37,12 @@ struct StreamBuffer{
 		used_size += data_size;
 		return *this;
 	}
+	inline StreamBuffer & add( const uint8_t byte ){
+		assert( used_size + 1 <= size_ );
+		get()[used_size] = byte;
+		used_size++;
+		return *this;
+	}
 
 	inline StreamBuffer & setUsed( uint32_t new_used ) {
 		assert( new_used <= size_ );

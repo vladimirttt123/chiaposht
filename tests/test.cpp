@@ -242,15 +242,15 @@ TEST_CASE( "DISK_STREAMS" ){
 
 
 	SECTION( "BucketStream" ){
-		const uint64_t iteration = 6000;
+		const uint64_t iteration = 600000;
 		const uint16_t bucket_no = 0xaaaa;
-		const int16_t tests[][6] = { //[num_buckets, entry_size, bits_begins, is_compact, sequence_start_bit, flush_after_write]
-																	{16, 7, 4, 0, -1, 0 }
-																	, { 256, 8, 32, 1, -1, 0}, { 256, 8, 32, 1, -1, 1}
-																	, { 256, 13, 32, 1, -1, 0}, { 256, 13, 32, 1, -1, 1}
-																	, { 128, 8, 32, 0, 0, 0}, { 128, 8, 0, 0, 32, 0 }
-																	, { 256, 8, 32, 0, 0, 0}, { 256, 8, 0, 0, 32, 0 }
-																	, { 256, 8, 32, 1, 0, 0}, { 256, 8, 0, 1, 32, 0 }
+		const int16_t tests[][7] = { //[num_buckets, entry_size, bits_begins, is_compact, sequence_start_bit, sequence_size_bits, flush_after_write]
+																	{ 128, 8, 32, 1, 0, 28, 1}, { 128, 8, 0, 0, 32, 24, 0 }
+																	,	{ 16, 7, 4, 0, -1, 0, 0 }, { 128, 8, 32, 1, -1, 0, 0}
+																	, { 256, 8, 32, 1, -1, 0, 0}, { 256, 8, 32, 1, -1, 0, 1}
+																	, { 256, 13, 32, 1, -1, 0, 0}, { 256, 13, 32, 1, -1, 0, 1}
+																	, { 256, 8, 32, 0, 0, 28, 0}, { 256, 8, 0, 0, 32, 28, 0 }
+																	, { 256, 8, 32, 1, 0, 28, 0}, { 256, 8, 0, 1, 32, 28, 0 }
 																};
 		const auto cur_buf_size = BUF_SIZE;
 		BUF_SIZE = 4096; // set small buffer size for fast testing
@@ -258,82 +258,96 @@ TEST_CASE( "DISK_STREAMS" ){
 		MemoryManager memory_manager = MemoryManager(0);
 		for( auto test_data : tests ){
 			auto num_buckets = test_data[0];
-			uint16_t entry_size = test_data[1];
+			uint16_t entry_size_bits = test_data[1] * 8;
 			auto bits_begin = test_data[2];
 			bool is_compact = test_data[3];
 			auto sequence_start_bit = test_data[4];
-			bool is_fush = test_data[5];
+			uint32_t sequence_size_bits = test_data[5];
+			bool is_flush = test_data[6];
 
-			std::cout << "BucketStream test - num_buckets: " << num_buckets << ", entry_size: " << entry_size
-								<< ", bits_begin: " << bits_begin << ", sequence_start_bit: " << sequence_start_bit << std::endl;
+			std::cout << "BucketStream test - num_buckets: " << num_buckets << ", entry_size_bits: " << entry_size_bits
+								<< ", bits_begin: " << bits_begin << ", sequence_start_bit: " << sequence_start_bit
+								<< ", sequence_size_bits: " << sequence_size_bits << ", compaction: " << (is_compact?"YES":"NO")
+								<< ", flushing: " << (is_flush?"YES":"NO") << std::endl;
 
 			uint16_t cur_bucket_no = bucket_no % num_buckets;
-			BucketStream stream = BucketStream( "bucket.stream.tmp", memory_manager, cur_bucket_no
-																					, log2(num_buckets), entry_size, bits_begin + log2(num_buckets)
-																					, is_compact, sequence_start_bit );
+			EntryCompactionData cdata( is_compact, entry_size_bits, bits_begin, log2(num_buckets), sequence_start_bit );
+			BucketStream stream = BucketStream( "bucket.stream.tmp", memory_manager, cur_bucket_no, cdata );
 
-			StreamBuffer bucket_data( iteration * entry_size );
+			StreamBuffer bucket_data( iteration * cdata.entry_size_bytes );
 
 			{ // Part I: writing
 
 				// Prepare entry
-				StreamBuffer base_entry_buf( entry_size );
-				StreamBuffer write_entry_buf( entry_size );
-				auto base_entry = base_entry_buf.get();
-				do{
-					for( uint32_t i = 0; i < entry_size; i++ )
-						base_entry[i] = rand()&0xff; // set random
-				} while( Util::ExtractNum64(base_entry, bits_begin, log2(num_buckets) ) != cur_bucket_no );
+				StreamBuffer write_entry_buf( BUF_SIZE );
 
-				if( sequence_start_bit >= 0 )
-					((uint32_t*)(base_entry + sequence_start_bit/8))[0] = 0;
-				// END Prepare entry
-
+				uint64_t seq_value = rand()&0xff;
 				// go and write files
 				for( uint64_t i = 0; i < iteration; i++ ){
-					// change the entry
-					if( sequence_start_bit >= 0 )
-						((uint32_t*)(base_entry + sequence_start_bit/8))[0] += bswap_32(
-								bswap_32(((uint32_t*)(base_entry + sequence_start_bit/8))[0]) + rand()&0xfff );
-					else {
-						base_entry[entry_size-2] = rand()&0xff;
-						base_entry[entry_size-3] = rand()&0xff;
-						base_entry[entry_size-1] = rand()&0xff;
+					// craete entry
+					Bits new_entry;
+					while( new_entry.GetSize() < entry_size_bits ){
+						if( new_entry.GetSize() == bits_begin ){
+							new_entry.AppendValue( cur_bucket_no, cdata.log_num_buckets );
+						} else if( new_entry.GetSize() == sequence_start_bit ){
+							new_entry.AppendValue( seq_value &((1 << sequence_size_bits)-1), sequence_size_bits );
+							seq_value += -128 + num_buckets + rand()&0xfff;
+						} else
+							new_entry.AppendValue( rand()&1, 1 );
 					}
+					assert( new_entry.GetSize() == entry_size_bits );
 
+					new_entry.ToBytes( write_entry_buf.getEnd() );
+					assert( Util::ExtractNum64( write_entry_buf.getEnd(), bits_begin, log2(num_buckets) ) == cur_bucket_no );
+					write_entry_buf.addUsed( cdata.entry_size_bytes );
 
-					assert( Util::ExtractNum64(base_entry, bits_begin, log2(num_buckets) ) == cur_bucket_no );
-					bucket_data.add( base_entry, entry_size );
-					stream.Write( write_entry_buf.setUsed( 0 ).add( base_entry, entry_size ) ); // write by one entry at a time
+					if( write_entry_buf.used() + cdata.entry_size_bytes > write_entry_buf.size() ){
+						bucket_data.add( write_entry_buf.get(), write_entry_buf.used() );
+						stream.Write( write_entry_buf );
+						write_entry_buf.setUsed( 0 );
+					}
+				}
+				if( write_entry_buf.used() ){
+					bucket_data.add( write_entry_buf.get(), write_entry_buf.used() );
+					stream.Write( write_entry_buf );
 				}
 
-				if( is_fush ) stream.FlusToDisk();
+				if( is_flush ) stream.FlusToDisk();
 			}
 
-			StreamBuffer read_data( iteration * entry_size );
+			StreamBuffer read_data( iteration * cdata.entry_size_bytes );
 
 			{	// Part II: read the data
 				StreamBuffer buf;
 
 				while( stream.Read(buf) > 0 ){
-					assert( (buf.used()%entry_size) == 0 );
-					assert( read_data.used() + buf.used() <= iteration*entry_size );
+					assert( (buf.used()%cdata.entry_size_bytes) == 0 );
+					assert( read_data.used() + buf.used() <= iteration*cdata.entry_size_bytes);
 
-					for( uint32_t i = 0; i < buf.used(); i += entry_size)
+					for( uint32_t i = 0; i < buf.used(); i += cdata.entry_size_bytes )
 						REQUIRE( Util::ExtractNum64( buf.get() + i, bits_begin, log2(num_buckets) ) == cur_bucket_no );
 
 					read_data.add( buf.get(), buf.used() );
+					// if( is_flush ){
+					// 	for( uint64_t i = 0; i < read_data.used(); i++ )
+					// 		assert( read_data.get()[i] == bucket_data.get()[i] );
+					// 	//assert( memcmp( read_data.get(), bucket_data.get(), read_data.used() ) == 0 );
+					// }
 				}
-				REQUIRE( read_data.used() == iteration * entry_size );
+				REQUIRE( read_data.used() == iteration * cdata.entry_size_bytes );
 			}
 
 			{  // Part III: compare data
 				// bits_begin for sorting is alway 0 because it could be non unique entries that sorted different in other case
-				QuickSort::Sort( bucket_data.get(), entry_size, iteration, 0 );
-				QuickSort::Sort( read_data.get(), entry_size, iteration, 0 );
+				QuickSort::Sort( bucket_data.get(), cdata.entry_size_bytes, iteration, 0 );
+				QuickSort::Sort( read_data.get(), cdata.entry_size_bytes, iteration, 0 );
 				REQUIRE( Util::ExtractNum64(read_data.get(), bits_begin, log2(num_buckets) ) == cur_bucket_no );
 				REQUIRE( Util::ExtractNum64(bucket_data.get(), bits_begin, log2(num_buckets) ) == cur_bucket_no );
-				REQUIRE( memcmp( read_data.get(), bucket_data.get(), iteration * entry_size ) == 0 );
+				for( uint64_t i = 0; i < iteration; i++ ){
+					if( memcmp( read_data.get() + i*cdata.entry_size_bytes, bucket_data.get() + i * cdata.entry_size_bytes, cdata.entry_size_bytes )  != 0 )
+						assert( false );
+				}
+				REQUIRE( memcmp( read_data.get(), bucket_data.get(), iteration * cdata.entry_size_bytes ) == 0 );
 			}
 
 		}
@@ -1000,7 +1014,7 @@ TEST_CASE("PlottingOne")
 	SECTION("Disk plot k22 small buffer in dual-thread")
 	{
 		PlotAndTestProofOfSpace("cpp-test-plot.dat", 5000, 22, plot_id_3, 40 , 4932,
-														65536, 4, 16, ENABLE_BITFIELD |  BUFFER_AS_CACHE | PARALLEL_READ );
+														65536, 2, 16, ENABLE_BITFIELD |  BUFFER_AS_CACHE | PARALLEL_READ );
 	}
 }
 TEST_CASE("Plotting")

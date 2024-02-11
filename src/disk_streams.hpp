@@ -347,6 +347,333 @@ private:
 	}
 };  // end of CachedFileStream
 
+struct EntryCompactionData{
+	struct EntryPart {
+		enum uint8_t { BITS, BYTES, BUCKET, SEQUENCE } etype;
+		uint16_t start_bit, length_bits;
+		uint16_t start_byte, length_bytes;
+
+		EntryPart * setBits( uint8_t etype, uint16_t start_bit, uint16_t length_bits ){
+			this->etype=etype;
+			this->start_byte = (this->start_bit = start_bit)/8;
+			this->length_bytes = (this->length_bits = length_bits)/8;
+			return this;
+		}
+	};
+
+	const bool compaction_enabled;
+	const uint16_t entry_size_bits, entry_size_bytes;
+	const uint8_t begin_bits, log_num_buckets, begin_bits_bucket;
+	const int16_t sequence_start_bit, sequence_size_bits, sequence_size_bytes;
+	uint16_t copy_size_bits = 0, copy_size_bytes = 0;
+	uint8_t num_parts = 0;
+	EntryPart parts[9];
+	uint32_t read_align_bytes, buf_size;
+
+	EntryCompactionData( bool compaction_enabled, uint16_t entry_size_bits, uint8_t begin_bits,
+											uint8_t log_num_buckets, int16_t sequence_start_bit)
+			: compaction_enabled( compaction_enabled)
+			, entry_size_bits(entry_size_bits), entry_size_bytes( (entry_size_bits+7)/8 )
+			, begin_bits(begin_bits), log_num_buckets(log_num_buckets)
+			, begin_bits_bucket( begin_bits + log_num_buckets )
+			, sequence_start_bit( this->seq_start(sequence_start_bit) )
+			, sequence_size_bits( this->seq_size() ), sequence_size_bytes( (sequence_size_bits+7)/8 )
+	{
+		EntryPart etmp[2];
+		// define what is first bucket or sequence
+		int idx = ( sequence_start_bit < 0 || sequence_start_bit > (int16_t)begin_bits ) ? 0 : 1;
+
+		etmp[idx].setBits( EntryPart::BUCKET, begin_bits, log_num_buckets );
+		idx = (idx+1)&1;
+
+		etmp[idx].setBits( EntryPart::SEQUENCE
+											, sequence_start_bit < 0 ? entry_size_bits : sequence_start_bit
+											, sequence_size_bits );
+
+		idx = 0;
+		std::function<void(uint16_t)> add_bits;
+		add_bits = [this, &idx, &add_bits](  uint16_t len_bits ) {
+			if( len_bits == 0 ) return ; // nothing to do
+			parts[idx].setBits( EntryPart::BITS, idx == 0 ? 0 : (parts[idx-1].start_bit + parts[idx-1].length_bits), len_bits );
+			if( (parts[idx].start_bit&7) == 0 && parts[idx].length_bits > 8 ){
+				parts[idx].length_bits = parts[idx].length_bytes*8; // fix bits length
+				copy_size_bytes += parts[idx].length_bytes;
+				parts[idx++].etype = EntryPart::BYTES;
+				add_bits( len_bits&7 );
+			} else if( parts[idx].length_bits > 23 ){
+				copy_size_bits += parts[idx].setBits( EntryPart::BITS, parts[idx].start_bit, 8 - (parts[idx].start_bit&7) )->length_bits;
+				idx++;
+				add_bits( len_bits - parts[idx-1].length_bits );
+			} else {
+				copy_size_bits += parts[idx].length_bits;
+				idx++;
+			}
+		};
+
+		add_bits( etmp[0].start_bit );
+		parts[idx++] = etmp[0];
+		add_bits( etmp[1].start_bit - etmp[0].start_bit - etmp[0].length_bits );
+		if( sequence_start_bit >= 0 ){
+			parts[idx++] = etmp[1];
+			add_bits( entry_size_bits - etmp[1].start_bit - etmp[1].length_bits );
+		}
+
+		assert( idx <= 9 );
+
+		num_parts = idx;
+
+
+		read_align_bytes = compaction_enabled ? ( sequence_start_bit<0?(copy_size_bytes*8+copy_size_bits):1/*BUF_SIZE*/) : entry_size_bytes;
+		buf_size = BUF_SIZE - (BUF_SIZE%read_align_bytes);
+	}
+
+private:
+	int16_t seq_start( int16_t seq ){
+		if( seq < 0 || (seq >= begin_bits && seq <= (begin_bits+log_num_buckets) ) ) return -1; // no sequence or sequence start inside bucket bits
+		int16_t max_size_bits = ( seq > begin_bits ? entry_size_bits : begin_bits ) - seq;
+		if( max_size_bits < 14 ) return -1; // too small sequence size
+		return seq;
+	}
+	int16_t seq_size(){
+		if( sequence_start_bit < 0 ) return 0;
+		int16_t max_size_bits = ( sequence_start_bit > begin_bits ? entry_size_bits : begin_bits ) - sequence_start_bit;
+		for( int16_t i = 30; i > 13; i -= 8 )
+			if( max_size_bits >= i ) return i;
+		return 0;
+	}
+};
+
+
+/**
+ * @brief The BlockCompactingWriter class
+ * Compaction by 8 entries.
+ * in case of no sequence just compacted entries first bytes copied than compacted bits.
+ *
+ * In case of sequence enabled each BUF_SIZE block has 3 bytes at the begining with number of entries in this block.
+ * Than small blocks of 8 entries each start from 2 bytes describing each entry (2 bits per entry) of variable size
+ * than compacted data than copied bytes than copied bits.
+ */
+struct BlockCompactingWriter : public IBlockWriter{
+	const EntryCompactionData &cdata;
+
+	BlockCompactingWriter( IBlockWriter *disk, const EntryCompactionData &cdata )
+			: cdata(cdata), disk(disk), buf( cdata.buf_size )
+	{}
+
+	inline void Write( StreamBuffer & block ) override {
+		assert( (block.used()%cdata.entry_size_bytes) == 0 );
+		for( uint32_t i = 0; i < block.used(); i += cdata.entry_size_bytes )
+			addEntry( block.get() + i );
+	}
+
+
+	void Close() override {
+		if(disk){
+			if( buf.used() > 0 ) FlushBlock(false);
+			disk->Close();
+			disk.reset();
+		}
+		buf.reset();
+	}
+
+	~BlockCompactingWriter(){Close();}
+private:
+	std::unique_ptr<IBlockWriter> disk;
+	StreamBuffer buf;
+	uint32_t last_sequence_value = 0, bits_byte_idx = 0;
+	uint8_t bits_byte_capacity = 0;
+	ParkBits partial_entries;
+
+	inline void FlushBlock( bool is_full = true ){
+		assert( buf.used() <= cdata.buf_size );
+		if( is_full && buf.used() != cdata.buf_size ){
+			memset( buf.getEnd(), 0, cdata.buf_size - buf.used() ); // clear the end
+			buf.setUsed( cdata.buf_size );
+		}
+
+		disk->Write( buf );
+		bits_byte_capacity = last_sequence_value = 0; // reset values for next round
+		buf.ensureSize( cdata.buf_size ); // this also cleans used
+	}
+
+	inline void addEntry( const uint8_t *entry ){
+		uint64_t len_bytes = 0, seq_val;
+		if( cdata.sequence_start_bit >= 0 ){
+			seq_val = Util::ExtractNum64( entry, cdata.sequence_start_bit, cdata.sequence_size_bits );
+			len_bytes = CompactValue( seq_val );
+		}
+
+		// check new value fits to buf
+		uint8_t entry_adding_bytes = len_bytes + cdata.copy_size_bytes + (cdata.copy_size_bits - bits_byte_capacity + 7)/8;
+		if( cdata.buf_size < (buf.used() + entry_adding_bytes) ){
+			FlushBlock();
+			addEntry( entry ); // seq values should be recalculated
+			return;
+		}
+
+		for( uint64_t i = 0; i < cdata.num_parts; i++ ){
+			switch( cdata.parts[i].etype ){
+			case EntryCompactionData::EntryPart::BYTES:
+				buf.add( entry + cdata.parts[i].start_byte, cdata.parts[i].length_bytes );
+				break;
+			case EntryCompactionData::EntryPart::BITS:{
+					uint8_t bits_len = cdata.parts[i].length_bits;
+					uint32_t new_bits = Util::ExtractNum64( entry, cdata.parts[i].start_bit, bits_len );
+
+					while( bits_len > 0 ){
+						if( bits_byte_capacity == 0 ){
+							bits_byte_capacity = 8;
+							bits_byte_idx = buf.used();
+							buf.add( (uint8_t)0 );
+						}
+						if( bits_len > bits_byte_capacity ){
+							bits_len -= bits_byte_capacity;
+							bits_byte_capacity = 0;
+							buf.get()[bits_byte_idx] |= new_bits >> bits_len;
+							new_bits &= ((uint32_t)-1)>>(32-bits_len); // clear bits inserted in
+						}else {
+							bits_byte_capacity -= bits_len;
+							buf.get()[bits_byte_idx] |= new_bits << bits_byte_capacity;
+							bits_len = 0;
+						}
+					}
+				}
+				break;
+			case EntryCompactionData::EntryPart::BUCKET: break; // skip
+			case EntryCompactionData::EntryPart::SEQUENCE:
+					for( uint64_t i = len_bytes * 8; i > 0; )
+						buf.add( (uint8_t)(seq_val>>(i-=8)) ); // copy from top most byte to bottom
+				break;
+			}
+		}
+	}
+
+	inline uint8_t CompactValue( uint64_t &val ){
+		uint64_t diff = val - last_sequence_value;
+
+		last_sequence_value = val;
+
+		if( diff < 64 ) {
+			val = diff;
+			return 1;
+		}
+
+		if( diff < (64*256) ){
+			val = diff | (1UL<<14);
+			return 2;
+		}
+
+		if( diff < (64*256*256) ){
+			val = diff | (2UL<<22);
+			return 3;
+		}
+
+		val |= 3UL<<cdata.sequence_size_bits;
+		return cdata.sequence_size_bytes;
+	}
+};
+
+struct BlockRestoringReader : public IBlockReader {
+	const EntryCompactionData &cdata;
+	const uint32_t bucket_no;
+
+	BlockRestoringReader( IBlockReader *disk, const EntryCompactionData &cdata, uint32_t bucket_no )
+			: cdata(cdata), bucket_no(bucket_no), disk(disk), read_buf( cdata.buf_size )
+	{	}
+
+	uint32_t Read( StreamBuffer & block ) override{
+		block.ensureSize( cdata.buf_size ); // this cleans used
+
+		// used less than processed could happend if buffer ends by 0s
+		if( read_buf.used() <= read_buf_processed ){
+			assert( read_buf_processed == read_buf.used() || read_buf.getEnd()[0] == 0 );
+			// all last block processed read new block
+			if( disk->Read( read_buf ) == 0 )
+				return 0; // end of input stream
+			// define real buffer end
+			while( read_buf.get()[read_buf.used()-1] == 0 )
+				read_buf.setUsed( read_buf.used() - 1 );
+			assert( read_buf.used() > 0 );
+			bit_byte_value = bits_byte_left = read_buf_processed = last_value = 0;
+		}
+		return GrowBuffer( read_buf, block );
+	}
+
+	inline bool atEnd() const override { return disk->atEnd(); }
+	void Close() override { if(disk){ disk->Close(); disk.reset(); }read_buf.reset(); }
+
+private:
+	std::unique_ptr<IBlockReader> disk;
+	StreamBuffer read_buf;
+	uint64_t last_value = 0;
+	uint32_t read_buf_processed = 0, bits_byte_left = 0;
+	uint8_t bit_byte_value = 0;
+
+	uint32_t GrowBuffer( StreamBuffer &from, StreamBuffer &to ){
+
+		while( to.used()+cdata.entry_size_bytes <= to.size() && read_buf_processed < from.used() ){
+			Bits bits;
+
+			for( uint64_t i = 0; i < cdata.num_parts; i++ ){
+				switch( cdata.parts[i].etype ){
+				case EntryCompactionData::EntryPart::BYTES:
+					if( bits.GetSize() > 0 ){ // flush filled bits
+						assert( (bits.GetSize()&7) == 0 );
+						bits.ToBytes( to.getEnd() );
+						to.addUsed( bits.GetSize()/8 );
+						bits.Clear();
+					}
+					to.add( from.get() + read_buf_processed, cdata.parts[i].length_bytes );
+					read_buf_processed += cdata.parts[i].length_bytes;
+					break;
+
+				case EntryCompactionData::EntryPart::BITS:{
+					uint32_t new_bits = 0;
+					for( uint8_t bits_len = cdata.parts[i].length_bits; bits_len > 0; ){
+						if( bits_byte_left < bits_len ){
+							new_bits <<= bits_byte_left; // set current bits on correct place
+							new_bits |= bit_byte_value;
+							bits_len -= bits_byte_left;
+							bit_byte_value = from.get()[read_buf_processed++];
+							bits_byte_left = 8;
+						} else {
+							new_bits <<= bits_len; // set current bits on correct place
+							bits_byte_left -= bits_len;
+							bits_len = 0;
+							new_bits |= bit_byte_value>>bits_byte_left;
+							bit_byte_value &= 255 >> (8-bits_byte_left);// clrea read bits
+						}
+					}
+					bits.AppendValue( new_bits, cdata.parts[i].length_bits );
+				}
+				break;
+				case EntryCompactionData::EntryPart::BUCKET:
+					bits.AppendValue( bucket_no, cdata.log_num_buckets );
+					break;
+				case EntryCompactionData::EntryPart::SEQUENCE:{
+						uint8_t b = from.get()[read_buf_processed]>>6;
+						if( b == 3 ){
+							last_value = Util::ExtractNum64( from.get() + read_buf_processed, 2, cdata.sequence_size_bits );
+							read_buf_processed += cdata.sequence_size_bytes;
+						} else {
+							b++;
+							last_value = last_value + Util::ExtractNum64( from.get() + read_buf_processed, 2, b*8 - 2 );
+							read_buf_processed += b;
+						}
+						bits.AppendValue( last_value, cdata.sequence_size_bits );
+					}
+					break;
+				}
+			}
+			if( bits.GetSize() > 0 ){ // flush filled bits
+				bits.ToBytes( to.getEnd() );
+				to.addUsed( (bits.GetSize()+7)/8 );
+			}
+		}
+
+		return to.used();
+	}
+};
 
 // ============== Sequenc Compacter ========================
 struct BlockSequenceCompacterWriter : public IBlockWriter{
@@ -922,16 +1249,13 @@ IBlockWriterReader * CreateFileStream( const fs::path &fileName, MemoryManager &
 // =======================================================
 // This stream not garantee same read order as write order
 struct BucketStream{
-	BucketStream( std::string fileName, MemoryManager &memory_manager, uint16_t bucket_no, uint8_t log_num_buckets,
-								uint16_t entry_size, uint16_t begin_bits, bool compact = true, int16_t sequence_start_bit = -1 )
-		: fileName(fileName)
-		, memory_manager( memory_manager )
-		, bucket_no_( bucket_no )
-		, log_num_buckets_( log_num_buckets )
-		, entry_size_(entry_size)
-		, begin_bits_(begin_bits)
-		, sequence_start_bit(sequence_start_bit)
-		, compact( compact&(log_num_buckets_>7) )
+	const EntryCompactionData &compaction_data;
+
+	BucketStream( std::string fileName, MemoryManager &memory_manager, uint16_t bucket_no, const EntryCompactionData &compaction_data )
+			: compaction_data(compaction_data)
+			, fileName(fileName)
+			, memory_manager( memory_manager )
+			, bucket_no_( bucket_no )
 	{	}
 
 	const std::string getFileName() const {return fileName;}
@@ -939,27 +1263,16 @@ struct BucketStream{
 
 	// The write is NOT thread save and should be synced from outside!!!!
 	inline void Write( StreamBuffer & buf ){
-		assert( (buf.size() % entry_size_) == 0 );
-		if( buf.size() == 0 ) return; // nothing to write
+		assert( (buf.used() % compaction_data.entry_size_bytes) == 0 );
+		if( buf.used() == 0 ) return; // nothing to write
 
-		// std::lock_guard<std::mutex> lk( sync_mutex );
 		if( !disk_output ){
-			uint32_t read_align_size = entry_size_;
-			if( compact )
-				read_align_size = sequence_start_bit >= 0 ? 1 : (entry_size_-1);
-
-			bucket_file.reset( CreateFileStream( fileName, memory_manager, read_align_size ) );
+			bucket_file.reset( CreateFileStream( fileName, memory_manager, compaction_data.read_align_bytes ) );
 			disk_output.reset( new BlockNotFreeingWriter( bucket_file.get() ) );
-			if( compact ){
-				if( sequence_start_bit >= 0 )
-					disk_output.reset( compacter = new BlockSequenceCompacterWriter( disk_output.release(), entry_size_ - 1
-																, sequence_start_bit - (sequence_start_bit > begin_bits_ ? 8 : 0 ) ) );
-				else
-					disk_output.reset( buf_writer = new BlockBufferedWriter( disk_output.release(), read_align_size ) );
-
-				disk_output.reset( new BlockByteCutter( disk_output.release(), entry_size_, begin_bits_ - log_num_buckets_ ) );
+			if( compaction_data.compaction_enabled ){
+				disk_output.reset( new BlockCompactingWriter( disk_output.release(), compaction_data ) );
 			} else
-				disk_output.reset( buf_writer = new BlockBufferedWriter( disk_output.release(), read_align_size ) );
+				disk_output.reset( buf_writer = new BlockBufferedWriter( disk_output.release(), compaction_data.read_align_bytes ) );
 		}
 
 		disk_output->Write( buf );
@@ -1000,27 +1313,12 @@ struct BucketStream{
 		else
 			fin = new BlockNotFreeingReader( fin );
 
-		//fin = new AsyncReader( fin );
-
-		if( compact ){
-			if( sequence_start_bit >= 0 ){
-				fin = (disk_output&&compacter) ? new BlockSequenceCompacterReader( fin, *compacter )
-						: new BlockSequenceCompacterReader( fin, entry_size_ - 1,
-											sequence_start_bit - (sequence_start_bit > begin_bits_ ? 8 : 0 ) );
-				compacter = nullptr;
-			} else if( buf_writer ){
-				fin = new BlockOneBuffer( fin, buf_writer->buffer );
-				buf_writer = nullptr;
-			}
-
-			fin = new BlockByteInserter( fin, entry_size_,
-										begin_bits_ - log_num_buckets_, bucket_no_ >> (log_num_buckets_-8) );
+		if( compaction_data.compaction_enabled ){
+			fin = new BlockRestoringReader( fin, compaction_data, bucket_no_ );
 		} else if( buf_writer ){
 			fin = new BlockOneBuffer( fin, buf_writer->buffer );
 			buf_writer = nullptr;
 		}
-
-		//fin = new AsyncReader( fin );
 
 		disk_output.reset();
 
@@ -1060,14 +1358,8 @@ private:
 	std::unique_ptr<IBlockWriter> disk_output;
 	std::unique_ptr<IBlockReader> disk_input;
 	const uint16_t bucket_no_;
-	const uint8_t log_num_buckets_;
 	std::unique_ptr<std::thread> disk_io_thread;
-	const uint16_t entry_size_;
-	const uint16_t begin_bits_;
-	const int16_t sequence_start_bit;
 	std::mutex sync_mutex;
-
-	const bool compact;
 
 	BlockSequenceCompacterWriter * compacter = nullptr;
 	BlockBufferedWriter * buf_writer = nullptr;

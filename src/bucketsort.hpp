@@ -124,17 +124,6 @@ namespace BucketSort {
 			}
 		}
 
-		inline uint32_t CheckSort( uint8_t *memory, uint32_t entry_len, uint32_t const bits_begin, uint32_t entries_number ){
-			for( uint32_t i = entry_len; i < entries_number*entry_len; i+=entry_len ){
-					if( Util::MemCmpBits( memory + i - entry_len, memory + i, entry_len, bits_begin) > 0)
-						return i/entry_len;
-
-					//if( Util::MemCmpBits( memory + i - entry_len, memory + i, entry_len, bits_begin) == 0 ) std::cout << "equals!!" << std::endl;
-				}
-
-			return 0;
-		}
-
 		inline void SortToMemory(
 				FileDisk &input_disk,
 				uint64_t const input_disk_begin,
@@ -256,9 +245,8 @@ namespace BucketSort {
 				for( uint64_t i = 0; i < max_threads; i++ )
 					threads.get()[i].join();
 
-				assert( CheckSort( memory, entry_len, bits_begin, num_entries ) == 0 );
+				assert( Util::CheckSort( memory, entry_len, bits_begin, num_entries ) == 0 );
 		}
-
 }
 
 #endif  // SRC_CPP_BUCKETSORT_HPP_

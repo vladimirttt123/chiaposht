@@ -369,6 +369,7 @@ public:
         return values_[0];
     }
 
+		/// Return value in bits
     uint32_t GetSize() const
     {
         if (values_.size() == 0)

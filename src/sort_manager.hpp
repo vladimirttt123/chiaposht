@@ -46,6 +46,7 @@ struct CacheBucket{
 
 	inline void Add( const uint8_t *entry, const uint32_t &stats ){
 		assert( (entries + count*parent.EntrySize() + parent.EntrySize()) <= ((uint8_t*)statistics) );
+		assert( Util::ExtractNum64( entry, parent.compaction_data.begin_bits + parent.compaction_data.log_num_buckets, parent.subbucket_bits ) == stats );
 
 		memcpy( entries + count*parent.EntrySize(), entry, parent.EntrySize() );
 		statistics[count++] = stats;
@@ -223,10 +224,16 @@ private:
 // ====================================================
 class SortManager : public Disk, IReadDiskStream {
 public:
+	const uint8_t k_, phase_, table_index_;
+	const uint32_t num_buckets, num_threads;
+	const EntryCompactionData compaction_data;
+	const uint8_t subbucket_bits;
+	const uint32_t stats_mask;
+
 	SortManager(
 			MemoryManager &memory_manager,
 			SortStatisticsStorage &full_statistics,
-			uint32_t  num_buckets,
+			uint32_t  num_buckets_,
 			const std::string &tmp_dirname,
 			const std::string &filename,
 			uint16_t const entry_size_bits,
@@ -237,53 +244,24 @@ public:
 			bool enable_compaction = true,
 			bool parallel_read = true )
 
-			: memory_manager(memory_manager)
-			, entry_size_((entry_size_bits+7)/8), begin_bits_(begin_bits)
-			, prev_bucket_buf_size(
-					2 * (stripe_size + 10 * (kBC / pow(2, kExtraBits))) * entry_size_)
+			: k_(k), phase_(phase), table_index_(table_index)
+			, num_buckets( evaluate_buckets( num_buckets_, (entry_size_bits+7)/8, memory_manager.getTotalSize() ) )
 			, num_threads( num_threads )
-			, k_(k), phase_(phase), table_index_(table_index)
+			, compaction_data( enable_compaction, entry_size_bits, begin_bits, log2(num_buckets), evaluate_sequence_start() )
+				// Total number of entries is around 2^k. Entries per bucket is around 2^(k-log_num_buckets_)
+				// We need such amount of subbuckets that per subbucket entries number will not overflow uint16_t
+			, subbucket_bits( ((int16_t)k) - compaction_data.log_num_buckets - full_statistics.kSubBucketBits )
+			, stats_mask( ( (uint64_t)1<<subbucket_bits)-1 )
+			, memory_manager(memory_manager)
+			, prev_bucket_buf_size( 2 * (stripe_size + 10 * (kBC / pow(2, kExtraBits))) * ((entry_size_bits+7)/8) )
 	{
-
-		uint64_t sorting_size = (1ULL<<k)*entry_size_;
-		double expected_buckets_no = num_buckets*( phase_==1 ?1.0:( phase_==3?0.64:0.8 ) );
-		const auto expected_bucket_size = sorting_size/(double)expected_buckets_no;
-		const auto memory_size = memory_manager.getTotalSize()/(isSingleSort()?1:2);
-		const double buckets_in_ram = num_threads > 1 ? 2.1 : 1.05;
-
-//		std::cout << "Estimation by k: " << (int)k << ", entry_size: " << entry_size
-//							<< ", size: " << sorting_size << ", buckets_no: " << expected_buckets_no
-//							<< ", bucket_size: " << (expected_bucket_size/1024/1024) << "MiB, memory size: " << memory_size
-//							<< ", num buckets in ram: " << buckets_in_ram << std::endl;
-
-		if( memory_size/expected_bucket_size < buckets_in_ram ){
-			uint32_t need_buckets = num_buckets;
-			for( auto size = expected_bucket_size; memory_size/size < buckets_in_ram; size /= 2 )
-				need_buckets *= 2;
-			std::cout << std::setprecision(2)
-								<< "Warning! Expected bucket size " << (expected_bucket_size/1024/1024) << "MiB for table "
-								<< (uint32_t)table_index_ << " with " << num_buckets
-								<< " buckets. Available buffer " << (memory_size>>20) << "MiB is too small for this size."
-								<< " Increase number of buckets to " << need_buckets << std::endl;
-			num_buckets = need_buckets;
-			Util::setOpenFilesLimit( num_buckets );
-		}
-
-		log_num_buckets_ = log2(num_buckets);
-		// Total number of entries is around 2^k. Entries per bucket is around 2^(k-log_num_buckets_)
-		// We need such amount of subbuckets that per subbucket entries number will not overflow uint16_t
-		subbucket_bits = ((int16_t)k) - log_num_buckets_ - full_statistics.kSubBucketBits;
 		if( subbucket_bits < 3 )
 			throw InvalidValueException( "too many buckets to set statistics" );
-		stats_mask = ( (uint64_t)1<<subbucket_bits)-1;
 		full_statistics.setNumBuckets( num_buckets );
-
-		assert( subbucket_bits > 0 );
 
 		// Cross platform way to concatenate paths, gulrak library.
 		std::vector<fs::path> bucket_filenames = std::vector<fs::path>();
 
-		this->num_buckets = num_buckets;
 		buckets_ = std::make_unique<std::unique_ptr<SortingBucket>[]>(num_buckets);
 
 		for (size_t bucket_i = 0; bucket_i < num_buckets; bucket_i++) {
@@ -293,30 +271,20 @@ public:
 				fs::path const bucket_filename =
 						fs::path(tmp_dirname) /
 						fs::path(filename + ".sort_bucket_" + bucket_number_padded.str() + ".tmp");
-				uint16_t sequence_start = -1;
-				if( k >= 32 ){ // for k < 32 sqeunce compaction not working. it need long enough entry size
-					switch (phase) {
-						case 1: sequence_start = table_index == 1 ? k : (k+kExtraBits); break;
-						case 2: sequence_start = 0; break;
-						case 4: sequence_start = k; break;
-					}
-				}
+
 				buckets_[bucket_i].reset( new SortingBucket( bucket_filename.string(), memory_manager, full_statistics.forBucket( bucket_i ),
-																							bucket_i, log_num_buckets_,
-																							entry_size_, begin_bits_ + log_num_buckets_, subbucket_bits,
-																							enable_compaction, sequence_start, parallel_read ) );
+																									 bucket_i, subbucket_bits, compaction_data, parallel_read ) );
 		}
 	}
+
 
 		// Class to support writing to sort cache by threads in safe way
 		struct ThreadWriter{
 			explicit ThreadWriter( SortManager &parent ) : parent_(parent)
-				, memory( Util::allocate<uint8_t>( (CacheBucket::memNeed( parent.entry_size_ )+7)/8*8 * parent.num_buckets ) )
+				, memory( Util::allocate<uint8_t>( (CacheBucket::memNeed( parent.compaction_data.entry_size_bytes )+7)/8*8 * parent.num_buckets ) )
 				, buckets_cache(new std::unique_ptr<CacheBucket>[parent.num_buckets])
-//						, begin_bytes( parent.begin_bits_/8 ), begin_bits( parent.begin_bits_&7 )
-//						, bits_shift( 32 - parent.log_num_buckets_ - parent.subbucket_bits )
 			{
-				uint64_t mem_per_bucket = (CacheBucket::memNeed( parent.entry_size_ )+7)/8*8;
+				uint64_t mem_per_bucket = (CacheBucket::memNeed( parent.compaction_data.entry_size_bytes )+7)/8*8;
 				for( uint32_t i = 0; i < parent.num_buckets; i++ )
 					buckets_cache[i].reset( new CacheBucket( *parent.buckets_[i].get(), memory.get() + i*mem_per_bucket ) );
 			}
@@ -324,7 +292,8 @@ public:
 			inline void Add( const uint8_t *entry ){
 //				uint64_t const bucket_index = Util::ExtractNum32( entry + begin_bytes, begin_bits ) >> bits_shift;
 				uint64_t const bucket_index =
-						Util::ExtractNum64(entry, parent_.begin_bits_, parent_.log_num_buckets_ + parent_.subbucket_bits );
+						Util::ExtractNum64(entry, parent_.compaction_data.begin_bits,
+															 parent_.compaction_data.log_num_buckets + parent_.subbucket_bits );
 
 				buckets_cache[bucket_index>>parent_.subbucket_bits]->Add( entry, bucket_index & parent_.stats_mask );
 			}
@@ -339,9 +308,6 @@ public:
 			SortManager &parent_;
 			std::unique_ptr<uint8_t, Util::Deleter<uint8_t>> memory;
 			std::unique_ptr<std::unique_ptr<CacheBucket>[]> buckets_cache;
-//			const uint8_t begin_bytes;
-//			const uint8_t begin_bits;
-//			const uint8_t bits_shift;
 		}; // ====== END OF ThreadWriter
 
 		// returned number of entries
@@ -352,7 +318,7 @@ public:
 			return res;
 		}
 
-		inline uint16_t EntrySize() const { return entry_size_; }
+		inline uint16_t EntrySize() const { return compaction_data.entry_size_bytes; }
 
 		inline uint32_t CurrentBucketNo() const { return sorted_current->BucketNo(); }
 		inline uint64_t CurrentBucketStart() const { return sorted_current->StartPosition(); }
@@ -365,14 +331,14 @@ public:
 		inline void AddToCache( StreamBuffer &entry )
     {
 			uint64_t const bucket_index =
-						Util::ExtractNum64( entry.get(), begin_bits_, log_num_buckets_ + subbucket_bits );
+						Util::ExtractNum64( entry.get(), compaction_data.begin_bits, compaction_data.log_num_buckets + subbucket_bits );
 			buckets_[bucket_index>>subbucket_bits]->AddEntry( entry, bucket_index & stats_mask );
 		}
 
 		// region Disk inheritance implementaion {
 		uint8_t const* Read(uint64_t begin, uint64_t length) override
     {
-        assert(length <= entry_size_);
+				assert(length <= compaction_data.entry_size_bytes);
         return ReadEntry(begin);
     }
 
@@ -444,8 +410,9 @@ public:
 
 		// This used for debug purposes to check if buffer sorted correctly
 		bool checkSort( uint8_t const *buf, uint64_t buf_size ) const {
-			for( uint64_t i = entry_size_; i < buf_size; i += entry_size_ )
-				if( Util::MemCmpBits( buf + i - entry_size_, buf + i, entry_size_, begin_bits_ ) > 0 ){
+			for( uint64_t i = compaction_data.entry_size_bytes; i < buf_size; i += compaction_data.entry_size_bytes )
+				if( Util::MemCmpBits( buf + i - compaction_data.entry_size_bytes,
+														 buf + i, compaction_data.entry_size_bytes, compaction_data.begin_bits ) > 0 ){
 					return false;
 				}
 			return true;
@@ -585,14 +552,7 @@ public:
 private:
 	// Size of the whole memory array
 	MemoryManager &memory_manager;
-	// Size of each entry
-	const uint16_t entry_size_;
-	// Bucket determined by the first "log_num_buckets" bits starting at "begin_bits"
-	const uint32_t begin_bits_;
-	// Log of the number of buckets; num bits to use to determine bucket
-	uint16_t log_num_buckets_;
 
-	uint32_t num_buckets;
 	std::unique_ptr<std::unique_ptr<SortingBucket>[]> buckets_;
 	bool hasMoreBuckets = true;
 
@@ -603,11 +563,7 @@ private:
 	std::unique_ptr<SortedBucketBuffer> sorted_current, sorted_next;
 	std::mutex bucket_read_mutex;
 
-	uint32_t num_threads;
-	uint8_t subbucket_bits;
 
-	const uint8_t k_, phase_, table_index_;
-	uint32_t stats_mask;
 	//uint64_t time_total_wait = 0;
 	std::chrono::time_point<std::chrono::high_resolution_clock> start_sorting_time;
 
@@ -615,6 +571,43 @@ private:
 
 	const inline uint8_t* memory_start() const {return sorted_current->buffer();}
 
+	int16_t evaluate_sequence_start() const {
+			switch( phase_ ) {
+			case 1: return table_index_ == 1 ? k_ : (k_+kExtraBits);
+			case 2: return 0;
+			case 4: return k_;
+			}
+			return -1;
+	}
+
+	uint32_t evaluate_buckets( uint32_t min_buckets, uint16_t entry_size_bytes, uint64_t max_ram ) const {
+			uint64_t sorting_size = (1ULL<<k_)*entry_size_bytes;
+			double expected_buckets_no = min_buckets*( phase_==1 ?1.0:( phase_==3?0.64:0.8 ) );
+			const auto expected_bucket_size = sorting_size/(double)expected_buckets_no;
+			const auto memory_size = max_ram/(isSingleSort()?1:2);
+			const double buckets_in_ram = num_threads > 1 ? 2.1 : 1.05;
+
+			//		std::cout << "Estimation by k: " << (int)k << ", entry_size: " << entry_size
+			//							<< ", size: " << sorting_size << ", buckets_no: " << expected_buckets_no
+			//							<< ", bucket_size: " << (expected_bucket_size/1024/1024) << "MiB, memory size: " << memory_size
+			//							<< ", num buckets in ram: " << buckets_in_ram << std::endl;
+
+			if( memory_size/expected_bucket_size < buckets_in_ram ){
+				uint32_t need_buckets = min_buckets;
+				for( auto size = expected_bucket_size; memory_size/size < buckets_in_ram; size /= 2 )
+					need_buckets *= 2;
+
+				std::cout << std::setprecision(2)
+									<< "Warning! Expected bucket size " << (expected_bucket_size/1024/1024) << "MiB for table "
+									<< (uint32_t)table_index_ << " with " << min_buckets
+									<< " buckets. Available buffer " << (memory_size>>20) << "MiB is too small for this size."
+									<< " Increase number of buckets to " << need_buckets << std::endl;
+				Util::setOpenFilesLimit( need_buckets );
+				return need_buckets;
+			}
+
+			return min_buckets;
+	}
 
 	bool StartSorting(){
 		if( sorted_current ) return false;
@@ -656,7 +649,6 @@ private:
 
 	// checks if this sort is single in total process
 	inline bool isSingleSort() const { return phase_ == 1 || ( phase_ == 2 && table_index_ == 2 ) || phase_ == 3 || (phase_ == 4 && table_index_ >= 6 ); }
-
 
 
 	void ShowStatistics( const SortedBucketBuffer *stats_of ) const {
