@@ -580,8 +580,8 @@ struct BlockRestoringReader : public IBlockReader {
 		block.ensureSize( cdata.buf_size ); // this cleans used
 
 		// used less than processed could happend if buffer ends by 0s
-		if( read_buf.used() <= read_buf_processed ){
-			assert( read_buf_processed == read_buf.used() || read_buf.getEnd()[0] == 0 );
+		if( read_buf_pos == nullptr || read_buf.getEnd() <= read_buf_pos ){
+			assert( read_buf_pos == nullptr || read_buf_pos == read_buf.getEnd() || read_buf.getEnd()[0] == 0 );
 			// all last block processed read new block
 			if( disk->Read( read_buf ) == 0 )
 				return 0; // end of input stream
@@ -589,7 +589,8 @@ struct BlockRestoringReader : public IBlockReader {
 			while( read_buf.get()[read_buf.used()-1] == 0 )
 				read_buf.setUsed( read_buf.used() - 1 );
 			assert( read_buf.used() > 0 );
-			bit_byte_value = bits_byte_left = read_buf_processed = last_value = 0;
+			bit_byte_value = bits_byte_left = last_value = 0;
+			read_buf_pos = read_buf.get();
 		}
 		return GrowBuffer( read_buf, block );
 	}
@@ -601,12 +602,13 @@ private:
 	std::unique_ptr<IBlockReader> disk;
 	StreamBuffer read_buf;
 	uint64_t last_value = 0;
-	uint32_t read_buf_processed = 0, bits_byte_left = 0;
+	uint32_t bits_byte_left = 0;
 	uint8_t bit_byte_value = 0;
+	uint8_t * read_buf_pos = nullptr;
 
 	uint32_t GrowBuffer( StreamBuffer &from, StreamBuffer &to ){
 
-		while( to.used()+cdata.entry_size_bytes <= to.size() && read_buf_processed < from.used() ){
+		while( to.used()+cdata.entry_size_bytes <= to.size() && read_buf_pos < from.getEnd() ){
 			Bits bits;
 
 			for( uint64_t i = 0; i < cdata.num_parts; i++ ){
@@ -618,8 +620,8 @@ private:
 						to.addUsed( bits.GetSize()/8 );
 						bits.Clear();
 					}
-					to.add( from.get() + read_buf_processed, cdata.parts[i].length_bytes );
-					read_buf_processed += cdata.parts[i].length_bytes;
+					to.add( read_buf_pos, cdata.parts[i].length_bytes );
+					read_buf_pos += cdata.parts[i].length_bytes;
 					break;
 
 				case EntryCompactionData::EntryPart::BITS:{
@@ -629,7 +631,8 @@ private:
 							new_bits <<= bits_byte_left; // set current bits on correct place
 							new_bits |= bit_byte_value;
 							bits_len -= bits_byte_left;
-							bit_byte_value = from.get()[read_buf_processed++];
+							bit_byte_value = *read_buf_pos;
+							read_buf_pos++;
 							bits_byte_left = 8;
 						} else {
 							new_bits <<= bits_len; // set current bits on correct place
@@ -646,13 +649,13 @@ private:
 					bits.AppendValue( bucket_no, cdata.log_num_buckets );
 					break;
 				case EntryCompactionData::EntryPart::SEQUENCE:{
-					uint64_t seq_val = *((uint64_t*)(from.get()+read_buf_processed));
+					uint64_t seq_val = *((uint64_t*)read_buf_pos);
 					uint8_t b = seq_val&3;
 					if( b == 3 ){
 						last_value = (seq_val>>2)&cdata.sequence_mask;
-						read_buf_processed += cdata.sequence_size_bytes;
+						read_buf_pos += cdata.sequence_size_bytes;
 					} else {
-						read_buf_processed += ++b;
+						read_buf_pos += ++b;
 						last_value += (seq_val>>2)&((1UL<<(b*8-2))-1);
 					}
 					bits.AppendValue( last_value, cdata.sequence_size_bits );
