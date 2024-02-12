@@ -365,6 +365,7 @@ struct EntryCompactionData{
 	const uint16_t entry_size_bits, entry_size_bytes;
 	const uint8_t begin_bits, log_num_buckets, begin_bits_bucket;
 	const int16_t sequence_start_bit, sequence_size_bits, sequence_size_bytes;
+	const uint64_t sequence_mask;
 	uint16_t copy_size_bits = 0, copy_size_bytes = 0;
 	uint8_t num_parts = 0;
 	EntryPart parts[9];
@@ -378,6 +379,7 @@ struct EntryCompactionData{
 			, begin_bits_bucket( begin_bits + log_num_buckets )
 			, sequence_start_bit( this->seq_start(sequence_start_bit) )
 			, sequence_size_bits( this->seq_size() ), sequence_size_bytes( (sequence_size_bits+7)/8 )
+			, sequence_mask( (1UL<<sequence_size_bits)-1 )
 	{
 		EntryPart etmp[2];
 		// define what is first bucket or sequence
@@ -446,12 +448,6 @@ private:
 
 /**
  * @brief The BlockCompactingWriter class
- * Compaction by 8 entries.
- * in case of no sequence just compacted entries first bytes copied than compacted bits.
- *
- * In case of sequence enabled each BUF_SIZE block has 3 bytes at the begining with number of entries in this block.
- * Than small blocks of 8 entries each start from 2 bytes describing each entry (2 bits per entry) of variable size
- * than compacted data than copied bytes than copied bits.
  */
 struct BlockCompactingWriter : public IBlockWriter{
 	const EntryCompactionData &cdata;
@@ -480,9 +476,8 @@ struct BlockCompactingWriter : public IBlockWriter{
 private:
 	std::unique_ptr<IBlockWriter> disk;
 	StreamBuffer buf;
-	uint32_t last_sequence_value = 0, bits_byte_idx = 0;
-	uint8_t bits_byte_capacity = 0;
-	ParkBits partial_entries;
+	uint64_t last_sequence_value = 0, bits_byte_idx = 0;
+	uint64_t bits_byte_capacity = 0;
 
 	inline void FlushBlock( bool is_full = true ){
 		assert( buf.used() <= cdata.buf_size );
@@ -541,34 +536,34 @@ private:
 				break;
 			case EntryCompactionData::EntryPart::BUCKET: break; // skip
 			case EntryCompactionData::EntryPart::SEQUENCE:
-					for( uint64_t i = len_bytes * 8; i > 0; )
-						buf.add( (uint8_t)(seq_val>>(i-=8)) ); // copy from top most byte to bottom
+					*((uint64_t*)buf.getEnd()) = seq_val; // !!!WARNING LITTLEENDIANS only !!!
+					buf.addUsed( len_bytes );
 				break;
 			}
 		}
 	}
 
 	inline uint8_t CompactValue( uint64_t &val ){
-		uint64_t diff = val - last_sequence_value;
+		uint64_t diff = (val - last_sequence_value)<<2;
 
 		last_sequence_value = val;
 
-		if( diff < 64 ) {
+		if( diff < 0x100 ) {
 			val = diff;
 			return 1;
 		}
 
-		if( diff < (64*256) ){
-			val = diff | (1UL<<14);
+		if( diff < 0x10000 ){
+			val = diff | 1;
 			return 2;
 		}
 
-		if( diff < (64*256*256) ){
-			val = diff | (2UL<<22);
+		if( diff < 0x1000000 ){
+			val = diff | 2;
 			return 3;
 		}
 
-		val |= 3UL<<cdata.sequence_size_bits;
+		val = (val<<2) | 3;
 		return cdata.sequence_size_bytes;
 	}
 };
@@ -651,16 +646,16 @@ private:
 					bits.AppendValue( bucket_no, cdata.log_num_buckets );
 					break;
 				case EntryCompactionData::EntryPart::SEQUENCE:{
-						uint8_t b = from.get()[read_buf_processed]>>6;
-						if( b == 3 ){
-							last_value = Util::ExtractNum64( from.get() + read_buf_processed, 2, cdata.sequence_size_bits );
-							read_buf_processed += cdata.sequence_size_bytes;
-						} else {
-							b++;
-							last_value = last_value + Util::ExtractNum64( from.get() + read_buf_processed, 2, b*8 - 2 );
-							read_buf_processed += b;
-						}
-						bits.AppendValue( last_value, cdata.sequence_size_bits );
+					uint64_t seq_val = *((uint64_t*)(from.get()+read_buf_processed));
+					uint8_t b = seq_val&3;
+					if( b == 3 ){
+						last_value = (seq_val>>2)&cdata.sequence_mask;
+						read_buf_processed += cdata.sequence_size_bytes;
+					} else {
+						read_buf_processed += ++b;
+						last_value += (seq_val>>2)&((1UL<<(b*8-2))-1);
+					}
+					bits.AppendValue( last_value, cdata.sequence_size_bits );
 					}
 					break;
 				}
@@ -1038,9 +1033,9 @@ struct BlockNotFreeingWriter: IBlockWriter{
 struct BlockNotFreeingReader : IBlockReader {
 	BlockNotFreeingReader( IBlockReader * reader ) : rstream(reader) {}
 
-	uint32_t Read( StreamBuffer & block ) override { return rstream->Read(block);};
-	virtual bool atEnd() const override {return rstream->atEnd(); };
-	virtual void Close() override {};
+	inline uint32_t Read( StreamBuffer & block ) override { return rstream->Read(block);};
+	inline virtual bool atEnd() const override {return rstream->atEnd(); };
+	inline virtual void Close() override {};
 private:
 	IBlockReader * rstream;
 };
@@ -1113,7 +1108,7 @@ struct BlockThreadSafeReader : IBlockReader{
 	BlockThreadSafeReader( IBlockReader *read_stream, std::mutex & sync_mutex, uint64_t *total_reads, uint64_t *instant_reads )
 		: rstream(read_stream), sync_mutex(sync_mutex), total_reads(total_reads), instant_reads(instant_reads) {}
 
-	uint32_t Read( StreamBuffer & block ) override {
+	inline uint32_t Read( StreamBuffer & block ) override {
 		if( sync_mutex.try_lock() ){
 			(*instant_reads)++;
 			(*total_reads)++;
@@ -1125,7 +1120,7 @@ struct BlockThreadSafeReader : IBlockReader{
 		(*total_reads)++;
 		return rstream->Read( block );
 	}
-	bool atEnd() const override { return rstream->atEnd();};
+	inline bool atEnd() const override { return rstream->atEnd();};
 	void Close() override{};
 
 private:
@@ -1138,7 +1133,7 @@ struct BlockOneBuffer : IBlockReader {
 	BlockOneBuffer( IBlockReader *disk, StreamBuffer &buf )
 		: disk(disk), one_buf(buf.size()) { one_buf.swap(buf); };
 
-	uint32_t Read( StreamBuffer & block ) override {
+	inline uint32_t Read( StreamBuffer & block ) override {
 		if( one_buf.used() > 0 ){
 			block.swap( one_buf );
 			one_buf.reset();
@@ -1146,7 +1141,7 @@ struct BlockOneBuffer : IBlockReader {
 		}
 		return disk->Read( block );
 	}
-	bool atEnd() const override { return disk->atEnd();};
+	inline bool atEnd() const override { return disk->atEnd();};
 	void Close() override{};
 
 private:
@@ -1326,7 +1321,7 @@ struct BucketStream{
 	}
 
 	// This is NOT thread safe, and used in one thread reading only
-	uint32_t Read( StreamBuffer &buf ){
+	inline uint32_t Read( StreamBuffer &buf ){
 		if( !disk_input ) disk_input.reset( CreateReader( false ) );
 		return disk_input->Read( buf );
 	}

@@ -287,9 +287,9 @@ TEST_CASE( "DISK_STREAMS" ){
 					// craete entry
 					Bits new_entry;
 					while( new_entry.GetSize() < entry_size_bits ){
-						if( new_entry.GetSize() == bits_begin ){
+						if( new_entry.GetSize() == (uint16_t)bits_begin ){
 							new_entry.AppendValue( cur_bucket_no, cdata.log_num_buckets );
-						} else if( new_entry.GetSize() == sequence_start_bit ){
+						} else if( new_entry.GetSize() == (uint16_t)sequence_start_bit ){
 							new_entry.AppendValue( seq_value &((1 << sequence_size_bits)-1), sequence_size_bits );
 							seq_value += -128 + num_buckets + rand()&0xfff;
 						} else
