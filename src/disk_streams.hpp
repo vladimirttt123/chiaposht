@@ -606,20 +606,47 @@ private:
 	uint8_t bit_byte_value = 0;
 	uint8_t * read_buf_pos = nullptr;
 
+	struct BitsCompouner{
+		int8_t left_bits = 8;
+
+		inline uint32_t finish() {
+			uint32_t ret = left_bits != 8 ? 1 : 0;
+			left_bits = 8;
+			return ret;
+		}
+
+		inline uint32_t AppendValue( uint8_t* buf, uint64_t val, int8_t num_bits ){
+			uint32_t moved = 0;
+			while( num_bits > 0 ){
+				if( left_bits == 8 ){
+					if( num_bits < 8 )
+						buf[moved] = val << ( left_bits = 8-num_bits );
+					else
+						buf[moved++] = val >> ( num_bits - 8 );
+					num_bits -= 8;
+				} else {
+					if( num_bits < left_bits ){
+						buf[moved] |= (val& ( (((uint8_t)1) << num_bits ) - 1)) << (left_bits-=num_bits);
+						return moved;
+					}
+
+					buf[moved++] |= (val>>(num_bits-left_bits))&(255>>(8-left_bits));
+					num_bits -= left_bits;
+					left_bits = 8;
+				}
+			}
+			return moved;
+		}
+	};
+
 	uint32_t GrowBuffer( StreamBuffer &from, StreamBuffer &to ){
+		BitsCompouner bits;
 
 		while( to.used()+cdata.entry_size_bytes <= to.size() && read_buf_pos < from.getEnd() ){
-			Bits bits;
 
 			for( uint64_t i = 0; i < cdata.num_parts; i++ ){
 				switch( cdata.parts[i].etype ){
 				case EntryCompactionData::EntryPart::BYTES:
-					if( bits.GetSize() > 0 ){ // flush filled bits
-						assert( (bits.GetSize()&7) == 0 );
-						bits.ToBytes( to.getEnd() );
-						to.addUsed( bits.GetSize()/8 );
-						bits.Clear();
-					}
 					to.add( read_buf_pos, cdata.parts[i].length_bytes );
 					read_buf_pos += cdata.parts[i].length_bytes;
 					break;
@@ -642,11 +669,11 @@ private:
 							bit_byte_value &= 255 >> (8-bits_byte_left);// clrea read bits
 						}
 					}
-					bits.AppendValue( new_bits, cdata.parts[i].length_bits );
+					to.addUsed( bits.AppendValue( to.getEnd(), new_bits, cdata.parts[i].length_bits ) );
 				}
 				break;
 				case EntryCompactionData::EntryPart::BUCKET:
-					bits.AppendValue( bucket_no, cdata.log_num_buckets );
+					to.addUsed( bits.AppendValue( to.getEnd(), bucket_no, cdata.log_num_buckets ) );
 					break;
 				case EntryCompactionData::EntryPart::SEQUENCE:{
 					uint64_t seq_val = *((uint64_t*)read_buf_pos);
@@ -658,15 +685,15 @@ private:
 						read_buf_pos += ++b;
 						last_value += (seq_val>>2)&((1UL<<(b*8-2))-1);
 					}
-					bits.AppendValue( last_value, cdata.sequence_size_bits );
+					to.addUsed( bits.AppendValue( to.getEnd(), last_value, cdata.sequence_size_bits ) );
 					}
 					break;
 				}
 			}
-			if( bits.GetSize() > 0 ){ // flush filled bits
-				bits.ToBytes( to.getEnd() );
-				to.addUsed( (bits.GetSize()+7)/8 );
-			}
+			to.addUsed( bits.finish() );
+
+			assert( Util::ExtractNum64( to.getEnd() - cdata.entry_size_bytes, cdata.begin_bits, cdata.log_num_buckets ) == bucket_no );
+
 		}
 
 		return to.used();
