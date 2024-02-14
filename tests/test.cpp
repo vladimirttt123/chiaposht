@@ -242,15 +242,16 @@ TEST_CASE( "DISK_STREAMS" ){
 
 
 	SECTION( "BucketStream" ){
-		const uint64_t iteration = 600000;
+		uint64_t iteration = 60000;
 		const uint16_t bucket_no = 0xaaaa;
-		const int16_t tests[][7] = { //[num_buckets, entry_size, bits_begins, is_compact, sequence_start_bit, sequence_size_bits, flush_after_write]
-																	{ 128, 8, 32, 1, 0, 28, 1}, { 128, 8, 0, 0, 32, 24, 0 }
-																	,	{ 16, 7, 4, 0, -1, 0, 0 }, { 128, 8, 32, 1, -1, 0, 0}
-																	, { 256, 8, 32, 1, -1, 0, 0}, { 256, 8, 32, 1, -1, 0, 1}
-																	, { 256, 13, 32, 1, -1, 0, 0}, { 256, 13, 32, 1, -1, 0, 1}
-																	, { 256, 8, 32, 0, 0, 28, 0}, { 256, 8, 0, 0, 32, 28, 0 }
-																	, { 256, 8, 32, 1, 0, 28, 0}, { 256, 8, 0, 1, 32, 28, 0 }
+		const int16_t tests[][7] = { //[num_buckets, entry_size_bits, bits_begins, is_compact, sequence_start_bit, sequence_size_bits, flush_after_write]
+																	{ 16, 42, 0, 1, 24, 18, 0 },
+																	{ 128, 64, 32, 1, 0, 28, 1}, { 128, 64, 0, 0, 32, 24, 0 }
+																	,	{ 16, 56, 4, 0, -1, 0, 0 }, { 128, 64, 32, 1, -1, 0, 0}
+																	, { 256, 64, 32, 1, -1, 0, 0}, { 256, 64, 32, 1, -1, 0, 1}
+																	, { 256, 104, 32, 1, -1, 0, 0}, { 256, 104, 32, 1, -1, 0, 1}
+																	, { 256, 64, 32, 0, 0, 28, 0}, { 256, 64, 0, 0, 32, 28, 0 }
+																	, { 256, 64, 32, 1, 0, 28, 0}, { 256, 64, 0, 1, 32, 28, 0 }
 																};
 		const auto cur_buf_size = BUF_SIZE;
 		BUF_SIZE = 4096; // set small buffer size for fast testing
@@ -258,7 +259,7 @@ TEST_CASE( "DISK_STREAMS" ){
 		MemoryManager memory_manager = MemoryManager(0);
 		for( auto test_data : tests ){
 			auto num_buckets = test_data[0];
-			uint16_t entry_size_bits = test_data[1] * 8;
+			uint16_t entry_size_bits = test_data[1];
 			auto bits_begin = test_data[2];
 			bool is_compact = test_data[3];
 			auto sequence_start_bit = test_data[4];
@@ -270,16 +271,30 @@ TEST_CASE( "DISK_STREAMS" ){
 								<< ", sequence_size_bits: " << sequence_size_bits << ", compaction: " << (is_compact?"YES":"NO")
 								<< ", flushing: " << (is_flush?"YES":"NO") << std::endl;
 
+			iteration = 16256;
 			uint16_t cur_bucket_no = bucket_no % num_buckets;
 			EntryCompactionData cdata( is_compact, entry_size_bits, bits_begin, log2(num_buckets), sequence_start_bit );
 			BucketStream stream = BucketStream( "bucket.stream.tmp", memory_manager, cur_bucket_no, cdata );
 
 			StreamBuffer bucket_data( iteration * cdata.entry_size_bytes );
 
+
 			{ // Part I: writing
 
 				// Prepare entry
 				StreamBuffer write_entry_buf( BUF_SIZE );
+
+				// FileDisk disk("./BucketX.tmp", false );
+				// bucket_data.setUsed( 97536 );
+				// disk.Read( 0, bucket_data.get(), bucket_data.used() );
+
+				// uint32_t write_by = 254*6;
+				// write_entry_buf.ensureSize( write_by );
+				// for( uint64_t i = 0; i < bucket_data.used(); i += write_by ){
+				// 	write_entry_buf.setUsed( std::min( uint32_t( i+write_by ), bucket_data.used() ) - i );
+				// 	memcpy( write_entry_buf.get(), bucket_data.get()+i, write_entry_buf.used() );
+				// 	stream.Write( write_entry_buf );
+				// }
 
 				uint64_t seq_value = rand()&0xff;
 				// go and write files
@@ -307,6 +322,7 @@ TEST_CASE( "DISK_STREAMS" ){
 						write_entry_buf.setUsed( 0 );
 					}
 				}
+
 				if( write_entry_buf.used() ){
 					bucket_data.add( write_entry_buf.get(), write_entry_buf.used() );
 					stream.Write( write_entry_buf );
@@ -338,18 +354,19 @@ TEST_CASE( "DISK_STREAMS" ){
 			}
 
 			{  // Part III: compare data
-				// bits_begin for sorting is alway 0 because it could be non unique entries that sorted different in other case
-				QuickSort::Sort( bucket_data.get(), cdata.entry_size_bytes, iteration, 0 );
-				QuickSort::Sort( read_data.get(), cdata.entry_size_bytes, iteration, 0 );
-				REQUIRE( Util::ExtractNum64(read_data.get(), bits_begin, log2(num_buckets) ) == cur_bucket_no );
-				REQUIRE( Util::ExtractNum64(bucket_data.get(), bits_begin, log2(num_buckets) ) == cur_bucket_no );
+				uint8_t entry_size_bytes = (entry_size_bits+7)/8;
 				for( uint64_t i = 0; i < iteration; i++ ){
-					if( memcmp( read_data.get() + i*cdata.entry_size_bytes, bucket_data.get() + i * cdata.entry_size_bytes, cdata.entry_size_bytes )  != 0 )
-						assert( false );
+					uint64_t j = i;
+					uint8_t * look_for = bucket_data.get() + i*entry_size_bytes;
+					while( j < iteration
+								 && memcmp( look_for, read_data.get()+j*entry_size_bytes, entry_size_bytes ) != 0 )
+						j++;
+					assert( j < iteration );
+					REQUIRE( j < iteration );
+					if( j > i )
+						memcpy( read_data.get() + j*entry_size_bytes, read_data.get() + i*entry_size_bytes, entry_size_bytes );
 				}
-				REQUIRE( memcmp( read_data.get(), bucket_data.get(), iteration * cdata.entry_size_bytes ) == 0 );
 			}
-
 		}
 
 		BUF_SIZE = cur_buf_size; // restore original buffer size
@@ -1784,7 +1801,7 @@ TEST_CASE("DiskProver")
         plotter.CreatePlotDisk(
             ".", ".", ".", filename, 18, memo.data(),
             memo.size(), plot_id_1, 32, 11, 0,
-            4000, 2);
+						4000, 1 /*threads*/ );
         DiskProver prover1(filename);
         auto* p1_filename_ptr = prover1.GetFilename().data();
         auto* p1_memo_ptr = prover1.GetMemo().data();

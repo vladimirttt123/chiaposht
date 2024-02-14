@@ -476,18 +476,21 @@ struct BlockCompactingWriter : public IBlockWriter{
 private:
 	std::unique_ptr<IBlockWriter> disk;
 	StreamBuffer buf;
-	uint64_t last_sequence_value = 0, bits_byte_idx = 0;
-	uint64_t bits_byte_capacity = 0;
+	uint64_t last_sequence_value = 0;
+	uint32_t *bits_data = nullptr;
+	uint32_t bits_data_capacity = 0;
 
 	inline void FlushBlock( bool is_full = true ){
-		assert( buf.used() <= cdata.buf_size );
-		if( is_full && buf.used() != cdata.buf_size ){
-			memset( buf.getEnd(), 0, cdata.buf_size - buf.used() ); // clear the end
+		assert( buf.used() < cdata.buf_size );
+		if( is_full ){
+			buf.get()[cdata.buf_size-1] = cdata.buf_size - buf.used();
+			memset( buf.getEnd(), 0, cdata.buf_size - buf.used() - 1 ); // clear the end
 			buf.setUsed( cdata.buf_size );
 		}
 
 		disk->Write( buf );
-		bits_byte_capacity = last_sequence_value = 0; // reset values for next round
+		bits_data = nullptr;
+		bits_data_capacity = last_sequence_value = 0; // reset values for next round
 		buf.ensureSize( cdata.buf_size ); // this also cleans used
 	}
 
@@ -499,8 +502,9 @@ private:
 		}
 
 		// check new value fits to buf
-		uint8_t entry_adding_bytes = len_bytes + cdata.copy_size_bytes + (cdata.copy_size_bits - bits_byte_capacity + 7)/8;
-		if( cdata.buf_size < (buf.used() + entry_adding_bytes) ){
+		uint8_t entry_adding_bytes = len_bytes + cdata.copy_size_bytes + (cdata.copy_size_bits > bits_data_capacity ?
+																																					((cdata.copy_size_bits - bits_data_capacity+31)/32*4 ): 0);
+		if( cdata.buf_size <= (buf.used() + entry_adding_bytes) ){
 			FlushBlock();
 			addEntry( entry ); // seq values should be recalculated
 			return;
@@ -516,19 +520,20 @@ private:
 					uint32_t new_bits = Util::ExtractNum64( entry, cdata.parts[i].start_bit, bits_len );
 
 					while( bits_len > 0 ){
-						if( bits_byte_capacity == 0 ){
-							bits_byte_capacity = 8;
-							bits_byte_idx = buf.used();
-							buf.add( (uint8_t)0 );
+						if( bits_data_capacity == 0 ){
+							bits_data_capacity = 32;
+							bits_data = (uint32_t*)buf.getEnd();
+							*bits_data = 0;
+							buf.addUsed( 4 );
 						}
-						if( bits_len > bits_byte_capacity ){
-							bits_len -= bits_byte_capacity;
-							bits_byte_capacity = 0;
-							buf.get()[bits_byte_idx] |= new_bits >> bits_len;
+						if( bits_len > bits_data_capacity ){
+							bits_len -= bits_data_capacity;
+							bits_data_capacity = 0;
+							*bits_data |= new_bits >> bits_len;
 							new_bits &= ((uint32_t)-1)>>(32-bits_len); // clear bits inserted in
 						}else {
-							bits_byte_capacity -= bits_len;
-							buf.get()[bits_byte_idx] |= new_bits << bits_byte_capacity;
+							bits_data_capacity -= bits_len;
+							*bits_data |= new_bits << bits_data_capacity;
 							bits_len = 0;
 						}
 					}
@@ -536,7 +541,11 @@ private:
 				break;
 			case EntryCompactionData::EntryPart::BUCKET: break; // skip
 			case EntryCompactionData::EntryPart::SEQUENCE:
-					*((uint64_t*)buf.getEnd()) = seq_val; // !!!WARNING LITTLEENDIANS only !!!
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+					*((uint64_t*)buf.getEnd()) = seq_val;
+#else
+					*((uint64_t*)buf.getEnd()) = bswap_64( seq_val );
+#endif
 					buf.addUsed( len_bytes );
 				break;
 			}
@@ -544,22 +553,22 @@ private:
 	}
 
 	inline uint8_t CompactValue( uint64_t &val ){
-		uint64_t diff = (val - last_sequence_value)<<2;
+		uint64_t diff = val - last_sequence_value;
 
 		last_sequence_value = val;
 
-		if( diff < 0x100 ) {
-			val = diff;
+		if( diff < 0x40 ) {
+			val = diff<<2;
 			return 1;
 		}
 
-		if( diff < 0x10000 ){
-			val = diff | 1;
+		if( diff < 0x4000 ){
+			val = (diff<<2) | 1;
 			return 2;
 		}
 
-		if( diff < 0x1000000 ){
-			val = diff | 2;
+		if( diff < 0x400000 ){
+			val = (diff<<2) | 2;
 			return 3;
 		}
 
@@ -586,10 +595,11 @@ struct BlockRestoringReader : public IBlockReader {
 			if( disk->Read( read_buf ) == 0 )
 				return 0; // end of input stream
 			// define real buffer end
-			while( read_buf.get()[read_buf.used()-1] == 0 )
-				read_buf.setUsed( read_buf.used() - 1 );
+			if( read_buf.used() == cdata.buf_size ){
+				read_buf.setUsed( cdata.buf_size - read_buf.get()[read_buf.used()-1] );
+			}
 			assert( read_buf.used() > 0 );
-			bit_byte_value = bits_byte_left = last_value = 0;
+			bit_data_value = bits_data_left = last_value = 0;
 			read_buf_pos = read_buf.get();
 		}
 		return GrowBuffer( read_buf, block );
@@ -602,8 +612,8 @@ private:
 	std::unique_ptr<IBlockReader> disk;
 	StreamBuffer read_buf;
 	uint64_t last_value = 0;
-	uint32_t bits_byte_left = 0;
-	uint8_t bit_byte_value = 0;
+	uint32_t bits_data_left = 0;
+	uint32_t bit_data_value = 0;
 	uint8_t * read_buf_pos = nullptr;
 
 	struct BitsCompouner{
@@ -616,14 +626,18 @@ private:
 		}
 
 		inline uint32_t AppendValue( uint8_t* buf, uint64_t val, int8_t num_bits ){
+			assert( num_bits > 0 );
+			assert( (val&(-1UL<<num_bits)) == 0 ); // no bit upper abouve limit
+
 			uint32_t moved = 0;
 			while( num_bits > 0 ){
 				if( left_bits == 8 ){
-					if( num_bits < 8 )
+					if( num_bits < 8 ){
 						buf[moved] = val << ( left_bits = 8-num_bits );
-					else
-						buf[moved++] = val >> ( num_bits - 8 );
-					num_bits -= 8;
+						return moved; // all bits added
+					}
+
+					buf[moved++] = val >> ( num_bits -= 8 );
 				} else {
 					if( num_bits < left_bits ){
 						buf[moved] |= (val& ( (((uint8_t)1) << num_bits ) - 1)) << (left_bits-=num_bits);
@@ -647,6 +661,7 @@ private:
 			for( uint64_t i = 0; i < cdata.num_parts; i++ ){
 				switch( cdata.parts[i].etype ){
 				case EntryCompactionData::EntryPart::BYTES:
+					assert( bits.left_bits == 8 );
 					to.add( read_buf_pos, cdata.parts[i].length_bytes );
 					read_buf_pos += cdata.parts[i].length_bytes;
 					break;
@@ -654,19 +669,23 @@ private:
 				case EntryCompactionData::EntryPart::BITS:{
 					uint32_t new_bits = 0;
 					for( uint8_t bits_len = cdata.parts[i].length_bits; bits_len > 0; ){
-						if( bits_byte_left < bits_len ){
-							new_bits <<= bits_byte_left; // set current bits on correct place
-							new_bits |= bit_byte_value;
-							bits_len -= bits_byte_left;
-							bit_byte_value = *read_buf_pos;
-							read_buf_pos++;
-							bits_byte_left = 8;
+						if( bits_data_left < bits_len ){
+							if( bits_data_left > 0 ){
+								new_bits <<= bits_data_left; // set current bits on correct place
+								assert( (new_bits & bit_data_value) == 0 ); // sould be exclusive with exists bits
+								new_bits |= bit_data_value;
+								bits_len -= bits_data_left;
+							}
+							bit_data_value = *(uint32_t*)read_buf_pos;
+							read_buf_pos += 4;
+							bits_data_left = 32;
 						} else {
 							new_bits <<= bits_len; // set current bits on correct place
-							bits_byte_left -= bits_len;
+							bits_data_left -= bits_len;
 							bits_len = 0;
-							new_bits |= bit_byte_value>>bits_byte_left;
-							bit_byte_value &= 255 >> (8-bits_byte_left);// clrea read bits
+							assert( (new_bits & bit_data_value>>bits_data_left) == 0 ); // sould be exclusive with exists bits
+							new_bits |= bit_data_value>>bits_data_left;
+							bit_data_value &= ~(0xffffffff << bits_data_left);// clrea read bits
 						}
 					}
 					to.addUsed( bits.AppendValue( to.getEnd(), new_bits, cdata.parts[i].length_bits ) );
@@ -676,7 +695,11 @@ private:
 					to.addUsed( bits.AppendValue( to.getEnd(), bucket_no, cdata.log_num_buckets ) );
 					break;
 				case EntryCompactionData::EntryPart::SEQUENCE:{
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
 					uint64_t seq_val = *((uint64_t*)read_buf_pos);
+#else
+					uint64_t seq_val = bswap_64( *((uint64_t*)read_buf_pos) ); // warning! this is not checked
+#endif
 					uint8_t b = seq_val&3;
 					if( b == 3 ){
 						last_value = (seq_val>>2)&cdata.sequence_mask;
@@ -684,6 +707,7 @@ private:
 					} else {
 						read_buf_pos += ++b;
 						last_value += (seq_val>>2)&((1UL<<(b*8-2))-1);
+						assert( (last_value&~cdata.sequence_mask) == 0 );
 					}
 					to.addUsed( bits.AppendValue( to.getEnd(), last_value, cdata.sequence_size_bits ) );
 					}
@@ -1284,7 +1308,6 @@ struct BucketStream{
 	{	}
 
 	const std::string getFileName() const {return fileName;}
-
 
 	// The write is NOT thread save and should be synced from outside!!!!
 	inline void Write( StreamBuffer & buf ){
