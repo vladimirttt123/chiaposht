@@ -56,7 +56,8 @@ struct SortingBucket{
 		assert( entry.size() >= compaction_data.entry_size_bytes );
 		assert( entry.used() == compaction_data.entry_size_bytes  );
 		assert( statistics_bits < ((uint32_t)1<<subbucket_bits) );
-		assert( Util::ExtractNum( entry.get(), compaction_data.entry_size_bytes, compaction_data.begin_bits_bucket, subbucket_bits ) == statistics_bits );
+		assert( Util::ExtractNum( entry.get(), compaction_data.entry_size_bytes,
+														(compaction_data.begin_bits + compaction_data.log_num_buckets), subbucket_bits ) == statistics_bits );
 
 		statistics[statistics_bits]++;
 		entries_count++;

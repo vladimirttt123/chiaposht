@@ -347,17 +347,35 @@ private:
 	}
 };  // end of CachedFileStream
 
+
+/**
+ * @brief The EntryCompactionData class is a structure contains data for compaction buckets
+ */
 struct EntryCompactionData{
 	struct EntryPart {
-		enum uint8_t { BITS, BYTES, BUCKET, SEQUENCE } etype;
-		uint16_t start_bit, length_bits;
-		uint16_t start_byte, length_bytes;
+		enum uint8_t { BITS, BUCKET, SEQUENCE } etype;
+		uint16_t num_high_bits, num_inner_bits, num_low_bits, num_low_plus_inner_bits;
+		uint64_t mask_full, mask_high_bits, mask_inner_bits, mask_low_bits;
+		uint16_t shift_32_bit, shift_64_bit;
+		uint16_t start_byte, length_bytes, prev_part_end_byte, copy_from_prev_bytes, copy_bits;
 
-		EntryPart * setBits( uint8_t etype, uint16_t start_bit, uint16_t length_bits ){
-			this->etype=etype;
-			this->start_byte = (this->start_bit = start_bit)/8;
-			this->length_bytes = (this->length_bits = length_bits)/8;
-			return this;
+		void setBits( uint8_t type, uint16_t start_bit, uint16_t length_bits ){
+			etype = type;
+			start_byte = start_bit/8;
+			length_bytes = ( (start_bit&7) + length_bits+7)/8;
+			num_high_bits = start_bit%8;
+			this->num_inner_bits = length_bits;
+			num_low_bits = length_bytes*8 - num_high_bits - length_bits;
+			mask_full = -1UL >> ((8-length_bytes)*8);
+			uint16_t move_size = length_bytes*8 - num_high_bits;
+			mask_high_bits = num_high_bits == 0 ? 0 : ((mask_full>>move_size)<<move_size);
+			move_size = length_bytes*8 - num_low_bits;
+			mask_low_bits = num_low_bits == 0 ? 0 : (mask_full>>move_size);
+			mask_inner_bits = mask_full&~mask_high_bits&~mask_low_bits;
+			copy_bits = num_high_bits + num_low_bits;
+			num_low_plus_inner_bits = num_low_bits + num_inner_bits;
+			shift_32_bit = (4-length_bytes)*8;
+			shift_64_bit = (8-length_bytes)*8;
 		}
 	};
 
@@ -367,63 +385,48 @@ struct EntryCompactionData{
 	const int16_t sequence_start_bit, sequence_size_bits, sequence_size_bytes;
 	const uint64_t sequence_mask;
 	uint16_t copy_size_bits = 0, copy_size_bytes = 0;
-	uint8_t num_parts = 0;
-	EntryPart parts[9];
+	uint8_t num_parts = 0, seq_part = 0;
+	EntryPart parts[3];
 	uint32_t read_align_bytes, buf_size;
 
 	EntryCompactionData( bool compaction_enabled, uint16_t entry_size_bits, uint8_t begin_bits,
-											uint8_t log_num_buckets, int16_t sequence_start_bit)
+											uint8_t log_num_buckets, int16_t seq_start_bit)
 			: compaction_enabled( compaction_enabled)
 			, entry_size_bits(entry_size_bits), entry_size_bytes( (entry_size_bits+7)/8 )
 			, begin_bits(begin_bits), log_num_buckets(log_num_buckets)
 			, begin_bits_bucket( begin_bits + log_num_buckets )
-			, sequence_start_bit( this->seq_start(sequence_start_bit) )
+			, sequence_start_bit( this->seq_start(seq_start_bit) )
 			, sequence_size_bits( this->seq_size() ), sequence_size_bytes( (sequence_size_bits+7)/8 )
 			, sequence_mask( (1UL<<sequence_size_bits)-1 )
 	{
-		EntryPart etmp[2];
 		// define what is first bucket or sequence
 		int idx = ( sequence_start_bit < 0 || sequence_start_bit > (int16_t)begin_bits ) ? 0 : 1;
 
-		etmp[idx].setBits( EntryPart::BUCKET, begin_bits, log_num_buckets );
-		idx = (idx+1)&1;
+		num_parts = 1;
+		parts[idx].setBits( EntryPart::BUCKET, begin_bits, log_num_buckets );
 
-		etmp[idx].setBits( EntryPart::SEQUENCE
-											, sequence_start_bit < 0 ? entry_size_bits : sequence_start_bit
-											, sequence_size_bits );
-
-		idx = 0;
-		std::function<void(uint16_t)> add_bits;
-		add_bits = [this, &idx, &add_bits](  uint16_t len_bits ) {
-			if( len_bits == 0 ) return ; // nothing to do
-			parts[idx].setBits( EntryPart::BITS, idx == 0 ? 0 : (parts[idx-1].start_bit + parts[idx-1].length_bits), len_bits );
-			if( (parts[idx].start_bit&7) == 0 && parts[idx].length_bits > 8 ){
-				parts[idx].length_bits = parts[idx].length_bytes*8; // fix bits length
-				copy_size_bytes += parts[idx].length_bytes;
-				parts[idx++].etype = EntryPart::BYTES;
-				add_bits( len_bits&7 );
-			} else if( parts[idx].length_bits > 23 ){
-				copy_size_bits += parts[idx].setBits( EntryPart::BITS, parts[idx].start_bit, 8 - (parts[idx].start_bit&7) )->length_bits;
-				idx++;
-				add_bits( len_bits - parts[idx-1].length_bits );
-			} else {
-				copy_size_bits += parts[idx].length_bits;
-				idx++;
-			}
-		};
-
-		add_bits( etmp[0].start_bit );
-		parts[idx++] = etmp[0];
-		add_bits( etmp[1].start_bit - etmp[0].start_bit - etmp[0].length_bits );
 		if( sequence_start_bit >= 0 ){
-			parts[idx++] = etmp[1];
-			add_bits( entry_size_bits - etmp[1].start_bit - etmp[1].length_bits );
+			seq_part = idx = (idx+1)&1;
+			parts[idx].setBits( EntryPart::SEQUENCE, sequence_start_bit, sequence_size_bits );
+			num_parts = 2;
 		}
 
-		assert( idx <= 9 );
+		if( (parts[num_parts-1].start_byte + parts[num_parts-1].length_bytes) < (entry_size_bits+7)/8 ){
+			parts[num_parts].setBits( EntryPart::BITS, entry_size_bits&~7, entry_size_bits - (entry_size_bits&~7) );
+			num_parts++;
+		}
 
-		num_parts = idx;
-
+		copy_size_bytes = parts[0].start_byte;
+		copy_size_bits = parts[0].num_high_bits + parts[0].num_low_bits;
+		parts[0].prev_part_end_byte = 0;
+		parts[0].copy_from_prev_bytes = parts[0].start_byte;
+		for( uint16_t i = 1; i < num_parts; i++ ){
+			parts[i].prev_part_end_byte = parts[i-1].start_byte + parts[i-1].length_bytes;
+			parts[i].copy_from_prev_bytes = parts[i].start_byte - parts[i].prev_part_end_byte;
+			copy_size_bytes += parts[i].copy_from_prev_bytes;
+			copy_size_bits += parts[i].num_high_bits
+												+ ( parts[i].etype == EntryPart::BITS ? parts[i].num_inner_bits : parts[i].num_low_bits );
+		}
 
 		read_align_bytes = compaction_enabled ? ( sequence_start_bit<0?(copy_size_bytes*8+copy_size_bits):1/*BUF_SIZE*/) : entry_size_bytes;
 		buf_size = BUF_SIZE - (BUF_SIZE%read_align_bytes);
@@ -431,14 +434,21 @@ struct EntryCompactionData{
 
 private:
 	int16_t seq_start( int16_t seq ){
-		if( seq < 0 || (seq >= begin_bits && seq <= (begin_bits+log_num_buckets) ) ) return -1; // no sequence or sequence start inside bucket bits
-		int16_t max_size_bits = ( seq > begin_bits ? entry_size_bits : begin_bits ) - seq;
+		if( seq < 0 ) return -1; // no sequence
+		int16_t seq_start_byte = seq/8;
+		int16_t bucket_start_byte = begin_bits/8;
+		int16_t bucket_end_byte = bucket_start_byte + log_num_buckets/8;
+		//if( seq < begin_bits && (bucket_start_byte*8-seq) < 14 ) return -1; // not enought space for sequence
+		if( seq >= (bucket_start_byte*8) && seq_start_byte < bucket_end_byte ) return -1; // sequence inside bucket
+
+		int16_t max_size_bits = ( seq > begin_bits ? entry_size_bits : (bucket_start_byte*8) ) - seq;
 		if( max_size_bits < 14 ) return -1; // too small sequence size
 		return seq;
 	}
+
 	int16_t seq_size(){
 		if( sequence_start_bit < 0 ) return 0;
-		int16_t max_size_bits = ( sequence_start_bit > begin_bits ? entry_size_bits : begin_bits ) - sequence_start_bit;
+		int16_t max_size_bits = ( sequence_start_bit > begin_bits ? entry_size_bits : (begin_bits&~7) ) - sequence_start_bit;
 		for( int16_t i = 30; i > 13; i -= 8 )
 			if( max_size_bits >= i ) return i;
 		return 0;
@@ -494,59 +504,74 @@ private:
 		buf.ensureSize( cdata.buf_size ); // this also cleans used
 	}
 
+	inline void addBits( uint64_t new_bits, uint8_t bits_length ){
+		assert( bits_length < 16 );
+		assert( (new_bits & ~((1UL<<bits_length)-1)) == 0 ); // no bits overflow allowed
+
+		if( bits_length <= bits_data_capacity )
+			*bits_data |= new_bits<<(bits_data_capacity-=bits_length);
+		else {
+			if( bits_data_capacity > 0 )
+				*bits_data |= new_bits>>(bits_length-=bits_data_capacity);
+			bits_data = (uint32_t*)buf.getEnd();
+			buf.addUsed( 4 );
+			bits_data_capacity = 32 - bits_length;
+			*bits_data = new_bits << bits_data_capacity;
+		}
+	}
+
 	inline void addEntry( const uint8_t *entry ){
-		uint64_t len_bytes = 0, seq_val;
+		uint64_t seq_len_bytes = 0, seq_val, seq_bits;
 		if( cdata.sequence_start_bit >= 0 ){
-			seq_val = Util::ExtractNum64( entry, cdata.sequence_start_bit, cdata.sequence_size_bits );
-			len_bytes = CompactValue( seq_val );
+			const EntryCompactionData::EntryPart & part = cdata.parts[cdata.seq_part];
+
+			uint64_t val = (bswap_64( *(uint64_t*)(entry+part.start_byte) )>>part.shift_64_bit);
+			seq_bits = ((val&part.mask_high_bits)>>part.num_inner_bits)	| (val&part.mask_low_bits);
+			seq_val = (val&part.mask_inner_bits)>>part.num_low_bits;
+			seq_len_bytes = CompactValue( seq_val );
 		}
 
 		// check new value fits to buf
-		uint8_t entry_adding_bytes = len_bytes + cdata.copy_size_bytes + (cdata.copy_size_bits > bits_data_capacity ?
+		uint8_t entry_adding_bytes = seq_len_bytes + cdata.copy_size_bytes + (cdata.copy_size_bits > bits_data_capacity ?
 																																					((cdata.copy_size_bits - bits_data_capacity+31)/32*4 ): 0);
-		if( cdata.buf_size <= (buf.used() + entry_adding_bytes) ){
+
+		if( cdata.buf_size <= (buf.used() + entry_adding_bytes + 1) ){
 			FlushBlock();
 			addEntry( entry ); // seq values should be recalculated
 			return;
 		}
 
 		for( uint64_t i = 0; i < cdata.num_parts; i++ ){
-			switch( cdata.parts[i].etype ){
-			case EntryCompactionData::EntryPart::BYTES:
-				buf.add( entry + cdata.parts[i].start_byte, cdata.parts[i].length_bytes );
-				break;
-			case EntryCompactionData::EntryPart::BITS:{
-					uint8_t bits_len = cdata.parts[i].length_bits;
-					uint32_t new_bits = Util::ExtractNum64( entry, cdata.parts[i].start_bit, bits_len );
+			const EntryCompactionData::EntryPart & part = cdata.parts[i];
 
-					while( bits_len > 0 ){
-						if( bits_data_capacity == 0 ){
-							bits_data_capacity = 32;
-							bits_data = (uint32_t*)buf.getEnd();
-							*bits_data = 0;
-							buf.addUsed( 4 );
-						}
-						if( bits_len > bits_data_capacity ){
-							bits_len -= bits_data_capacity;
-							bits_data_capacity = 0;
-							*bits_data |= new_bits >> bits_len;
-							new_bits &= ((uint32_t)-1)>>(32-bits_len); // clear bits inserted in
-						}else {
-							bits_data_capacity -= bits_len;
-							*bits_data |= new_bits << bits_data_capacity;
-							bits_len = 0;
-						}
-					}
+			// start from copy bytes before the part
+			if( part.copy_from_prev_bytes > 0 )
+				buf.add( entry+part.prev_part_end_byte, part.copy_from_prev_bytes );
+
+			switch( part.etype ){
+				case EntryCompactionData::EntryPart::BITS:
+				if( part.num_inner_bits > 0 )
+					addBits( entry[part.start_byte]>>part.num_low_bits, part.num_inner_bits );
+
+				break;
+				case EntryCompactionData::EntryPart::BUCKET:
+				if( part.copy_bits > 0){
+					uint64_t bucket = (bswap_32( *(uint32_t*)(entry+part.start_byte) )>>part.shift_32_bit)&part.mask_full;
+					uint64_t bits = ((bucket&part.mask_high_bits)>>part.num_inner_bits) | (bucket&part.mask_low_bits);
+					addBits( bits, part.copy_bits );
 				}
 				break;
-			case EntryCompactionData::EntryPart::BUCKET: break; // skip
-			case EntryCompactionData::EntryPart::SEQUENCE:
-#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-					*((uint64_t*)buf.getEnd()) = seq_val;
-#else
-					*((uint64_t*)buf.getEnd()) = bswap_64( seq_val );
-#endif
-					buf.addUsed( len_bytes );
+				case EntryCompactionData::EntryPart::SEQUENCE:{
+					addBits( seq_bits, part.copy_bits );
+
+					#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+										*((uint64_t*)buf.getEnd()) = seq_val; // CURRENTLY seq_val at most 32 bits
+					#else
+										*((uint64_t*)buf.getEnd()) = bswap_64( seq_val );
+					#endif
+
+					buf.addUsed( seq_len_bytes );
+				}
 				break;
 			}
 		}
@@ -599,7 +624,7 @@ struct BlockRestoringReader : public IBlockReader {
 				read_buf.setUsed( cdata.buf_size - read_buf.get()[read_buf.used()-1] );
 			}
 			assert( read_buf.used() > 0 );
-			bit_data_value = bits_data_left = last_value = 0;
+			bits_data_value = bits_data_left = last_value = 0;
 			read_buf_pos = read_buf.get();
 		}
 		return GrowBuffer( read_buf, block );
@@ -613,88 +638,52 @@ private:
 	StreamBuffer read_buf;
 	uint64_t last_value = 0;
 	uint32_t bits_data_left = 0;
-	uint32_t bit_data_value = 0;
+	uint32_t bits_data_value = 0;
 	uint8_t * read_buf_pos = nullptr;
 
-	struct BitsCompouner{
-		int8_t left_bits = 8;
-
-		inline uint32_t finish() {
-			uint32_t ret = left_bits != 8 ? 1 : 0;
-			left_bits = 8;
-			return ret;
+	inline uint32_t getBits( uint8_t num_bits ) {
+		if( num_bits <= bits_data_left )
+			return bits_data_value >> (bits_data_left -= num_bits);
+		else{
+			uint32_t res = bits_data_value << (num_bits-=bits_data_left);
+			bits_data_value = *(uint32_t*)read_buf_pos;
+			read_buf_pos += 4;
+			return res | bits_data_value >> (bits_data_left = 32-num_bits) ;
 		}
-
-		inline uint32_t AppendValue( uint8_t* buf, uint64_t val, int8_t num_bits ){
-			assert( num_bits > 0 );
-			assert( (val&(-1UL<<num_bits)) == 0 ); // no bit upper abouve limit
-
-			uint32_t moved = 0;
-			while( num_bits > 0 ){
-				if( left_bits == 8 ){
-					if( num_bits < 8 ){
-						buf[moved] = val << ( left_bits = 8-num_bits );
-						return moved; // all bits added
-					}
-
-					buf[moved++] = val >> ( num_bits -= 8 );
-				} else {
-					if( num_bits < left_bits ){
-						buf[moved] |= (val& ( (((uint8_t)1) << num_bits ) - 1)) << (left_bits-=num_bits);
-						return moved;
-					}
-
-					buf[moved++] |= (val>>(num_bits-left_bits))&(255>>(8-left_bits));
-					num_bits -= left_bits;
-					left_bits = 8;
-				}
-			}
-			return moved;
-		}
-	};
+	}
 
 	uint32_t GrowBuffer( StreamBuffer &from, StreamBuffer &to ){
-		BitsCompouner bits;
 
 		while( to.used()+cdata.entry_size_bytes <= to.size() && read_buf_pos < from.getEnd() ){
 
-			for( uint64_t i = 0; i < cdata.num_parts; i++ ){
-				switch( cdata.parts[i].etype ){
-				case EntryCompactionData::EntryPart::BYTES:
-					assert( bits.left_bits == 8 );
-					to.add( read_buf_pos, cdata.parts[i].length_bytes );
-					read_buf_pos += cdata.parts[i].length_bytes;
-					break;
+			for( uint32_t i = 0; i < cdata.num_parts; i++ ){
+				const EntryCompactionData::EntryPart & part = cdata.parts[i];
 
-				case EntryCompactionData::EntryPart::BITS:{
-					uint32_t new_bits = 0;
-					for( uint8_t bits_len = cdata.parts[i].length_bits; bits_len > 0; ){
-						if( bits_data_left < bits_len ){
-							if( bits_data_left > 0 ){
-								new_bits <<= bits_data_left; // set current bits on correct place
-								assert( (new_bits & bit_data_value) == 0 ); // sould be exclusive with exists bits
-								new_bits |= bit_data_value;
-								bits_len -= bits_data_left;
-							}
-							bit_data_value = *(uint32_t*)read_buf_pos;
-							read_buf_pos += 4;
-							bits_data_left = 32;
-						} else {
-							new_bits <<= bits_len; // set current bits on correct place
-							bits_data_left -= bits_len;
-							bits_len = 0;
-							assert( (new_bits & bit_data_value>>bits_data_left) == 0 ); // sould be exclusive with exists bits
-							new_bits |= bit_data_value>>bits_data_left;
-							bit_data_value &= ~(0xffffffff << bits_data_left);// clrea read bits
-						}
-					}
-					to.addUsed( bits.AppendValue( to.getEnd(), new_bits, cdata.parts[i].length_bits ) );
+				// start from copy bytes before the part
+				if( part.copy_from_prev_bytes > 0 ){
+					to.add( read_buf_pos, part.copy_from_prev_bytes );
+					read_buf_pos += part.copy_from_prev_bytes;
+				}
+
+				switch( cdata.parts[i].etype ){
+
+				case EntryCompactionData::EntryPart::BITS: // could be only at and of entry
+					if( part.num_inner_bits > 0 )
+						to.add( uint8_t(getBits( part.num_inner_bits ) << part.num_low_bits) );
+
+				break;
+				case EntryCompactionData::EntryPart::BUCKET:{
+				uint32_t val = part.copy_bits == 0 ? bucket_no
+													 : (( (getBits( part.num_high_bits ) << part.num_low_plus_inner_bits) & part.mask_high_bits )
+															| (bucket_no<<part.num_low_bits) | (getBits( part.num_low_bits )&part.mask_low_bits) );
+					*((uint32_t*)to.getEnd()) = bswap_32( val << part.shift_32_bit ); // __ORDER_LITTLE_ENDIAN__
+					to.addUsed( part.length_bytes );
 				}
 				break;
-				case EntryCompactionData::EntryPart::BUCKET:
-					to.addUsed( bits.AppendValue( to.getEnd(), bucket_no, cdata.log_num_buckets ) );
-					break;
 				case EntryCompactionData::EntryPart::SEQUENCE:{
+					uint64_t val = ( ( uint64_t(getBits( part.num_high_bits )) << part.num_low_plus_inner_bits) & part.mask_high_bits )
+												 | (getBits( part.num_low_bits )&part.mask_low_bits);
+
 #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
 					uint64_t seq_val = *((uint64_t*)read_buf_pos);
 #else
@@ -709,15 +698,16 @@ private:
 						last_value += (seq_val>>2)&((1UL<<(b*8-2))-1);
 						assert( (last_value&~cdata.sequence_mask) == 0 );
 					}
-					to.addUsed( bits.AppendValue( to.getEnd(), last_value, cdata.sequence_size_bits ) );
-					}
-					break;
+					val |= last_value << part.num_low_bits;
+
+					*((uint64_t*)to.getEnd()) = bswap_64( val << part.shift_64_bit ); // __ORDER_LITTLE_ENDIAN__
+					to.addUsed( part.length_bytes );
+				}
+				break;
 				}
 			}
-			to.addUsed( bits.finish() );
 
 			assert( Util::ExtractNum64( to.getEnd() - cdata.entry_size_bytes, cdata.begin_bits, cdata.log_num_buckets ) == bucket_no );
-
 		}
 
 		return to.used();
