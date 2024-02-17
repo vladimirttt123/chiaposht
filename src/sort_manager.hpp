@@ -225,7 +225,7 @@ private:
 class SortManager : public Disk, IReadDiskStream {
 public:
 	const uint8_t k_, phase_, table_index_;
-	const uint32_t num_buckets, num_threads;
+	const uint32_t num_threads, num_buckets;
 	const EntryCompactionData compaction_data;
 	const uint8_t subbucket_bits;
 	const uint32_t stats_mask;
@@ -245,8 +245,8 @@ public:
 			bool parallel_read = true )
 
 			: k_(k), phase_(phase), table_index_(table_index)
-			, num_buckets( evaluate_buckets( num_buckets_, (entry_size_bits+7)/8, memory_manager.getTotalSize() ) )
 			, num_threads( num_threads )
+			, num_buckets( evaluate_buckets( num_buckets_, (entry_size_bits+7)/8, memory_manager.getTotalSize() ) ) // this uses num_trheads
 			, compaction_data( enable_compaction, entry_size_bits, begin_bits, log2(num_buckets), evaluate_sequence_start() )
 				// Total number of entries is around 2^k. Entries per bucket is around 2^(k-log_num_buckets_)
 				// We need such amount of subbuckets that per subbucket entries number will not overflow uint16_t
