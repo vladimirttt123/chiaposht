@@ -20,6 +20,7 @@
 #include "plotter_disk.hpp"
 #include "prover_disk.hpp"
 #include "verifier.hpp"
+#include "compressor.hpp"
 
 using std::string;
 using std::vector;
@@ -306,6 +307,9 @@ int main(int argc, char *argv[]) try {
         std::cout << "Total failures: " << failures << std::endl;
         std::cout << "Exceptions: " << exceptions << std::endl;
         if (show_progress) { progress(4, 1, 1); }
+		} else if( operation == "compress" ){
+			Compressor plot_compress( filename );
+			plot_compress.CompressTo( filename + "_t", 0 );
     } else {
         cout << "Invalid operation '" << operation << "'. Use create/prove/verify/check" << endl;
     }
