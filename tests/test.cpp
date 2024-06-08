@@ -61,6 +61,108 @@ TEST_CASE( "HUGE_PAGES" ){
 		}
 }
 
+void TestBucketStream( uint64_t iteration, int32_t buf_size, uint16_t num_buckets, uint16_t bucket_no,
+											uint16_t entry_size_bits, uint16_t bits_begin, bool is_compact,
+											uint16_t sequence_start_bit, uint16_t sequence_size_bits, bool is_flush ){
+
+	std::cout << "BucketStream test - num entries: " << iteration << "; num_buckets: " << num_buckets
+						<< ", entry_size_bits: " << entry_size_bits << ", bits_begin: " << bits_begin
+						<< ", sequence_start_bit: " << sequence_start_bit << ", sequence_size_bits: " << sequence_size_bits
+						<< ", compaction: " << (is_compact?"YES":"NO") << ", flushing: " << (is_flush?"YES":"NO") << std::endl;
+
+	const auto cur_buf_size = BUF_SIZE;
+	BUF_SIZE = buf_size; // set small buffer size for fast testing
+
+	MemoryManager memory_manager = MemoryManager(0);
+
+	uint16_t cur_bucket_no = bucket_no % num_buckets;
+	EntryCompactionData cdata( is_compact, entry_size_bits, bits_begin, log2(num_buckets), sequence_start_bit );
+	BucketStream stream = BucketStream( "bucket.stream.tmp", memory_manager, cur_bucket_no, cdata );
+
+	StreamBuffer bucket_data( iteration * cdata.entry_size_bytes );
+
+
+	{ // Part I: writing
+
+		// Prepare entry
+		StreamBuffer write_entry_buf( BUF_SIZE );
+
+		uint64_t seq_value = rand()&0xff;
+		// go and write files
+		for( uint64_t i = 0; i < iteration; i++ ){
+			// craete entry
+			Bits new_entry;
+			while( new_entry.GetSize() < entry_size_bits ){
+				if( new_entry.GetSize() == (uint16_t)bits_begin ){
+					new_entry.AppendValue( cur_bucket_no, cdata.log_num_buckets );
+				} else if( new_entry.GetSize() == (uint16_t)sequence_start_bit ){
+					new_entry.AppendValue( seq_value &((1 << sequence_size_bits)-1), sequence_size_bits );
+					seq_value += -128 + num_buckets + rand()&0xfff;
+				} else
+					new_entry.AppendValue( rand()&1, 1 );
+			}
+			assert( new_entry.GetSize() == entry_size_bits );
+
+			new_entry.ToBytes( write_entry_buf.getEnd() );
+			assert( Util::ExtractNum64( write_entry_buf.getEnd(), bits_begin, log2(num_buckets) ) == cur_bucket_no );
+			write_entry_buf.addUsed( cdata.entry_size_bytes );
+
+			if( write_entry_buf.used() + cdata.entry_size_bytes > write_entry_buf.size() ){
+				bucket_data.add( write_entry_buf.get(), write_entry_buf.used() );
+				stream.Write( write_entry_buf );
+				write_entry_buf.setUsed( 0 );
+			}
+		}
+
+		if( write_entry_buf.used() ){
+			bucket_data.add( write_entry_buf.get(), write_entry_buf.used() );
+			stream.Write( write_entry_buf );
+		}
+
+		if( is_flush ) stream.FlusToDisk();
+	}
+
+	StreamBuffer read_data( iteration * cdata.entry_size_bytes );
+
+	{	// Part II: read the data
+		StreamBuffer buf;
+
+		while( stream.Read(buf) > 0 ){
+			assert( (buf.used()%cdata.entry_size_bytes) == 0 );
+			assert( read_data.used() + buf.used() <= iteration*cdata.entry_size_bytes);
+
+			for( uint32_t i = 0; i < buf.used(); i += cdata.entry_size_bytes )
+				REQUIRE( Util::ExtractNum64( buf.get() + i, bits_begin, log2(num_buckets) ) == cur_bucket_no );
+
+			read_data.add( buf.get(), buf.used() );
+			// if( is_flush ){
+			// 	for( uint64_t i = 0; i < read_data.used(); i++ )
+			// 		assert( read_data.get()[i] == bucket_data.get()[i] );
+			// 	//assert( memcmp( read_data.get(), bucket_data.get(), read_data.used() ) == 0 );
+			// }
+		}
+		REQUIRE( read_data.used() == iteration * cdata.entry_size_bytes );
+	}
+
+	{  // Part III: compare data
+		uint8_t entry_size_bytes = (entry_size_bits+7)/8;
+		for( uint64_t i = 0; i < iteration; i++ ){
+			uint64_t j = i;
+			uint8_t * look_for = bucket_data.get() + i*entry_size_bytes;
+			while( j < iteration
+						 && memcmp( look_for, read_data.get()+j*entry_size_bytes, entry_size_bytes ) != 0 )
+				j++;
+			assert( j < iteration );
+			REQUIRE( j < iteration );
+			if( j > i )
+				memcpy( read_data.get() + j*entry_size_bytes, read_data.get() + i*entry_size_bytes, entry_size_bytes );
+		}
+	}
+
+	BUF_SIZE = cur_buf_size; // restore original buffer size
+}
+
+
 TEST_CASE( "DISK_STREAMS" ){
 
 	SECTION( "TABLE_STREAMS" ){
@@ -145,6 +247,7 @@ TEST_CASE( "DISK_STREAMS" ){
 
 		assert( memcmp( wbuf.get(), read_data, write_size ) == 0 );
 	}
+
 	SECTION("BlockBufferedWriter"){
 		const uint16_t entry_size = 7;
 		const uint32_t iterations = 242857;
@@ -180,71 +283,15 @@ TEST_CASE( "DISK_STREAMS" ){
 		}
 		REQUIRE( i == iterations );
 	}
-//	SECTION( "SortingBucket" ){
-//		const int entry_size = 10;
-//		const uint64_t iteration = 1024*1024*1024/entry_size;
-//		const uint8_t sub_bucket_bits = 21;
-//		const uint8_t begin_bits = 8;
-//		const uint16_t bucket_no = 10;
-//		SortingBucket buck = SortingBucket( "sorting.bucket.tmp", bucket_no, 8, entry_size, begin_bits, sub_bucket_bits, false );
-//		uint8_t entry[entry_size];
-
-//		Timer time_write;
-
-//		entry[0] = bucket_no; // set bucket no. built for begint_bits = 0!!!!!
-//		for( uint64_t i = 0; i < iteration; i++ ){
-//			// random entry
-//			for( uint32_t j = 1; j < entry_size; j++ )
-//				entry[j] = rand()%0xff;
-//			buck.AddEntry( entry, Util::ExtractNum( entry, entry_size, begin_bits, sub_bucket_bits ) );
-//		}
-//		buck.CloseFile();
-//		time_write.PrintElapsed("Write time: ");
-
-//		Timer time_read;
-//		buck.SortToMemory(12);
-//		cout << "Prepare time: " << buck.prepare_time << "Read time: " << buck.read_time << ", Sort time: " << buck.sort_time << std::endl;
-//		time_read.PrintElapsed( "Sort time:" );
-//	}
-
-//	SECTION( "CachedFileStream" ){
-//		uint32_t buf_size = 256*1024; // 256k
-//		uint64_t mem_size = 1UL<<29UL; // 0.5Gb
-//		uint32_t buffers_to_write = mem_size/buf_size*2;
-//		const uint32_t number_of_files = 16;
-
-//		MemoryManager mem_mngr(mem_size);
-//		BlockCachedFile *cfile[number_of_files];
-//		for( uint32_t i = 0; i < number_of_files; i++ )
-//			cfile[i] = new BlockCachedFile( "cached.stream" + std::to_string(i) + ".tmp", mem_mngr, buf_size );
-
-//		for( uint32_t i = 0; i < buffers_to_write; i++ ){
-//			StreamBuffer buf( buf_size );
-//			memset( buf.get(), i, buf_size );
-//			cfile[i%number_of_files]->Write( buf.setUsed(buf_size) );
-//		}
-
-//		std::cout << "request half of the ram: " << mem_mngr.request( mem_size/2, true ) << std::endl;
-
-//		for( uint32_t i = 0; i < buffers_to_write; i++ ){
-//			auto buf = std::make_unique<uint8_t[]>(buf_size);
-//			memset( buf.get(), i, buf_size );
-
-//			StreamBuffer read_buf( buf_size );
-//			REQUIRE( cfile[i%number_of_files]->Read( read_buf ) == buf_size );
-
-//			REQUIRE( memcmp( buf.get(), read_buf.get(), buf_size ) == 0 );
-//		}
-
-//		for( uint32_t i = 0; i < number_of_files; i++ )
-//			delete cfile[i];
-//	}
-
 
 	SECTION( "BucketStream" ){
-		uint64_t iteration = 60000;
+		uint64_t iteration = 7000002;
 		const uint16_t bucket_no = 0xaaaa;
 		const int16_t tests[][7] = { //[num_buckets, entry_size_bits, bits_begins, is_compact, sequence_start_bit, sequence_size_bits, flush_after_write]
+																{512, 172, 0, true, 45, 39, 1}, {1024, 172, 0, true, 45, 39, 1},
+																{512, 250, 0, true, 45, 39, 0}, {1024, 250, 0, true, 45, 39, 0},
+																{512, 250, 0, true, 45, 39, 1}, {1024, 250, 0, true, 45, 39, 1},
+																{2048, 250, 0, true, 45, 39, 0}, {4096, 250, 0, true, 45, 39, 1},
 																{16, 104, 0, 1, 28, 24, 1}, { 16, 36, 0, 1, 18, 16 },
 																{ 16, 46, 18, 1, 0, 16, 1}, { 16, 42, 0, 1, 24, 18, 0 },
 																{ 128, 64, 32, 1, 0, 28, 1}, { 128, 64, 0, 0, 32, 24, 0 }
@@ -254,10 +301,7 @@ TEST_CASE( "DISK_STREAMS" ){
 																, { 256, 64, 32, 0, 0, 28, 0}, { 256, 64, 0, 0, 32, 28, 0 }
 																, { 256, 64, 32, 1, 0, 28, 0}, { 256, 64, 0, 1, 32, 28, 0 }
 															};
-		const auto cur_buf_size = BUF_SIZE;
-		BUF_SIZE = 4096; // set small buffer size for fast testing
 
-		MemoryManager memory_manager = MemoryManager(0);
 		for( auto test_data : tests ){
 			auto num_buckets = test_data[0];
 			uint16_t entry_size_bits = test_data[1];
@@ -267,110 +311,13 @@ TEST_CASE( "DISK_STREAMS" ){
 			uint32_t sequence_size_bits = test_data[5];
 			bool is_flush = test_data[6];
 
-			std::cout << "BucketStream test - num_buckets: " << num_buckets << ", entry_size_bits: " << entry_size_bits
-								<< ", bits_begin: " << bits_begin << ", sequence_start_bit: " << sequence_start_bit
-								<< ", sequence_size_bits: " << sequence_size_bits << ", compaction: " << (is_compact?"YES":"NO")
-								<< ", flushing: " << (is_flush?"YES":"NO") << std::endl;
+			// for( uint32_t i = BUF_SIZE/entry_size_bits*8 + 100; i > BUF_SIZE/entry_size_bits*8 - 100; i-- )
+			// 	TestBucketStream( i, BUF_SIZE, num_buckets, bucket_no, entry_size_bits, bits_begin,
+			// 									 is_compact, sequence_start_bit, sequence_size_bits, is_flush );
 
-			iteration = 16256;
-			uint16_t cur_bucket_no = bucket_no % num_buckets;
-			EntryCompactionData cdata( is_compact, entry_size_bits, bits_begin, log2(num_buckets), sequence_start_bit );
-			BucketStream stream = BucketStream( "bucket.stream.tmp", memory_manager, cur_bucket_no, cdata );
-
-			StreamBuffer bucket_data( iteration * cdata.entry_size_bytes );
-
-
-			{ // Part I: writing
-
-				// Prepare entry
-				StreamBuffer write_entry_buf( BUF_SIZE );
-
-				// FileDisk disk("./BucketX.tmp", false );
-				// bucket_data.setUsed( 97536 );
-				// disk.Read( 0, bucket_data.get(), bucket_data.used() );
-
-				// uint32_t write_by = 254*6;
-				// write_entry_buf.ensureSize( write_by );
-				// for( uint64_t i = 0; i < bucket_data.used(); i += write_by ){
-				// 	write_entry_buf.setUsed( std::min( uint32_t( i+write_by ), bucket_data.used() ) - i );
-				// 	memcpy( write_entry_buf.get(), bucket_data.get()+i, write_entry_buf.used() );
-				// 	stream.Write( write_entry_buf );
-				// }
-
-				uint64_t seq_value = rand()&0xff;
-				// go and write files
-				for( uint64_t i = 0; i < iteration; i++ ){
-					// craete entry
-					Bits new_entry;
-					while( new_entry.GetSize() < entry_size_bits ){
-						if( new_entry.GetSize() == (uint16_t)bits_begin ){
-							new_entry.AppendValue( cur_bucket_no, cdata.log_num_buckets );
-						} else if( new_entry.GetSize() == (uint16_t)sequence_start_bit ){
-							new_entry.AppendValue( seq_value &((1 << sequence_size_bits)-1), sequence_size_bits );
-							seq_value += -128 + num_buckets + rand()&0xfff;
-						} else
-							new_entry.AppendValue( rand()&1, 1 );
-					}
-					assert( new_entry.GetSize() == entry_size_bits );
-
-					new_entry.ToBytes( write_entry_buf.getEnd() );
-					assert( Util::ExtractNum64( write_entry_buf.getEnd(), bits_begin, log2(num_buckets) ) == cur_bucket_no );
-					write_entry_buf.addUsed( cdata.entry_size_bytes );
-
-					if( write_entry_buf.used() + cdata.entry_size_bytes > write_entry_buf.size() ){
-						bucket_data.add( write_entry_buf.get(), write_entry_buf.used() );
-						stream.Write( write_entry_buf );
-						write_entry_buf.setUsed( 0 );
-					}
-				}
-
-				if( write_entry_buf.used() ){
-					bucket_data.add( write_entry_buf.get(), write_entry_buf.used() );
-					stream.Write( write_entry_buf );
-				}
-
-				if( is_flush ) stream.FlusToDisk();
-			}
-
-			StreamBuffer read_data( iteration * cdata.entry_size_bytes );
-
-			{	// Part II: read the data
-				StreamBuffer buf;
-
-				while( stream.Read(buf) > 0 ){
-					assert( (buf.used()%cdata.entry_size_bytes) == 0 );
-					assert( read_data.used() + buf.used() <= iteration*cdata.entry_size_bytes);
-
-					for( uint32_t i = 0; i < buf.used(); i += cdata.entry_size_bytes )
-						REQUIRE( Util::ExtractNum64( buf.get() + i, bits_begin, log2(num_buckets) ) == cur_bucket_no );
-
-					read_data.add( buf.get(), buf.used() );
-					// if( is_flush ){
-					// 	for( uint64_t i = 0; i < read_data.used(); i++ )
-					// 		assert( read_data.get()[i] == bucket_data.get()[i] );
-					// 	//assert( memcmp( read_data.get(), bucket_data.get(), read_data.used() ) == 0 );
-					// }
-				}
-				REQUIRE( read_data.used() == iteration * cdata.entry_size_bytes );
-			}
-
-			{  // Part III: compare data
-				uint8_t entry_size_bytes = (entry_size_bits+7)/8;
-				for( uint64_t i = 0; i < iteration; i++ ){
-					uint64_t j = i;
-					uint8_t * look_for = bucket_data.get() + i*entry_size_bytes;
-					while( j < iteration
-								 && memcmp( look_for, read_data.get()+j*entry_size_bytes, entry_size_bytes ) != 0 )
-						j++;
-					assert( j < iteration );
-					REQUIRE( j < iteration );
-					if( j > i )
-						memcpy( read_data.get() + j*entry_size_bytes, read_data.get() + i*entry_size_bytes, entry_size_bytes );
-				}
-			}
+			TestBucketStream( iteration, BUF_SIZE, num_buckets, bucket_no, entry_size_bits, bits_begin,
+											 is_compact, sequence_start_bit, sequence_size_bits, is_flush );
 		}
-
-		BUF_SIZE = cur_buf_size; // restore original buffer size
 	}
 }
 

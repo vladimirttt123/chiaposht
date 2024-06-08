@@ -14,6 +14,10 @@
 
 #include <ctime>
 #include <set>
+#include <chrono>
+#include <condition_variable>
+using namespace std::chrono_literals; // for operator""min;
+using namespace std::chrono;
 
 #include "cxxopts.hpp"
 #include "../lib/include/picosha2.hpp"
@@ -69,7 +73,7 @@ void HelpAndQuit(cxxopts::Options options)
     cout << "./ProofOfSpace create" << endl;
     cout << "./ProofOfSpace prove <challenge>" << endl;
     cout << "./ProofOfSpace verify <proof> <challenge>" << endl;
-    cout << "./ProofOfSpace check" << endl;
+		cout << "./ProofOfSpace check <number_of_challenges> [-f <plot_file_name>]" << endl;
     exit(0);
 }
 
@@ -281,6 +285,8 @@ int main(int argc, char *argv[]) try {
             iterations = std::stoi(argv[2]);
         }
 
+				cout << "Check file: " << filename << endl;
+
         DiskProver prover(filename);
         Verifier verifier = Verifier();
 
@@ -296,6 +302,7 @@ int main(int argc, char *argv[]) try {
             picosha2::hash256(hash_input.begin(), hash_input.end(), hash.begin(), hash.end());
 
             try {
+							auto start = high_resolution_clock::now();
                 vector<LargeBits> qualities = prover.GetQualitiesForChallenge(hash.data());
 
                 for (uint32_t i = 0; i < qualities.size(); i++) {
@@ -314,8 +321,27 @@ int main(int argc, char *argv[]) try {
                     } else {
                         cout << "Proof verification failed." << endl;
                     }
+
+										// const int iters = 32768;
+										// auto start_count = high_resolution_clock::now();
+										// for( int j = 0; j < iters; j++ ){
+										// 	proof_data[10]++;
+										// 	LargeBits quality =
+										// 			verifier.ValidateProof(id_bytes.data(), k, hash.data(), proof_data, k * 8);
+										// 	//cout << ( (quality.GetSize() == 256 && quality == qualities[i]) ? "+": "-");
+										// }
+										// cout << endl;
+										// auto stop_count = high_resolution_clock::now();
+										// auto duration_count = duration_cast<milliseconds>(stop_count - start_count);
+										// cout << "count " << iters << " took: " << duration_count.count() << "ms" << endl;
+
+
                     delete[] proof_data;
                 }
+							auto stop = high_resolution_clock::now();
+							auto duration = duration_cast<milliseconds>(stop - start);
+							cout << "Time took: " << duration.count() << "ms" << endl;
+
             } catch (const std::exception& error) {
                 cout << "Threw: " << error.what() << endl;
                 continue;

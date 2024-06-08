@@ -245,10 +245,10 @@ public:
         std::vector<fs::path> tmp_1_filenames = std::vector<fs::path>();
 
 				// The table0 not used. Tables 1-7 are stored in their own files.
-				tmp_1_filenames.push_back(fs::path(tmp_dirname) / fs::path(filename + ".sort.tmp"));
+				tmp_1_filenames.push_back(fs::path(tmp_dirname) / fs::path(filename + ".sort.tmp")); // not in use
         for (size_t i = 1; i <= 7; i++) {
             tmp_1_filenames.push_back(
-                fs::path(tmp_dirname) / fs::path(filename + ".table" + std::to_string(i) + ".tmp"));
+								fs::path(tmp2_dirname) / fs::path(filename + ".table" + std::to_string(i) + ".tmp"));
         }
 
         fs::path tmp_2_filename = fs::path(tmp2_dirname) / fs::path(filename + ".2.tmp");
