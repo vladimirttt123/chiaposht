@@ -60,8 +60,9 @@ void HelpAndQuit(cxxopts::Options options)
     cout << "./ProofOfSpace create" << endl;
     cout << "./ProofOfSpace prove <challenge>" << endl;
     cout << "./ProofOfSpace verify <proof> <challenge>" << endl;
-    cout << "./ProofOfSpace check" << endl;
-    exit(0);
+		cout << "./ProofOfSpace check <number_of_challanges> -f <plot_file>" << endl;
+		cout << "./ProofOfSpace compress <compression_level> <input_file> -f <output_file>" << endl;
+		exit(0);
 }
 
 // Not thread safe
@@ -308,8 +309,12 @@ int main(int argc, char *argv[]) try {
         std::cout << "Exceptions: " << exceptions << std::endl;
         if (show_progress) { progress(4, 1, 1); }
 		} else if( operation == "compress" ){
-			Compressor plot_compress( filename );
-			plot_compress.CompressTo( filename + "_t", 0 );
+			if( argc < 4 ) {
+				std::cout << " not enough parameters " << std::endl;
+				return -1;
+			}
+			TCompress::Compressor plot_compress( argv[3] );
+			plot_compress.CompressTo( filename , 0 );
     } else {
         cout << "Invalid operation '" << operation << "'. Use create/prove/verify/check" << endl;
     }
