@@ -97,6 +97,55 @@ public:
 	}
 };
 
+struct ReadFileWrapper{
+public:
+	explicit ReadFileWrapper( const std::string& filename )
+			: disk_file( filename, std::ios::in | std::ios::binary )
+	{
+		if( !disk_file.is_open() )
+			throw std::invalid_argument( "Cannot open file " + filename);
+	}
+
+	void Read( uint8_t * buffer, uint64_t size ){
+		int64_t pos = disk_file.tellg();
+		disk_file.read(reinterpret_cast<char*>(buffer), size);
+
+		if (disk_file.fail()) {
+			std::cout << "Failed to read input disk at position " << pos << " size " << size << std::endl;
+			throw std::runtime_error("disk read file " +
+															 std::to_string(size) + " at position " + std::to_string(pos));
+		}
+	}
+
+	void Read( uint64_t position, uint8_t * buffer, uint64_t size ){
+		Seek( position );
+		Read( buffer, size );
+	}
+
+	void Seek( uint64_t position ){
+		disk_file.seekg( position );
+
+		if( disk_file.fail() ) {
+			std::cout << "Disk seek FAILED to position " << position << std::endl;
+			throw std::runtime_error("disk seek failed " + std::to_string(position));
+		}
+	}
+
+	int64_t Size(){
+		int64_t pos = disk_file.tellg();
+		disk_file.seekg( 0, std::ios_base::end );
+		if (disk_file.fail()) {
+			std::cout << "Disk seek FAILED to end of file" << std::endl;
+			throw std::runtime_error("disk seek failed to end of file" );
+		}
+		int64_t size = disk_file.tellg();
+		Seek( pos );
+		return size;
+	}
+private:
+	std::ifstream disk_file;
+};
+
 struct DeltasStorage{
 public:
 	const uint32_t parks_count;
@@ -153,16 +202,11 @@ public:
 
 class Compressor {
 public:
-	explicit Compressor( const std::string& filename ){
-		this->filename = filename;
+	explicit Compressor( const std::string& filename )
+			:filename(filename), disk_file( filename )
+	{
 		std::cout << "create compressor on " << filename << std::endl;
 
-		disk_file = new std::ifstream( filename, std::ios::in | std::ios::binary );
-		if (!disk_file->is_open()) {
-			delete disk_file;
-			disk_file = nullptr;
-			throw std::invalid_argument( "Cannot open file " + filename);
-		}
 		// 19 bytes  - "Proof of Space Plot" (utf-8)
 		// 32 bytes  - unique plot id
 		// 1 byte    - k
@@ -173,7 +217,7 @@ public:
 		const int BUF_SIZE = 500;
 		uint8_t buf[BUF_SIZE];
 
-		Read( buf, 56 + kFormatDescription.size() );
+		disk_file.Read( buf, 56 + kFormatDescription.size() );
 		if( memcmp( buf, plotMagicFrase, 19 ) != 0
 				|| Util::TwoBytesToInt( buf + 52) != kFormatDescription.size()
 				|| memcmp( buf + 54, kFormatDescription.c_str(), kFormatDescription.size() ) ){
@@ -191,16 +235,16 @@ public:
 		}
 
 		memo = new uint8_t[memo_size];
-		Read( memo, memo_size );
+		disk_file.Read( memo, memo_size );
 
 		// now table pointers
 		std::cout << "Tables pointers: ";
-		Read( buf, 80 );
+		disk_file.Read( buf, 80 );
 		for( int i = 0; i < 10; i++ ){
 			table_pointers[i] = Util::EightBytesToInt( buf + i*8 );
 			std::cout << table_pointers[i] << ", ";
 		}
-		table_pointers[10] = FileSize();
+		table_pointers[10] = disk_file.Size();
 
 		std::cout << std::endl;
 	}
@@ -236,6 +280,7 @@ public:
 		uint64_t *new_table_pointers = (uint64_t*)(header+60+memo_size);
 		new_table_pointers[0] = header_size;
 		uint32_t *parks_count = (uint32_t*)(header+60+memo_size + 10*8 + 1 );
+		uint64_t total_saved = 0;
 
 		FileDisk output_file( filename );
 		output_file.Write( 0, header, header_size ); // could be done at the end when everythins is full;
@@ -248,6 +293,7 @@ public:
 			parks_count[i-1] = tinfo.parks_count;
 
 			uint64_t saved = tinfo.table_size - tinfo.new_table_size;
+			total_saved += saved;
 			std::cout << "		original size: " << tinfo.table_size << " (" << (tinfo.table_size>>20) << "MiB)"
 								<< "; compacted size: " << tinfo.new_table_size << " (" << (tinfo.new_table_size>>20) << "MiB)"
 								<< "; saved: " << saved << " (" << (saved>>20) << "MiB)" << std::endl;
@@ -259,28 +305,30 @@ public:
 		new_table_pointers[8] = new_table_pointers[7] + (table_pointers[8]-table_pointers[7]);
 		new_table_pointers[9] = new_table_pointers[8] + (table_pointers[9]-table_pointers[8]);
 
-		// TODO compacat table C3
-		parks_count[6] = CompactC3Table( &output_file, new_table_pointers[9] );
+		std::cout << "Table C3: compacting" << std::endl;
+		parks_count[6] = CompactC3Table( &output_file, new_table_pointers[9], total_saved );
+
 
 		// invert table pointers - TODO check endians and skip if not needed
-		for( uint32_t i = 0; i < 10; i++ )
+		for( uint32_t i = 0; i < 10; i++ ){
 			new_table_pointers[i] = bswap_64( new_table_pointers[i] ); //
-		// invert parks counts - TODO check endians and skip if not needed
-		for( uint32_t i = 0; i < 7; i++ )
-			parks_count[i] = bswap_64( parks_count[i] );
+			if( i < 7 )
+				parks_count[i] = bswap_32( parks_count[i] );
+		}
 
 		// save final header
 		output_file.Write( 0, header, header_size ); // could be done at the end when everythins is full;
+
+		std::cout << "Total decrease size: " << total_saved << " (" << (total_saved>>20) << "MiB)" << std::endl;
 	}
 
 	~Compressor(){
-		if( disk_file != nullptr ) delete disk_file;
 		if( memo != nullptr ) delete [] memo;
 	}
 
 private:
-	std::string filename;
-	std::ifstream *disk_file;
+	const std::string filename;
+	ReadFileWrapper disk_file;
 	uint8_t k_size;
 	uint8_t plotid[32];
 	uint16_t memo_size;
@@ -293,8 +341,7 @@ private:
 		uint8_t buf[tinfo.park_size+7];
 
 		// read last line point
-		Seek( table_pointers[table_no-1] + (tinfo.park_size*(tinfo.parks_count-1) ) );
-		Read( buf, 8 );
+		disk_file.Read( table_pointers[table_no-1] + (tinfo.park_size*(tinfo.parks_count-1) ), buf, 8 );
 		uint64_t last_line_point = bswap_64( ((uint64_t*)buf)[0] );
 		uint64_t avg_line_point = last_line_point / (tinfo.parks_count-1);
 
@@ -302,15 +349,14 @@ private:
 							<< "; stub size = " << tinfo.stub_size << "; delta_size = " << tinfo.delta_size
 							<< "; park_size = " << tinfo.park_size << "; parks_count = " << tinfo.parks_count << std::endl;
 
-		Seek( table_pointers[table_no-1] );
-
+		disk_file.Seek( table_pointers[table_no-1] );
 
 		// std::vector<unsigned char> deltas;
 		// auto R = kRValues[table_no - 1];
 		uint32_t groups_park_size = 0, max_group_park_size = 0, group_size = 8;
 
 		for( int64_t i = 0; i < tinfo.parks_count; i++ ){
-			Read( buf, tinfo.park_size );
+			disk_file.Read( buf, tinfo.park_size );
 
 			int32_t encoded_deltas_size = 0x7fff& ( ((uint32_t)buf[tinfo.line_point_size + tinfo.stub_size])
 																			| (((uint32_t)buf[tinfo.line_point_size + tinfo.stub_size + 1])<<8) );
@@ -348,8 +394,7 @@ private:
 		uint64_t total_parks_size = 0;
 
 		for( uint64_t i = 0; i < parks_count; i++ ){
-			Seek( table_pointers[9] + i * park_size );
-			Read( buf, 2 );
+			disk_file.Read( table_pointers[9] + i * park_size, buf, 2 );
 			uint16_t real_park_size = Bits(buf, 2, 16).GetValue();
 			total_parks_size += real_park_size;
 		}
@@ -361,34 +406,43 @@ private:
 	void CopyData( uint64_t src_position, uint64_t size,  FileDisk *output_file, uint64_t output_position ){
 		const uint64_t BUF_SIZE = 64*1024;
 		uint8_t buf[BUF_SIZE];
-		Seek( src_position );
+		disk_file.Seek( src_position );
 		for( uint64_t i = 0; i < size; i += BUF_SIZE ){
 			uint64_t to_copy = std::min( BUF_SIZE, i - size );
-			Read( buf, to_copy );
+			disk_file.Read( buf, to_copy );
 			output_file->Write( output_position + i, buf, to_copy );
 		}
 	}
 
+	// Compacted table has following structuer:
+	// 1. Part with constant size block i.e. stub, line_point, pointer_to_deltas
+	// 2. Deltas - writte one after another without spaces deltas.
+	// Each entry of 1st part contains of
+	// 1. Line Point
+	// 2. Stubs
+	// 3. 3 bottom bytes of pointer to deltas location after deltas of this part added.
+	//    it is supposed that first pointer is 0 and at length of deltas could be evaluated by substracting prev and next pointer.
 	OriginalTableInfo CompactTable( int table_no, FileDisk * output_file, uint64_t output_position ){
 		OriginalTableInfo tinfo( k_size, table_no, table_pointers[table_no-1], table_pointers[table_no] - table_pointers[table_no-1] );
 		uint8_t buf[tinfo.park_size+7], small_buf[8];
 
 		const uint64_t static_part_size =  tinfo.line_point_size + tinfo.stub_size;
-		const uint64_t deltas_start_position = output_position + tinfo.parks_count * (1 + static_part_size);
+		uint64_t deltas_position = output_position + tinfo.parks_count * (1 + static_part_size);
 		DeltasStorage deltas( tinfo.parks_count );
 
-		Seek( table_pointers[table_no-1] ); // seek to start of the table
+		disk_file.Seek( table_pointers[table_no-1] ); // seek to start of the table
 		for( uint64_t i = 0; i < tinfo.parks_count; i++ ){
-			Read( buf, tinfo.park_size );
+			disk_file.Read( buf, tinfo.park_size );
 
 			output_file->Write( output_position + (static_part_size + 3)*i, buf, static_part_size );
 
 			deltas.Add( i, 0x7fff & ( ((uint32_t)buf[static_part_size])
 															| (((uint32_t)buf[static_part_size + 1])<<8) ) );
 
-			output_file->Write( deltas_start_position + deltas.total_size, buf+static_part_size+2, deltas.all_sizes[i] );
+			output_file->Write( deltas_position, buf+static_part_size+2, deltas.all_sizes[i] );
+			deltas_position += deltas.all_sizes[i];
 
-			deltas.TotalEndToBuf( small_buf );
+			deltas.TotalEndToBuf( small_buf ); // this is buf with pointer already to next postion it is OK
 			output_file->Write( output_position + (static_part_size + 3)*i + static_part_size, small_buf, 3 );
 		}
 
@@ -402,22 +456,25 @@ private:
 	}
 
 
-	uint64_t CompactC3Table( FileDisk * output_file, uint64_t output_position ){
+	uint64_t CompactC3Table( FileDisk * output_file, uint64_t output_position, uint64_t &total_saved ){
 		auto park_size = EntrySizes::CalculateC3Size(k_size);
 		uint64_t parks_count = (table_pointers[10] - table_pointers[9]) / park_size;
 		const uint32_t POS_BUF_SIZE = 30000;
 		uint8_t buf[park_size], positions[POS_BUF_SIZE];
 		uint32_t cur_pos_buf = 0;
 		uint64_t next_buf_pos = output_position;
+		uint64_t deltas_position = output_position + parks_count*3;
 
 		DeltasStorage deltas(parks_count);
 
-		Seek( table_pointers[9] );
+		disk_file.Seek( table_pointers[9] );
 		for( uint64_t i = 0; i < parks_count; i++ ){
-			Read( buf, park_size );
+			disk_file.Read( buf, park_size );
 			deltas.Add( i,  Bits(buf, 2, 16).GetValue() );
 
-			output_file->Write( output_position + parks_count*3 + deltas.total_size, buf + 2, deltas.all_sizes[i] );
+			output_file->Write( deltas_position, buf + 2, deltas.all_sizes[i] );
+			deltas_position += deltas.all_sizes[i];
+
 			deltas.TotalEndToBuf( positions + cur_pos_buf );
 			cur_pos_buf += 3;
 			if( cur_pos_buf >= POS_BUF_SIZE ){
@@ -433,41 +490,14 @@ private:
 		if( !deltas.IsDeltasPositionRestorable() )
 			throw std::runtime_error( "couldn't restore position of deltas" );
 
-		std::cout << "		original size " << park_size * parks_count << "; compressed size: " << (3*parks_count + deltas.total_size) << std::endl;
+		uint64_t original_size = park_size * parks_count,
+				compacted_size = (3*parks_count + deltas.total_size);
+		uint64_t saved = original_size - compacted_size ;
+		total_saved += saved;
+		std::cout << "		original size " << original_size
+							<< "; compressed size: " << compacted_size << std::endl;
 
 		return parks_count;
-	}
-
-	void Read( uint8_t * buffer, uint64_t size ){
-		int64_t pos = disk_file->tellg();
-		disk_file->read(reinterpret_cast<char*>(buffer), size);
-
-		if (disk_file->fail()) {
-			std::cout << "Failed to read input disk at position " << pos << " size " << size << std::endl;
-			throw std::runtime_error("disk read file " +
-															 std::to_string(size) + " at position " + std::to_string(pos));
-		}
-	}
-
-	void Seek( uint64_t position ){
-		disk_file->seekg( position );
-
-		if (disk_file->fail()) {
-			std::cout << "Disk seek FAILED to position " << position << std::endl;
-			throw std::runtime_error("disk seek failed " + std::to_string(position));
-		}
-	}
-
-	int64_t FileSize(){
-		int64_t pos = disk_file->tellg();
-		disk_file->seekg( 0, std::ios_base::end );
-		if (disk_file->fail()) {
-			std::cout << "Disk seek FAILED to end of file" << std::endl;
-			throw std::runtime_error("disk seek failed to end of file" );
-		}
-		int64_t size = disk_file->tellg();
-		Seek( pos );
-		return size;
 	}
 };
 
