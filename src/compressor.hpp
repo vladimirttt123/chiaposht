@@ -100,17 +100,24 @@ public:
 struct ReadFileWrapper{
 public:
 	explicit ReadFileWrapper( const std::string& filename )
-			: disk_file( filename, std::ios::in | std::ios::binary )
+			: disk_file( new std::ifstream( filename, std::ios::in | std::ios::binary ) ), isExternal(false)
 	{
-		if( !disk_file.is_open() )
+		if( !disk_file->is_open() )
 			throw std::invalid_argument( "Cannot open file " + filename);
 	}
 
-	void Read( uint8_t * buffer, uint64_t size ){
-		int64_t pos = disk_file.tellg();
-		disk_file.read(reinterpret_cast<char*>(buffer), size);
+	explicit ReadFileWrapper( std::ifstream * file )
+			: disk_file( file ), isExternal(true)
+	{
+		if( !disk_file->is_open() )
+			throw std::invalid_argument( "File is not opened" );
+	}
 
-		if (disk_file.fail()) {
+	void Read( uint8_t * buffer, uint64_t size ){
+		int64_t pos = disk_file->tellg();
+		disk_file->read(reinterpret_cast<char*>(buffer), size);
+
+		if (disk_file->fail()) {
 			std::cout << "Failed to read input disk at position " << pos << " size " << size << std::endl;
 			throw std::runtime_error("disk read file " +
 															 std::to_string(size) + " at position " + std::to_string(pos));
@@ -123,27 +130,32 @@ public:
 	}
 
 	void Seek( uint64_t position ){
-		disk_file.seekg( position );
+		disk_file->seekg( position );
 
-		if( disk_file.fail() ) {
+		if( disk_file->fail() ) {
 			std::cout << "Disk seek FAILED to position " << position << std::endl;
 			throw std::runtime_error("disk seek failed " + std::to_string(position));
 		}
 	}
 
 	int64_t Size(){
-		int64_t pos = disk_file.tellg();
-		disk_file.seekg( 0, std::ios_base::end );
-		if (disk_file.fail()) {
+		int64_t pos = disk_file->tellg();
+		disk_file->seekg( 0, std::ios_base::end );
+		if (disk_file->fail()) {
 			std::cout << "Disk seek FAILED to end of file" << std::endl;
 			throw std::runtime_error("disk seek failed to end of file" );
 		}
-		int64_t size = disk_file.tellg();
+		int64_t size = disk_file->tellg();
 		Seek( pos );
 		return size;
 	}
+
+	~ReadFileWrapper(){
+		if( !isExternal ) delete disk_file;
+	}
 private:
-	std::ifstream disk_file;
+	std::ifstream *disk_file;
+	bool isExternal;
 };
 
 struct DeltasStorage{
@@ -438,6 +450,8 @@ private:
 
 		disk_file.Seek( table_pointers[table_no-1] ); // seek to start of the table
 		for( uint64_t i = 0; i < tinfo.parks_count; i++ ){
+			if( i == 1672347 )
+				int x = i;
 			disk_file.Read( buf, tinfo.park_size );
 
 			output_file->Write( output_position + (lps_size + 3)*i, buf, lps_size );
@@ -452,7 +466,7 @@ private:
 			output_file->Write( output_position + (lps_size + 3)*i + lps_size, small_buf, 3 );
 		}
 
-		tinfo.new_table_size = (lps_size + 1)*tinfo.parks_count + deltas.total_size;
+		tinfo.new_table_size = (lps_size + 3)*tinfo.parks_count + deltas.total_size;
 
 		// check all partially saved position could be restored
 		if( !deltas.IsDeltasPositionRestorable() )

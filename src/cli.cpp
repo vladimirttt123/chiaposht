@@ -121,7 +121,6 @@ int main(int argc, char *argv[]) try {
         "help", "Print help");
 
     auto result = options.parse(argc, argv);
-		parallel_read = false;
 
     if (result.count("help") || argc < 2) {
         HelpAndQuit(options);

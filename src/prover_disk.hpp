@@ -367,7 +367,7 @@ public:
                 // OK
 						} else if (fmt_desc_len == kFormatDescription.size() &&
 											 !memcmp(header.fmt_desc, TCompress::tFormatDescription.c_str(), fmt_desc_len)) {
-							decompressor = new TCompress::Decompressor( filename );
+							decompressor = new TCompress::Decompressor();
 						} else {
                 throw std::invalid_argument("Invalid plot file format");
             }
@@ -437,7 +437,7 @@ public:
         delete[] c2_buf;
 
 				if( decompressor != nullptr )
-					decompressor->init( memo.size(), k );
+					decompressor->init( disk_file, memo.size(), k );
     }
 
     explicit DiskProver(const std::vector<uint8_t>& vecBytes)
@@ -837,11 +837,17 @@ private:
         return 3;
     }
 
+		// uint128_t ReadLinePoint( std::ifstream& disk_file, uint8_t table_index, uint64_t position ){
+		// 	auto line_point = ReadLinePointReal( disk_file, table_index, position );
+		// 	std::cout << "table: " << (int)table_index << "; position: " << position << "; line_point: " << line_point << std::endl;
+		// 	return line_point;
+		// }
+
     // Reads exactly one line point (pair of two k bit back-pointers) from the given table.
     // The entry at index "position" is read. First, the park index is calculated, then
     // the park is read, and finally, entry deltas are added up to the position that we
     // are looking for.
-    uint128_t ReadLinePoint(
+		uint128_t ReadLinePoint(
         std::ifstream& disk_file,
         uint8_t table_index,
         uint64_t position
@@ -923,7 +929,7 @@ private:
         uint8_t stub_size = (uint8_t)(is_compressed ? compressed_stub_size_bits : k - kStubMinusBits);
         uint64_t sum_deltas = 0;
         uint64_t sum_stubs = 0;
-        for (uint32_t i = 0;
+				for (uint32_t i = 0;
              i < std::min((uint32_t)(position % kEntriesPerPark), (uint32_t)deltas.size());
              i++) {
             uint64_t stub = Util::EightBytesToInt(stubs_bin + start_bit / 8);
@@ -1117,7 +1123,7 @@ private:
 
         } else {
 						if( decompressor != nullptr ) {
-							encoded_size = decompressor->ReadC3Park( c1_index, bit_mask, c3_entry_size );
+							encoded_size = decompressor->ReadC3Park( disk_file, c1_index, bit_mask, c3_entry_size );
 						} else {
 							SafeSeek(disk_file, table_begin_pointers[10] + c1_index * c3_entry_size);
 							SafeRead(disk_file, encoded_size_buf, 2);
