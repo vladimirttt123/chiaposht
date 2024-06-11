@@ -37,6 +37,7 @@
 #include "entry_sizes.hpp"
 #include "serialize.hpp"
 #include "util.hpp"
+#include "decompressor.hpp"
 
 #if USE_GREEN_REAPER
     #include "GreenReaperPortable.h"
@@ -364,7 +365,10 @@ public:
             if (fmt_desc_len == kFormatDescription.size() &&
                 !memcmp(header.fmt_desc, kFormatDescription.c_str(), fmt_desc_len)) {
                 // OK
-            } else {
+						} else if (fmt_desc_len == kFormatDescription.size() &&
+											 !memcmp(header.fmt_desc, TCompress::tFormatDescription.c_str(), fmt_desc_len)) {
+							decompressor = new TCompress::Decompressor( filename );
+						} else {
                 throw std::invalid_argument("Invalid plot file format");
             }
             SafeSeek(disk_file, offsetof(struct plot_header, fmt_desc) + fmt_desc_len);
@@ -431,6 +435,9 @@ public:
         }
 
         delete[] c2_buf;
+
+				if( decompressor != nullptr )
+					decompressor->init( memo.size(), k );
     }
 
     explicit DiskProver(const std::vector<uint8_t>& vecBytes)
@@ -478,11 +485,13 @@ public:
 
     ~DiskProver()
     {
-        std::lock_guard<std::mutex> l(_mtx);
-        for (int i = 0; i < 6; i++) {
-            Encoding::ANSFree(kRValues[i]);
-        }
-        Encoding::ANSFree(kC3R);
+			if(decompressor != nullptr ) delete decompressor;
+
+			std::lock_guard<std::mutex> l(_mtx);
+			for (int i = 0; i < 6; i++) {
+					Encoding::ANSFree(kRValues[i]);
+			}
+			Encoding::ANSFree(kC3R);
     }
 
     const std::vector<uint8_t>& GetMemo() { return memo; }
@@ -785,6 +794,7 @@ private:
         ProofCache cached_proofs;
     #endif
 
+		TCompress::Decompressor *decompressor = nullptr;
     // Using this method instead of simply seeking will prevent segfaults that would arise when
     // continuing the process of looking up qualities.
     static void SafeSeek(std::ifstream& disk_file, uint64_t seek_location) {
@@ -836,6 +846,8 @@ private:
         uint8_t table_index,
         uint64_t position
     ) {
+			if( decompressor != nullptr ) return decompressor->ReadLinePoint( disk_file, table_index-1, position );
+
         size_t compressed_park_size = 0;
         uint32_t compressed_stub_size_bits = 0;
         double compressed_ans_r_value = 0;
@@ -1104,17 +1116,22 @@ private:
                 p7_positions.end(), second_positions.begin(), second_positions.end());
 
         } else {
-            SafeSeek(disk_file, table_begin_pointers[10] + c1_index * c3_entry_size);
-            SafeRead(disk_file, encoded_size_buf, 2);
-            encoded_size = Bits(encoded_size_buf, 2, 16).GetValue();
+						if( decompressor != nullptr ) {
+							encoded_size = decompressor->ReadC3Park( c1_index, bit_mask, c3_entry_size );
+						} else {
+							SafeSeek(disk_file, table_begin_pointers[10] + c1_index * c3_entry_size);
+							SafeRead(disk_file, encoded_size_buf, 2);
+							encoded_size = Bits(encoded_size_buf, 2, 16).GetValue();
 
-            // Avoid telling GetP7Positions and functions it uses that we have more
-            // bytes than we allocated for bit_mask above.
-            if (encoded_size > c3_entry_size - 2) {
-                return std::vector<uint64_t>();
-            }
 
-            SafeRead(disk_file, bit_mask, c3_entry_size - 2);
+							SafeRead(disk_file, bit_mask, c3_entry_size - 2);
+						}
+
+						// Avoid telling GetP7Positions and functions it uses that we have more
+						// bytes than we allocated for bit_mask above.
+						if (encoded_size > c3_entry_size - 2) {
+							return std::vector<uint64_t>();
+						}
 
             p7_positions =
                 GetP7Positions(curr_f7, f7, curr_p7_pos, bit_mask, encoded_size, c1_index);

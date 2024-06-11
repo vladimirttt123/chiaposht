@@ -184,6 +184,12 @@ public:
 		return true;
 	}
 
+
+	static uint64_t RestoreParkPostion( uint64_t park_avg_size, uint8_t*written, uint64_t park_no ){
+		return RestoreParkPostion( park_avg_size, (((uint32_t)written[0])<<16)
+																		 | (((uint32_t)written[1])<<8) | ((uint32_t)written[2]), park_no);
+	}
+
 	static uint64_t RestoreParkPostion( uint64_t park_avg_size, int64_t written, uint64_t park_no ){
 		int64_t expected_by_magic = park_avg_size*park_no;
 		int64_t restored = (expected_by_magic&0xff000000UL) | written;
@@ -426,27 +432,27 @@ private:
 		OriginalTableInfo tinfo( k_size, table_no, table_pointers[table_no-1], table_pointers[table_no] - table_pointers[table_no-1] );
 		uint8_t buf[tinfo.park_size+7], small_buf[8];
 
-		const uint64_t static_part_size =  tinfo.line_point_size + tinfo.stub_size;
-		uint64_t deltas_position = output_position + tinfo.parks_count * (1 + static_part_size);
+		const uint64_t lps_size =  tinfo.line_point_size + tinfo.stub_size;
+		uint64_t deltas_position = output_position + tinfo.parks_count * (3 + lps_size);
 		DeltasStorage deltas( tinfo.parks_count );
 
 		disk_file.Seek( table_pointers[table_no-1] ); // seek to start of the table
 		for( uint64_t i = 0; i < tinfo.parks_count; i++ ){
 			disk_file.Read( buf, tinfo.park_size );
 
-			output_file->Write( output_position + (static_part_size + 3)*i, buf, static_part_size );
+			output_file->Write( output_position + (lps_size + 3)*i, buf, lps_size );
 
-			deltas.Add( i, 0x7fff & ( ((uint32_t)buf[static_part_size])
-															| (((uint32_t)buf[static_part_size + 1])<<8) ) );
+			deltas.Add( i, 0x7fff & ( ((uint32_t)buf[lps_size])
+															| (((uint32_t)buf[lps_size + 1])<<8) ) );
 
-			output_file->Write( deltas_position, buf+static_part_size+2, deltas.all_sizes[i] );
+			output_file->Write( deltas_position, buf+lps_size+2, deltas.all_sizes[i] );
 			deltas_position += deltas.all_sizes[i];
 
 			deltas.TotalEndToBuf( small_buf ); // this is buf with pointer already to next postion it is OK
-			output_file->Write( output_position + (static_part_size + 3)*i + static_part_size, small_buf, 3 );
+			output_file->Write( output_position + (lps_size + 3)*i + lps_size, small_buf, 3 );
 		}
 
-		tinfo.new_table_size = (static_part_size + 1)*tinfo.parks_count + deltas.total_size;
+		tinfo.new_table_size = (lps_size + 1)*tinfo.parks_count + deltas.total_size;
 
 		// check all partially saved position could be restored
 		if( !deltas.IsDeltasPositionRestorable() )
