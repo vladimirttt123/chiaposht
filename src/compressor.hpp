@@ -204,7 +204,7 @@ public:
 
 	static uint64_t RestoreParkPostion( uint64_t park_avg_size, int64_t written, uint64_t park_no ){
 		int64_t expected_by_magic = park_avg_size*park_no;
-		int64_t restored = (expected_by_magic&0xff000000UL) | written;
+		int64_t restored = (expected_by_magic&~0xffffffUL) | written;
 		if( (expected_by_magic&0xffffff) < 0x500000 && written > 0xa00000 )
 			restored -= 0x1000000;
 		else if( (expected_by_magic&0xffffff)>0xa00000 && written < 0x500000 )
@@ -216,6 +216,17 @@ public:
 		if( all_sizes != nullptr ) delete[]all_sizes;
 	}
 
+};
+
+struct ProgressCounter{
+	ProgressCounter( uint64_t total) : scale( total/20 ){}
+	void ShowNext( uint64_t current ){
+		for( uint64_t cur = current/scale; shown < cur; shown++ )
+			std::cout << (((shown+1)%5)?'-':'*') << std::flush;
+	}
+	~ProgressCounter() { std::cout<<std::endl; }
+private:
+	uint64_t scale, shown = 0;
 };
 
 class Compressor {
@@ -303,7 +314,7 @@ public:
 		FileDisk output_file( filename );
 		output_file.Write( 0, header, header_size ); // could be done at the end when everythins is full;
 		for( uint32_t i = 1; i < 7; i++ ){
-			std::cout << "Table " << i << ": compacting" << std::endl;
+			std::cout << "Table " << i << ": compacting " << std::flush;
 			auto tinfo = CompactTable( i, &output_file, new_table_pointers[i-1] );
 			new_table_pointers[i] = new_table_pointers[i-1] + tinfo.new_table_size;
 			if( tinfo.parks_count > 0xffffffffUL )
@@ -317,13 +328,13 @@ public:
 								<< "; saved: " << saved << " (" << (saved>>20) << "MiB)" << std::endl;
 		}
 
-		std::cout << "copy tables 7, C1, C2" << std::endl;
+		std::cout << "copy tables 7, C1, C2 " << std::flush;
 		CopyData( table_pointers[6], table_pointers[9] - table_pointers[6], &output_file, new_table_pointers[6] );
 		new_table_pointers[7] = new_table_pointers[6] + (table_pointers[7]-table_pointers[6]);
 		new_table_pointers[8] = new_table_pointers[7] + (table_pointers[8]-table_pointers[7]);
 		new_table_pointers[9] = new_table_pointers[8] + (table_pointers[9]-table_pointers[8]);
 
-		std::cout << "Table C3: compacting" << std::endl;
+		std::cout << "Table C3: compacting " << std::flush;
 		parks_count[6] = CompactC3Table( &output_file, new_table_pointers[9], total_saved );
 
 
@@ -420,12 +431,16 @@ private:
 		return (parks_count*park_size) - total_parks_size;
 	}
 
-
 	void CopyData( uint64_t src_position, uint64_t size,  FileDisk *output_file, uint64_t output_position ){
 		const uint64_t BUF_SIZE = 64*1024;
 		uint8_t buf[BUF_SIZE];
+		ProgressCounter progress( size );
+
+
 		disk_file.Seek( src_position );
 		for( uint64_t i = 0; i < size; i += BUF_SIZE ){
+			progress.ShowNext( i );
+
 			uint64_t to_copy = std::min( BUF_SIZE, i - size );
 			disk_file.Read( buf, to_copy );
 			output_file->Write( output_position + i, buf, to_copy );
@@ -448,10 +463,12 @@ private:
 		uint64_t deltas_position = output_position + tinfo.parks_count * (3 + lps_size);
 		DeltasStorage deltas( tinfo.parks_count );
 
+		ProgressCounter progress( tinfo.parks_count );
+
 		disk_file.Seek( table_pointers[table_no-1] ); // seek to start of the table
 		for( uint64_t i = 0; i < tinfo.parks_count; i++ ){
-			if( i == 1672347 )
-				int x = i;
+			progress.ShowNext( i );
+
 			disk_file.Read( buf, tinfo.park_size );
 
 			output_file->Write( output_position + (lps_size + 3)*i, buf, lps_size );
@@ -486,9 +503,12 @@ private:
 		uint64_t deltas_position = output_position + parks_count*3;
 
 		DeltasStorage deltas(parks_count);
+		ProgressCounter progress( parks_count );
 
 		disk_file.Seek( table_pointers[9] );
 		for( uint64_t i = 0; i < parks_count; i++ ){
+			progress.ShowNext( i );
+
 			disk_file.Read( buf, park_size );
 			deltas.Add( i,  Bits(buf, 2, 16).GetValue() );
 
