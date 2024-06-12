@@ -16,6 +16,8 @@
 #include "encoding.hpp"
 #include "disk.hpp"
 
+#define _DEBUG_NO_WRITE_COMPRESSED_
+
 namespace TCompress {
 
 // This is replacement made for kFormatDescription in compress plots
@@ -177,45 +179,85 @@ public:
 		total_size += (all_sizes[idx] = size);
 	}
 
-	void TotalEndToBuf( uint8_t *buf ){
-		buf[0] = total_size>>16;
+	void TotalEndToBuf( uint64_t idx, uint8_t *buf ){
+		buf[0] = total_size >> ((idx&1)?24:16);
 		buf[1] = total_size>>8;
 		buf[2] = total_size;
 	}
 
+	// check all partially saved position could be restored
 	bool IsDeltasPositionRestorable(){
-		// check all partially saved position could be restored
+		uint64_t initial_total_size = total_size;
 		uint64_t park_avg_size = total_size/parks_count;
-		uint64_t next_park_position = 0;
-		for( uint64_t i = 0; i < parks_count; i++ ){
-			if( DeltasStorage::RestoreParkPostion( park_avg_size, next_park_position&0xffffff, i )  != next_park_position )
-				return false;
+		uint8_t buf[6];
+		uint8_t *buf_prev = buf, *buf_cur = buf + 3;
+		uint64_t delta_pos;
+		uint16_t delta_size;
 
-			next_park_position += all_sizes[i]; // move to next
+		total_size = 0; // to work with function TotalEndToBuf
+
+		for( uint64_t i = 0; i < parks_count; i++ ){
+			total_size += all_sizes[i];
+			TotalEndToBuf( i, buf_cur );
+			RestoreParkPositionAndSize( park_avg_size, i, buf_prev, buf_cur, delta_pos, delta_size );
+			if( delta_pos != (total_size-all_sizes[i]) || delta_size != all_sizes[i] ){
+				std::cout << "Couldn't restore parkd index " << i << " with position " << (total_size-all_sizes[i])
+									<< " and size " << all_sizes[i] << ". Predicted position " << delta_pos
+									<< " predicted size " << delta_size << std::endl;
+
+				total_size = initial_total_size;
+				return false;
+			}
+
+			buf_prev = buf_cur;
+			buf_cur = buf + 3*(i&1);
 		}
+
 		return true;
 	}
 
+	static void RestoreParkPositionAndSize( uint64_t park_avg_size, uint64_t park_idx, uint8_t *prev_buf, uint8_t *cur_buf,
+																				uint64_t &delta_position, uint16_t &encoded_delta_size ){
+		uint64_t cur_pos = (((uint16_t)cur_buf[1])<<8) | cur_buf[2];
 
-	static uint64_t RestoreParkPostion( uint64_t park_avg_size, uint8_t*written, uint64_t park_no ){
-		return RestoreParkPostion( park_avg_size, (((uint32_t)written[0])<<16)
-																		 | (((uint32_t)written[1])<<8) | ((uint32_t)written[2]), park_no);
-	}
+		if( park_idx == 0 ){
+			delta_position = 0;
+			encoded_delta_size = cur_pos;
+			return;
+		}
 
-	static uint64_t RestoreParkPostion( uint64_t park_avg_size, int64_t written, uint64_t park_no ){
-		int64_t expected_by_magic = park_avg_size*park_no;
-		int64_t restored = (expected_by_magic&~0xffffffUL) | written;
-		if( (expected_by_magic&0xffffff) < 0x500000 && written > 0xa00000 )
-			restored -= 0x1000000;
-		else if( (expected_by_magic&0xffffff)>0xa00000 && written < 0x500000 )
-			restored += 0x1000000;
-		return restored;
+
+		uint64_t prev_pos = (((uint16_t)prev_buf[1])<<8) | prev_buf[2];
+		encoded_delta_size = cur_pos - prev_pos;
+
+		if( park_idx&1 ){
+			prev_pos |= ((uint64_t)prev_buf[0])<<16;
+			bool is_jump = (prev_pos+encoded_delta_size)>>24; // is adding current delta will lead to jump to next value in bits24+
+			prev_pos |= (((uint64_t)(cur_buf[0]-(is_jump?1:0)) )&0xffUL)<<24;
+		}else{
+			cur_pos = (cur_pos | 0x1000000 | (((uint64_t)cur_buf[0])<<16)) - encoded_delta_size;
+			prev_pos |= (cur_pos&0xff0000) | (((uint64_t)prev_buf[0])<<24);
+		}
+
+		uint64_t expected_by_magic = park_avg_size*park_idx;
+		if( (expected_by_magic&0xffffffff) < 0x50000000	&& ( prev_pos&0xffffffff ) > 0xa0000000 )
+			expected_by_magic -= 0x100000000UL;
+		else if( (expected_by_magic&0xffffffff) > 0xa0000000	&& ( prev_pos&0xffffffff ) < 0x50000000 )
+			expected_by_magic += 0x100000000UL;
+		prev_pos |= expected_by_magic&~0xffffffffUL;
+
+		delta_position = prev_pos;
 	}
 
 	~DeltasStorage(){
 		if( all_sizes != nullptr ) delete[]all_sizes;
 	}
 
+private:
+	static uint64_t compound( uint8_t top, uint8_t high, uint8_t med, uint8_t low )
+	{
+		return (((uint64_t)top)<<24) | (((uint64_t)high)<<16) | (((uint64_t)med)<<8)  | (((uint64_t)low));
+	}
 };
 
 struct ProgressCounter{
@@ -329,7 +371,9 @@ public:
 		}
 
 		std::cout << "copy tables 7, C1, C2 " << std::flush;
+#ifndef _DEBUG_NO_WRITE_COMPRESSED
 		CopyData( table_pointers[6], table_pointers[9] - table_pointers[6], &output_file, new_table_pointers[6] );
+#endif
 		new_table_pointers[7] = new_table_pointers[6] + (table_pointers[7]-table_pointers[6]);
 		new_table_pointers[8] = new_table_pointers[7] + (table_pointers[8]-table_pointers[7]);
 		new_table_pointers[9] = new_table_pointers[8] + (table_pointers[9]-table_pointers[8]);
@@ -446,7 +490,6 @@ private:
 			output_file->Write( output_position + i, buf, to_copy );
 		}
 	}
-
 	// Compacted table has following structuer:
 	// 1. Part with constant size block i.e. stub, line_point, pointer_to_deltas
 	// 2. Deltas - writte one after another without spaces deltas.
@@ -471,16 +514,21 @@ private:
 
 			disk_file.Read( buf, tinfo.park_size );
 
+#ifndef _DEBUG_NO_WRITE_COMPRESSED
 			output_file->Write( output_position + (lps_size + 3)*i, buf, lps_size );
-
+#endif
 			deltas.Add( i, 0x7fff & ( ((uint32_t)buf[lps_size])
 															| (((uint32_t)buf[lps_size + 1])<<8) ) );
 
+#ifndef _DEBUG_NO_WRITE_COMPRESSED
 			output_file->Write( deltas_position, buf+lps_size+2, deltas.all_sizes[i] );
+#endif
 			deltas_position += deltas.all_sizes[i];
 
-			deltas.TotalEndToBuf( small_buf ); // this is buf with pointer already to next postion it is OK
+			deltas.TotalEndToBuf( i, small_buf ); // this is buf with pointer already to next postion it is OK
+#ifndef _DEBUG_NO_WRITE_COMPRESSED
 			output_file->Write( output_position + (lps_size + 3)*i + lps_size, small_buf, 3 );
+#endif
 		}
 
 		tinfo.new_table_size = (lps_size + 3)*tinfo.parks_count + deltas.total_size;
@@ -512,10 +560,12 @@ private:
 			disk_file.Read( buf, park_size );
 			deltas.Add( i,  Bits(buf, 2, 16).GetValue() );
 
+#ifndef _DEBUG_NO_WRITE_COMPRESSED
 			output_file->Write( deltas_position, buf + 2, deltas.all_sizes[i] );
+#endif
 			deltas_position += deltas.all_sizes[i];
 
-			deltas.TotalEndToBuf( positions + cur_pos_buf );
+			deltas.TotalEndToBuf( i, positions + cur_pos_buf );
 			cur_pos_buf += 3;
 			if( cur_pos_buf >= POS_BUF_SIZE ){
 				output_file->Write( next_buf_pos, positions, cur_pos_buf );
@@ -524,8 +574,9 @@ private:
 			}
 		}
 
+#ifndef _DEBUG_NO_WRITE_COMPRESSED
 		output_file->Write( next_buf_pos, positions, cur_pos_buf ); // write last positions
-
+#endif
 		// check all partially saved position could be restored
 		if( !deltas.IsDeltasPositionRestorable() )
 			throw std::runtime_error( "couldn't restore position of deltas" );
