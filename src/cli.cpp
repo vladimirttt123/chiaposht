@@ -60,7 +60,7 @@ void HelpAndQuit(cxxopts::Options options)
     cout << "./ProofOfSpace create" << endl;
     cout << "./ProofOfSpace prove <challenge>" << endl;
     cout << "./ProofOfSpace verify <proof> <challenge>" << endl;
-		cout << "./ProofOfSpace check <number_of_challanges> -f <plot_file>" << endl;
+		cout << "./ProofOfSpace check <number_of_challenges> -f <plot_file>" << endl;
 		cout << "./ProofOfSpace compress <compression_level> <input_file> -f <output_file>" << endl;
 		exit(0);
 }
@@ -98,6 +98,7 @@ int main(int argc, char *argv[]) try {
     bool show_progress = false;
     bool parallel_read = true;
     uint32_t buffmegabytes = 0;
+		uint32_t initial_challenge = 0;
 
     options.allow_unrecognised_options().add_options()(
             "k, size", "Plot size", cxxopts::value<uint8_t>(k))(
@@ -118,6 +119,8 @@ int main(int argc, char *argv[]) try {
         cxxopts::value<bool>(show_progress))(
         "parallel_read", "Set to false to use sequential reads",
         cxxopts::value<bool>(parallel_read)->default_value("true"))(
+				"initial_challenge", "The challenge to start with for check operation",
+				cxxopts::value<uint32_t>(initial_challenge) )(
         "help", "Print help");
 
     auto result = options.parse(argc, argv);
@@ -256,8 +259,9 @@ int main(int argc, char *argv[]) try {
         InitDecompressorQueueDefault();
 
         uint32_t iterations = 1000;
-        if (argc == 3) {
-            iterations = std::stoi(argv[2]);
+				if( argc >= 3 ) {
+					try{ iterations = std::stoi(argv[2]); }
+					catch(...) {iterations = 1000;}
         }
 
         DiskProver prover(filename);
@@ -270,7 +274,7 @@ int main(int argc, char *argv[]) try {
         k = prover.GetSize();
 
         for (uint32_t num = 0; num < iterations; num++) {
-            vector<unsigned char> hash_input = intToBytes(num, 4);
+						vector<unsigned char> hash_input = intToBytes(num+initial_challenge, 4);
             hash_input.insert(hash_input.end(), id_bytes.begin(), id_bytes.end());
 
             vector<unsigned char> hash(picosha2::k_digest_size);
