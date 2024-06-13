@@ -644,6 +644,7 @@ public:
                 {
                     x1x2 = Encoding::LinePointToSquare(new_line_point);
                 }
+
                 // The final two x values (which are stored in the same location) are hashed
                 std::vector<unsigned char> hash_input(32 + Util::ByteAlign(2 * k) / 8, 0);
                 memcpy(hash_input.data(), challenge, 32);
@@ -1086,10 +1087,14 @@ private:
             next_f7 = curr_f7;
             curr_f7 = c1_entry_bits.Slice(0, k).GetValue();
 
-            SafeSeek(disk_file, table_begin_pointers[10] + c1_index * c3_entry_size);
+						if( decompressor != nullptr )
+							encoded_size = decompressor->ReadC3Park( disk_file, c1_index, bit_mask, c3_entry_size );
+						else {
+							SafeSeek(disk_file, table_begin_pointers[10] + c1_index * c3_entry_size);
 
-            SafeRead(disk_file, encoded_size_buf, 2);
-            encoded_size = Bits(encoded_size_buf, 2, 16).GetValue();
+							SafeRead(disk_file, encoded_size_buf, 2);
+							encoded_size = Bits(encoded_size_buf, 2, 16).GetValue();
+						}
 
             // Avoid telling GetP7Positions and functions it uses that we have more
             // bytes than we allocated for bit_mask above.
