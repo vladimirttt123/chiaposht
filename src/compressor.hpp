@@ -16,7 +16,7 @@
 #include "encoding.hpp"
 #include "disk.hpp"
 
-#define _DEBUG_NO_WRITE_COMPRESSED_
+#define _DEBUG_NO_WRITE_COMPRESSED
 
 namespace TCompress {
 
@@ -323,12 +323,15 @@ public:
 	void CompressTo( const std::string& filename, uint8_t level ){
 		std::cout << "Start compressing with level " << (int)level << " to " << filename << std::endl;
 
+		// for( uint i = 1; i < 7; i++)
+		// 	AnalizeLinePoints( i );
+
+		// return;
 		// uint64_t saved_space = AnalizeC3Table();
 		// for( int i = 1; i < 7; i++){
 		// 	auto tinfo = AnalizeTable(i);
 		// 	saved_space += tinfo.table_size - tinfo.new_table_size;
 		// }
-		// //saved_space += AnalizeC3Table();
 
 		// std::cout << "saved space: " << saved_space << "( " << (saved_space>>20) << "MiB )"<< std::endl;
 
@@ -409,6 +412,70 @@ private:
 	uint64_t table_pointers[11];
 
 
+	bool CouldRestoreLPbySaved( uint64_t expected_line_point, uint64_t saved_bit_no, uint64_t line_point ){
+		uint64_t exp_top = expected_line_point>>saved_bit_no, lp_top = line_point>>saved_bit_no;
+
+		auto at_begin = [ &saved_bit_no](uint64_t v){ return ((v>>(saved_bit_no-4))&0xf) < 6; };
+		auto at_end = [ &saved_bit_no](uint64_t v){ return ((v>>(saved_bit_no-4))&0xf) > 9; };
+
+		if( exp_top > 0 && at_begin(expected_line_point) && at_end(line_point) )
+			exp_top--;
+		else if( at_end(expected_line_point) && at_begin(line_point) )
+			exp_top++;
+
+		if( exp_top == lp_top ) return true;
+
+		return false;
+	}
+	void AnalizeLinePoints( int table_no ){
+		std::cout<<"Analyze line point for table " << table_no << std::endl;
+
+		OriginalTableInfo tinfo( k_size, table_no, table_pointers[table_no-1], table_pointers[table_no] - table_pointers[table_no-1] );
+
+		// read last park
+		uint8_t line_point_buf[8+7];
+		disk_file.Read( tinfo.table_pointer + tinfo.park_size*(tinfo.parks_count-1), line_point_buf, 8 );
+		uint64_t line_point = Util::EightBytesToInt( line_point_buf );
+		const uint64_t avg_line_point = line_point / (tinfo.parks_count-1);
+
+		uint64_t bits_stats[65];
+		memset( bits_stats, 0, 65*8 );
+
+		for( uint64_t i = 0; i < tinfo.parks_count; i++ ){
+			// read park's i checkpoint line point
+			disk_file.Read( tinfo.table_pointer + tinfo.park_size*i, line_point_buf, 8 );
+			line_point = Util::EightBytesToInt( line_point_buf );
+
+
+			// evaluate how much we could save;
+			uint64_t expected_line_point = avg_line_point*i;
+			uint64_t need_bits = 4;
+			while( !CouldRestoreLPbySaved(expected_line_point, need_bits, line_point ) )
+				need_bits++;
+
+			bits_stats[need_bits]++;
+		}
+
+		uint64_t bits_sums[65];
+		memset( bits_sums, 0, 65*8 );
+		std::cout << "Original line_point size: " << (int)tinfo.line_point_size << "; bits_stas: [";
+		for( uint i = 4; i < 65; i++ ){
+			bits_sums[i] = bits_sums[i-1] + bits_stats[i];
+
+			if( bits_stats[i] != 0 )
+				std::cout << i << ": " << bits_stats[i] << " (" << bits_sums[i] << "), ";
+		}
+		std::cout << "]" << std::endl;
+		std::cout << "Savings on 7 byte: " << ( bits_sums[55] - (/*9bytes*/bits_sums[64] - bits_sums[62]) ) << std::endl
+							<< "Saving on 6 bytes: " << ( bits_sums[47]/*6bytes*/ + bits_sums[53]/*6+7bytes*/
+																					 - (/*9bytes*/bits_sums[64] - bits_sums[61]) ) <<std::endl
+							<< "Saving on 5 bytes: "<< ( bits_sums[39]/*5bytes*/ + bits_sums[45]/*5+6bytes*/
+																					 + bits_sums[53]/*5+6+7bytes*/ - (/*9 bytes*/ bits_sums[64] - bits_sums[62] ) ) <<std::endl
+							<< "Saving on 4 bytes: "<< ( bits_sums[31] + bits_sums[37] + bits_sums[45] + bits_sums[53]
+																					 - ( bits_sums[64] - bits_sums[62] ) ) <<std::endl;
+
+	}
+
 	OriginalTableInfo AnalizeTable( int table_no ){
 		OriginalTableInfo tinfo( k_size, table_no, table_pointers[table_no-1], table_pointers[table_no] - table_pointers[table_no-1] );
 		uint8_t buf[tinfo.park_size+7];
@@ -458,21 +525,6 @@ private:
 		tinfo.evaluateCompaction();
 
 		return tinfo;
-	}
-
-	uint64_t AnalizeC3Table(){
-		auto park_size = EntrySizes::CalculateC3Size(k_size);
-		uint64_t parks_count = (table_pointers[10] - table_pointers[9]) / park_size;
-		uint8_t buf[2];
-		uint64_t total_parks_size = 0;
-
-		for( uint64_t i = 0; i < parks_count; i++ ){
-			disk_file.Read( table_pointers[9] + i * park_size, buf, 2 );
-			uint16_t real_park_size = Bits(buf, 2, 16).GetValue();
-			total_parks_size += real_park_size;
-		}
-
-		return (parks_count*park_size) - total_parks_size;
 	}
 
 	void CopyData( uint64_t src_position, uint64_t size,  FileDisk *output_file, uint64_t output_position ){
