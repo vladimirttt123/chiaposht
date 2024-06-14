@@ -599,7 +599,7 @@ private:
 			ParkReader park( buf, k_size * 2, tinfo.single_stub_size_bits, EntrySizes::CalculateMaxDeltasSize( k_size, table_no ), table_no );
 
 			ParkBits park_stubs_bits;
-			std::vector<uint8_t> park_deltas(park.size());
+			std::vector<uint8_t> park_deltas;
 			bool deltas_changed = false;
 			uint128_t line_point = park.first_line_point >> bits_to_remove;
 			Bits line_point_bits( line_point, k_size*2-bits_to_remove );
@@ -609,13 +609,13 @@ private:
 			for( uint32_t j = 0; j < park.size(); j++ ){
 				assert( park.getIdx() == j );
 				uint128_t new_line_point = park.NextLinePoint()>>bits_to_remove;
-
+				
 				uint128_t new_big_delta = new_line_point - line_point;
 				uint32_t new_small_delta = new_big_delta >> tinfo.new_single_stub_size_bits;
 				if( new_small_delta > 255 )
 					throw std::runtime_error( "new delta is too big " + std::to_string(new_small_delta) );
 				park_deltas.push_back( new_small_delta );
-				if( new_small_delta != park.deltas[j] )
+				if( !deltas_changed && new_small_delta != park.deltas[j] )
 					deltas_changed = true;
 
 				uint64_t new_stub = new_big_delta & (tinfo.single_stub_mask >> bits_to_remove);
@@ -628,7 +628,10 @@ private:
 			size_t deltas_size = park.deltas_size;
 			uint8_t * deltas_buf = park.deltas_buf;
 			if( deltas_changed ){
+//				size_t orig_size = deltas_size;
 				deltas_size = Encoding::ANSEncodeDeltas(park_deltas, R, new_compressed_deltas_buf);
+				// if( deltas_size != orig_size )
+				// 	int x = 0;
 				if( deltas_size <= 0 || deltas_size >= kEntriesPerPark-1 ){
 					// uncompressed deltas -> need to think what to do
 					throw std::runtime_error( "uncopressed deltas is not support yet" );

@@ -438,7 +438,6 @@ public:
 
 				if( decompressor != nullptr ){
 					decompressor->init( disk_file, memo.size(), k, header.id );
-					decompressor->ReadLinePoint(disk_file, 0, 1 );
 				}
     }
 
