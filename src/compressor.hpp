@@ -259,7 +259,7 @@ public:
 			, stubs_size( Util::ByteAlign(stub_size_bits*(kEntriesPerPark-1))/8)
 			, stub_size_bits(stub_size_bits), first_line_point( Util::SliceInt128FromBytes( buf, 0, line_point_size_bits ) )
 			, deltas_size( ((uint32_t)buf[line_point_size+stubs_size]) | (((uint32_t)buf[line_point_size+stubs_size+ 1])<<8) )
-			, buf(buf), deltas_buf( buf + line_point_size + stubs_size + 2 ), stubs_buf(buf + line_point_size_bits )
+			, buf(buf), deltas_buf( buf + line_point_size + stubs_size + 2 ), stubs_buf(buf + line_point_size )
 			, cur_stub_buf( stubs_buf )
 
 	{
@@ -303,6 +303,7 @@ public:
 
 		stubs_sum += stub;
 		deltas_sum += deltas[idx++];
+		return true;
 	}
 
 private:
@@ -574,6 +575,9 @@ private:
 
 		OriginalTableInfo tinfo( k_size, table_no, table_pointers[table_no-1],
 														table_pointers[table_no] - table_pointers[table_no-1], bits_to_remove );
+		if( bits_to_remove > tinfo.single_stub_size_bits )
+			throw std::runtime_error( "Compression is too high Table 1 stub has " + std::to_string(tinfo.single_stub_size_bits)
+															 + " and compression need to remove " + std::to_string(bits_to_remove ) );
 
 		const uint64_t new_lps_size = tinfo.new_line_point_size + tinfo.new_stubs_size;
 		const double R = kRValues[table_no-1];
