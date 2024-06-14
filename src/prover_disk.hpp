@@ -436,8 +436,10 @@ public:
 
         delete[] c2_buf;
 
-				if( decompressor != nullptr )
+				if( decompressor != nullptr ){
 					decompressor->init( disk_file, memo.size(), k, header.id );
+					decompressor->ReadLinePoint(disk_file, 0, 1 );
+				}
     }
 
     explicit DiskProver(const std::vector<uint8_t>& vecBytes)

@@ -29,7 +29,7 @@ public:
 	const uint64_t table_pointer, table_size;
 	const uint8_t k, line_point_size;
 	const uint64_t delta_size, single_stub_size_bits, stubs_size, park_size, parks_count;
-	const uint64_t new_single_stub_size_bits, new_stubs_size;
+	const uint64_t new_single_stub_size_bits, new_stubs_size, new_line_point_size;
 	const uint64_t single_stub_mask;
 
 	uint64_t new_table_size = 0;
@@ -44,6 +44,7 @@ public:
 			, parks_count( table_size / park_size )
 			, new_single_stub_size_bits( single_stub_size_bits - stubs_bits_to_remove )
 			, new_stubs_size( Util::ByteAlign((kEntriesPerPark - 1) * ( new_single_stub_size_bits )) / 8 )
+			, new_line_point_size( Util::ByteAlign( 2*k-stubs_bits_to_remove )/8 )
 			, single_stub_mask( ((uint64_t)-1)>>(64-single_stub_size_bits))
 	{
 	}
@@ -245,6 +246,72 @@ private:
 	uint64_t stubs_position, deltas_position;
 };
 
+struct ParkReader{
+public:
+	const uint64_t line_point_size, line_point_size_bits, stubs_size, stub_size_bits;
+	const uint128_t first_line_point;
+	const size_t deltas_size;
+	uint8_t *buf, *deltas_buf, *stubs_buf;
+	std::vector<uint8_t> deltas;
+
+	ParkReader( uint8_t *buf, uint64_t line_point_size_bits, uint64_t stub_size_bits, uint32_t max_deltas_size, uint8_t table_no )
+			: line_point_size( (line_point_size_bits+7)/8 ), line_point_size_bits(line_point_size_bits)
+			, stubs_size( Util::ByteAlign(stub_size_bits*(kEntriesPerPark-1))/8)
+			, stub_size_bits(stub_size_bits), first_line_point( Util::SliceInt128FromBytes( buf, 0, line_point_size_bits ) )
+			, deltas_size( ((uint32_t)buf[line_point_size+stubs_size]) | (((uint32_t)buf[line_point_size+stubs_size+ 1])<<8) )
+			, buf(buf), deltas_buf( buf + line_point_size + stubs_size + 2 ), stubs_buf(buf + line_point_size_bits )
+			, cur_stub_buf( stubs_buf )
+
+	{
+		if( deltas_size&0x8000 )
+			throw std::runtime_error( "uncompressed deltas is not supported yet" );
+		if( deltas_size > max_deltas_size )
+			throw std::runtime_error( "incorrect deltas size " + std::to_string( deltas_size ) );
+
+		deltas = Encoding::ANSDecodeDeltas( deltas_buf , deltas_size, kEntriesPerPark - 1, kRValues[table_no-1] );
+	}
+
+	uint32_t size() const { return deltas.size(); }
+	uint32_t getIdx() const { return idx; }
+
+	uint128_t NextLinePoint(){
+		if( idx >= deltas.size() ) return 0;
+		MoveNext();
+
+		return first_line_point + (((uint128_t)deltas_sum)<<stub_size_bits) + stubs_sum;
+	}
+
+	uint128_t MoveToLinePoint( uint32_t i ){
+		if( !MoveTo(i ) ) return 0;
+
+		return first_line_point + (((uint128_t)deltas_sum)<<stub_size_bits) + stubs_sum;
+	}
+
+	bool MoveTo( uint32_t i ) {
+		while( i < idx && MoveNext() );
+		return i == idx;
+	}
+
+	bool MoveNext() {
+		if( idx >= deltas.size() ) return false;
+
+		uint64_t stub = Util::EightBytesToInt( cur_stub_buf )<<stubs_start_bit;
+		stub >>= 64 - stub_size_bits;
+		stubs_start_bit += stub_size_bits;
+		cur_stub_buf += stubs_start_bit/8;
+		stubs_start_bit %= 8;
+
+		stubs_sum += stub;
+		deltas_sum += deltas[idx++];
+	}
+
+private:
+	uint64_t stubs_sum = 0;
+	uint64_t deltas_sum = 0;
+	uint8_t *cur_stub_buf;
+	uint64_t stubs_start_bit = 0, idx = 0;
+};
+
 struct ProgressCounter{
 	ProgressCounter( uint64_t total) : scale( total/20 ){}
 	void ShowNext( uint64_t current ){
@@ -324,8 +391,8 @@ public:
 		header[58] = memo_size>>8;
 		header[59] = memo_size;
 		memcpy( header + 60, memo, memo_size );
-		// next is new tables pointers
-		header[140] = bits_to_cut; // compression level
+		// next 80 bytes is new tables pointers
+		header[140+memo_size] = bits_to_cut; // compression level
 
 		uint64_t *new_table_pointers = (uint64_t*)(header+60+memo_size);
 		new_table_pointers[0] = header_size;
@@ -508,16 +575,14 @@ private:
 		OriginalTableInfo tinfo( k_size, table_no, table_pointers[table_no-1],
 														table_pointers[table_no] - table_pointers[table_no-1], bits_to_remove );
 
-		const uint64_t lps_size =  tinfo.line_point_size + tinfo.stubs_size;
-		const uint64_t new_lps_size = tinfo.line_point_size + tinfo.new_stubs_size;
+		const uint64_t new_lps_size = tinfo.new_line_point_size + tinfo.new_stubs_size;
 		const double R = kRValues[table_no-1];
 
 		TableWriter writer( output_file, output_position, 3+new_lps_size, tinfo.parks_count );
 
-		uint8_t buf[tinfo.park_size+7], small_buf[8];
-		uint8_t new_stubs_buf[new_lps_size + 3 + 8/* safe distance*/],
+		uint8_t buf[tinfo.park_size+7],
+				new_stubs_buf[new_lps_size + 3 + 7/* safe distance*/],
 				new_compressed_deltas_buf[kEntriesPerPark];
-		std::vector<uint8_t> deltas;
 		DeltasStorage new_deltas_storage( tinfo.parks_count );
 		ProgressCounter progress( tinfo.parks_count );
 
@@ -525,43 +590,28 @@ private:
 		for( uint64_t i = 0; i < tinfo.parks_count; i++ ){
 			progress.ShowNext( i );
 
-			disk_file.Read( buf, tinfo.park_size );
+			disk_file.Read( buf, tinfo.park_size ); // read the original park
 
+			ParkReader park( buf, k_size * 2, tinfo.single_stub_size_bits, EntrySizes::CalculateMaxDeltasSize( k_size, table_no ), table_no );
 
-			size_t deltas_size = ( ((uint32_t)buf[lps_size]) | (((uint32_t)buf[lps_size + 1])<<8) );
-			if( deltas_size&0x8000 )
-				throw std::runtime_error( "uncompressed deltas is not supported yet" );
-			if( deltas_size > EntrySizes::CalculateMaxDeltasSize( k_size, table_no ) )
-				throw std::runtime_error( "incorrect deltas size " + std::to_string( deltas_size ) );
-			uint8_t *deltas_buf = buf + lps_size + 2;
-			deltas = Encoding::ANSDecodeDeltas( deltas_buf , deltas_size, kEntriesPerPark - 1, R);
-
-			memcpy( new_stubs_buf, buf, tinfo.line_point_size ); // copy check point line point
-			auto line_point = Util::SliceInt128FromBytes( buf, 0, k_size * 2 );
-
-			uint64_t start_bit = tinfo.line_point_size*8;
 			ParkBits park_stubs_bits;
-			std::vector<uint8_t> park_deltas;
-
+			std::vector<uint8_t> park_deltas(park.size());
 			bool deltas_changed = false;
+			uint128_t line_point = park.first_line_point >> bits_to_remove;
+			Bits line_point_bits( line_point, k_size*2-bits_to_remove );
+			line_point_bits.ToBytes( new_stubs_buf ); // save cutted check point line point
 
 			// Restore each line point and repack it new type of stubs
-			for( uint32_t j = 0; j < deltas.size(); j++ ){
-				uint64_t stub = Util::EightBytesToInt(buf + start_bit / 8); // seems max k is 56
-				stub <<= start_bit % 8;
-				stub >>= 64 - tinfo.single_stub_size_bits;
-				start_bit += tinfo.new_single_stub_size_bits;
+			for( uint32_t j = 0; j < park.size(); j++ ){
+				assert( park.getIdx() == j );
+				uint128_t new_line_point = park.NextLinePoint()>>bits_to_remove;
 
-				uint128_t big_delta = ( ((uint128_t)deltas[j]) << tinfo.single_stub_size_bits) + stub;
-				uint128_t new_line_point = line_point + big_delta;
-
-
-				uint128_t new_big_delta = (new_line_point>>bits_to_remove) - (line_point>>bits_to_remove);
+				uint128_t new_big_delta = new_line_point - line_point;
 				uint32_t new_small_delta = new_big_delta >> tinfo.new_single_stub_size_bits;
 				if( new_small_delta > 255 )
 					throw std::runtime_error( "new delta is too big " + std::to_string(new_small_delta) );
 				park_deltas.push_back( new_small_delta );
-				if( new_small_delta != deltas[j] )
+				if( new_small_delta != park.deltas[j] )
 					deltas_changed = true;
 
 				uint64_t new_stub = new_big_delta & (tinfo.single_stub_mask >> bits_to_remove);
@@ -571,6 +621,8 @@ private:
 			}
 
 			// The park repacked now need to save it new way
+			size_t deltas_size = park.deltas_size;
+			uint8_t * deltas_buf = park.deltas_buf;
 			if( deltas_changed ){
 				deltas_size = Encoding::ANSEncodeDeltas(park_deltas, R, new_compressed_deltas_buf);
 				if( deltas_size <= 0 || deltas_size >= kEntriesPerPark-1 ){
@@ -580,9 +632,12 @@ private:
 				deltas_buf = new_compressed_deltas_buf;
 			}
 
-			park_stubs_bits.ToBytes( new_stubs_buf + tinfo.line_point_size );
-			if( deltas.size() < (kEntriesPerPark-1) ){ // need to fill end of stabus by zeros to create same file each time
-				uint32_t new_stubs_size_bytes = (park_stubs_bits.GetSize()+7)/8;
+			assert( park_stubs_bits.GetSize() ==  park.size()*tinfo.new_single_stub_size_bits );
+
+
+			park_stubs_bits.ToBytes( new_stubs_buf + tinfo.new_line_point_size );
+			if( park.size() < (kEntriesPerPark-1) ){ // need to fill end of stabus by zeros to create same file each time
+				uint32_t new_stubs_size_bytes = (park.size()*tinfo.new_single_stub_size_bits + 7)/8;
 				memset( new_stubs_buf + tinfo.line_point_size + new_stubs_size_bytes, 0, tinfo.new_stubs_size-new_stubs_size_bytes );
 			}
 
@@ -593,7 +648,7 @@ private:
 		}
 
 
-		tinfo.new_table_size = (lps_size + 3)*tinfo.parks_count + new_deltas_storage.total_size;
+		tinfo.new_table_size = (new_lps_size + 3)*tinfo.parks_count + new_deltas_storage.total_size;
 
 		assert( tinfo.new_table_size == writer.getWrittenSize() );
 
