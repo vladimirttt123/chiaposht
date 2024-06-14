@@ -14,6 +14,9 @@
 
 #include <ctime>
 #include <set>
+#include <chrono>
+using namespace std::chrono;
+
 
 #include "cxxopts.hpp"
 #include "../lib/include/picosha2.hpp"
@@ -274,20 +277,28 @@ int main(int argc, char *argv[]) try {
         k = prover.GetSize();
 
         for (uint32_t num = 0; num < iterations; num++) {
+
 						vector<unsigned char> hash_input = intToBytes(num+initial_challenge, 4);
             hash_input.insert(hash_input.end(), id_bytes.begin(), id_bytes.end());
 
             vector<unsigned char> hash(picosha2::k_digest_size);
             picosha2::hash256(hash_input.begin(), hash_input.end(), hash.begin(), hash.end());
 
-            vector<LargeBits> qualities = prover.GetQualitiesForChallenge(hash.data());
+
+						auto start = high_resolution_clock::now();
+						vector<LargeBits> qualities = prover.GetQualitiesForChallenge(hash.data());
+						auto stop = high_resolution_clock::now();
+						std::cout << "Qualties time: " << (duration_cast<milliseconds>(stop - start).count()) << "ms" << std::endl;
 
             for (uint32_t i = 0; i < qualities.size(); i++) {
                 try {
-                    LargeBits proof = prover.GetFullProof(hash.data(), i, parallel_read);
+										start = high_resolution_clock::now();
+										LargeBits proof = prover.GetFullProof(hash.data(), i, parallel_read);
+										stop = high_resolution_clock::now();
+
                     uint8_t *proof_data = new uint8_t[proof.GetSize() / 8];
                     proof.ToBytes(proof_data);
-                    cout << "i: " << num << std::endl;
+										cout << "i: " << (num + initial_challenge) << " (" << num << ")" << std::endl;
                     cout << "challenge: 0x" << Util::HexStr(hash.data(), 256 / 8) << endl;
                     cout << "proof: 0x" << Util::HexStr(proof_data, k * 8) << endl;
                     LargeBits quality =
@@ -300,7 +311,11 @@ int main(int argc, char *argv[]) try {
                         cout << "Proof verification failed." << endl;
                         failures += 1;
                     }
+
+										std::cout << "Proof time: " << duration_cast<milliseconds>(stop - start).count() << "ms" << std::endl;
+
                     delete[] proof_data;
+
                 } catch (const std::exception& error) {
                     cout << "Threw: " << error.what() << endl;
                     exceptions += 1;
@@ -318,7 +333,7 @@ int main(int argc, char *argv[]) try {
 				return -1;
 			}
 			TCompress::Compressor plot_compress( argv[3] );
-			plot_compress.CompressTo( filename , 0 );
+			plot_compress.CompressTo( filename , std::stoi(argv[2]) );
     } else {
         cout << "Invalid operation '" << operation << "'. Use create/prove/verify/check" << endl;
     }
