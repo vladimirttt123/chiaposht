@@ -213,34 +213,37 @@ private:
 	uint32_t cur_recent_line_point = 0, recent_line_points_size = 0;
 	std::atomic_uint32_t threads_count = 0;
 
-	uint128_t RestoreLinePoint( uint128_t line_point, uint8_t removed_bits_no = 0 ){
-
-		if( removed_bits_no == 0 ) removed_bits_no = bits_cut_no;
-
-		// clear low bits of line_point
-		uint128_t base_line_point = line_point << removed_bits_no;
+	uint128_t RestoreLinePoint( uint128_t line_point ){
 
 		{
 			std::lock_guard<std::mutex> lk(mut_recent);
 			for( uint32_t i = 0; i < recent_line_points_size; i++ ){
-				if( (recent_line_points[i]>>removed_bits_no) == line_point )
+				if( (recent_line_points[i]>>bits_cut_no) == line_point )
 					return recent_line_points[i];
 			}
 		}
 
 		AtomicAdder threads_no( threads_count );
-		if( threads_no.inited_at < 8 && removed_bits_no > 14 ){
-			auto zero = std::async( std::launch::async, &Decompressor::RestoreLinePoint, this, line_point<<1, removed_bits_no - 1 );
-			auto one = std::async( std::launch::async, &Decompressor::RestoreLinePoint, this, (line_point<<1)+1, removed_bits_no - 1 );
+		if( threads_no.inited_at < 8 && bits_cut_no > 14 ){
+			std::atomic_bool not_found = true;
+			auto zero = std::async( std::launch::async, &Decompressor::RestoreLinePointPart, this, line_point<<1, bits_cut_no - 1, &not_found );
+			auto one = std::async( std::launch::async, &Decompressor::RestoreLinePointPart, this, (line_point<<1)+1, bits_cut_no - 1, &not_found );
 			uint128_t val = zero.get();
 			if( val != 0 ) return val;
 			val = one.get();
 			if( val != 0 ) return val;
-			if( removed_bits_no == bits_cut_no )
-				throw std::runtime_error( "Cannot restore linepoint " + std::to_string((uint64_t)(base_line_point>>64) )
-															 + ":" + std::to_string( (uint64_t)base_line_point ));
-			return 0;
+			throw std::runtime_error( "Cannot restore linepoint " + std::to_string((uint64_t)(line_point>>64) )
+															 + ":" + std::to_string( (uint64_t)line_point ));
 		}
+
+		return RestoreLinePointPart( line_point, bits_cut_no );
+	}
+
+	uint128_t RestoreLinePointPart( uint128_t line_point, uint8_t removed_bits_no, std::atomic_bool *not_found = nullptr ){
+
+		// clear low bits of line_point
+		uint128_t base_line_point = line_point << removed_bits_no;
+
 
 		F1Calculator f1( k_size, plot_id );
 		std::vector<Bits> ys;
@@ -251,7 +254,9 @@ private:
 		uint64_t last_first = 0;
 		// uint128_t res_line_point = 0, res_line_point_diff;
 
-		for( uint64_t i = 0; i < (1UL<<removed_bits_no); i++ ){
+		for( uint64_t i = 0; i < (1UL<<removed_bits_no)
+												 && ( not_found == nullptr || not_found->load(std::memory_order_relaxed));
+									i++ ){
 			line_point = (base_line_point | (uint128_t)i);
 
 			auto x1x2 = Encoding::LinePointToSquare( line_point );
@@ -275,6 +280,8 @@ private:
 			// If there is no match, fails.
 			uint64_t cdiff = r_plot_entry.y / kBC - l_plot_entry.y / kBC;
 			if( cdiff == 1 && f.FindMatches(bucket_L, bucket_R, nullptr, nullptr) == 1){
+				if( not_found != nullptr )
+					not_found->store( false, std::memory_order_relaxed );
 				// add to recent line points
 				{
 					std::lock_guard<std::mutex> lk(mut_recent);
@@ -297,7 +304,7 @@ private:
 			}
 		}
 
-		if( removed_bits_no == bits_cut_no )
+		if( not_found == nullptr )
 			throw std::runtime_error( "cannot restore linepoint " + std::to_string((uint64_t)(base_line_point>>64) )
 														 + ":" + std::to_string( (uint64_t)base_line_point ));
 
