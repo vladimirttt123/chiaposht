@@ -62,6 +62,7 @@ public:
 
 	}
 
+	uint8_t GetCompressionLevel() { return bits_cut_no; }
 	uint16_t ReadC3Park( std::ifstream& file, uint64_t idx, uint8_t *buf, uint16_t max_to_read ){
 		if( idx >= parks_counts[6] )
 			throw std::runtime_error( "too big C3 park index " + std::to_string(idx)

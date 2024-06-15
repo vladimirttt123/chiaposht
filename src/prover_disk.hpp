@@ -507,7 +507,9 @@ public:
 
     uint8_t GetSize() const noexcept { return k; }
 
-    uint8_t GetCompressionLevel() const noexcept { return compression_level; }
+		uint8_t GetCompressionLevel() const noexcept {
+			// this allows to not check size in chia harvester code
+			return decompressor == nullptr ? compression_level : decompressor->GetCompressionLevel(); }
 
     bool CompareProofBits(const LargeBits& left, const LargeBits& right, uint8_t k)
     {
