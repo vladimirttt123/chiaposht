@@ -455,6 +455,9 @@ public:
         deserializer >> k;
         deserializer >> table_begin_pointers;
         deserializer >> C2;
+				decompressor = TCompress::Decompressor::CheckForCompressed( filename, memo.size(), k, id.data() );
+				// std::cout << "DEBUG TCompress SEIRAL "<< filename << " - " << (decompressor==nullptr?"compressed":"NO");
+
         if (version == 2) {
             deserializer >> compression_level;
         } else {
@@ -482,6 +485,9 @@ public:
         table_begin_pointers = std::move(other.table_begin_pointers);
         C2 = std::move(other.C2);
         version = std::move(other.version);
+				// if( filename.find("compressed") != std::string::npos )
+				// 	std::cout << "DEBUG TCompress COPY "<< filename << " - " << (other.decompressor==nullptr?"NO":"compressed") << std::endl;
+				decompressor = other.decompressor == nullptr ? nullptr : new TCompress::Decompressor( *other.decompressor );
     }
 
     ~DiskProver()
@@ -509,7 +515,7 @@ public:
 
 		uint8_t GetCompressionLevel() const noexcept {
 			// this allows to not check size in chia harvester code
-			return decompressor == nullptr ? compression_level : decompressor->GetCompressionLevel(); }
+			return decompressor == nullptr ? compression_level : 1; }
 
     bool CompareProofBits(const LargeBits& left, const LargeBits& right, uint8_t k)
     {

@@ -36,13 +36,38 @@ struct AtomicAdder{
 class Decompressor{
 public:
 	Decompressor() {}
+	Decompressor(Decompressor& other) noexcept{
+		k_size = other.k_size;
+		memcpy( plot_id, other.plot_id, 32 );
+		stubs_size = other.stubs_size;
+		first_table_stubs_size = other.first_table_stubs_size;
+		bits_cut_no = other.bits_cut_no;
+		memcpy( table_pointers, other.table_pointers, 11*8 );
+		memcpy( avg_delta_sizes, other.avg_delta_sizes, 7*8 );
+		memcpy( parks_counts, other.parks_counts, 7*4 );
+	}
+
+	static Decompressor* CheckForCompressed( const std::string& filename, uint16_t memo_size, uint8_t k, const uint8_t *plot_id ){
+		ReadFileWrapper disk_file( filename );
+		uint8_t buf[4];
+		disk_file.Read( 54, buf, 4 );
+		if( memcmp( buf, tFormatDescription.c_str(), 4 ) == 0 ){
+			Decompressor *res = new Decompressor();
+			res->init( disk_file, memo_size, k, plot_id );
+			return res;
+		}
+		return nullptr;
+	}
 
 	void init( std::ifstream& file, uint16_t memo_size, uint8_t k, const uint8_t *plot_id ){
+		ReadFileWrapper disk_file( &file );
+	}
+
+	void init( ReadFileWrapper& disk_file, uint16_t memo_size, uint8_t k, const uint8_t *plot_id ){
 		k_size = k;
 		memcpy( this->plot_id, plot_id, 32 );
-		line_point_size = EntrySizes::CalculateLinePointSize(k);
+		uint32_t line_point_size = EntrySizes::CalculateLinePointSize(k);
 		stubs_size = EntrySizes::CalculateStubsSize(k);
-		ReadFileWrapper disk_file( &file );
 
 		disk_file.Read( 60 + memo_size, (uint8_t*)table_pointers, 80 );
 		disk_file.Read( &bits_cut_no, 1 );
@@ -59,7 +84,6 @@ public:
 			uint64_t static_size = i == 6 ? 0 : ( ( i == 0 ? first_table_stubs_size : stubs_size ) + line_point_size);
 			avg_delta_sizes[i] = (table_size - (static_size+3)*parks_counts[i])/parks_counts[i];
 		}
-
 	}
 
 	uint8_t GetCompressionLevel() { return bits_cut_no; }
@@ -204,7 +228,7 @@ public:
 
 private:
 	uint8_t k_size, plot_id[32];
-	uint32_t line_point_size, stubs_size, first_table_stubs_size;
+	uint32_t stubs_size, first_table_stubs_size;
 	uint8_t bits_cut_no;
 	uint64_t table_pointers[11], avg_delta_sizes[7];
 	uint32_t parks_counts[7];
