@@ -61,6 +61,7 @@ public:
 
 	void init( std::ifstream& file, uint16_t memo_size, uint8_t k, const uint8_t *plot_id ){
 		ReadFileWrapper disk_file( &file );
+		init( disk_file, memo_size, k, plot_id );
 	}
 
 	void init( ReadFileWrapper& disk_file, uint16_t memo_size, uint8_t k, const uint8_t *plot_id ){

@@ -608,7 +608,8 @@ private:
 			// Restore each line point and repack it new type of stubs
 			for( uint32_t j = 0; j < park.size(); j++ ){
 				assert( park.getIdx() == j );
-				uint128_t new_line_point = park.NextLinePoint()>>bits_to_remove;
+				uint128_t next_line_point = park.NextLinePoint();
+				uint128_t new_line_point = next_line_point>>bits_to_remove;
 				
 				uint128_t new_big_delta = new_line_point - line_point;
 				uint32_t new_small_delta = new_big_delta >> tinfo.new_single_stub_size_bits;
@@ -628,10 +629,7 @@ private:
 			size_t deltas_size = park.deltas_size;
 			uint8_t * deltas_buf = park.deltas_buf;
 			if( deltas_changed ){
-//				size_t orig_size = deltas_size;
 				deltas_size = Encoding::ANSEncodeDeltas(park_deltas, R, new_compressed_deltas_buf);
-				// if( deltas_size != orig_size )
-				// 	int x = 0;
 				if( deltas_size <= 0 || deltas_size >= kEntriesPerPark-1 ){
 					// uncompressed deltas -> need to think what to do
 					throw std::runtime_error( "uncopressed deltas is not support yet" );
