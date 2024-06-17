@@ -33,6 +33,47 @@ struct AtomicAdder{
 	}
 };
 
+struct LinePointCacheEntry{
+public:
+	uint64_t partial_id = 0, position = 0;
+	uint128_t line_point = 0;
+};
+
+struct LinePointsCache{
+public:
+	const uint32_t size;
+	LinePointsCache( uint32_t size = 1024) : size(size), cache(new LinePointCacheEntry[size] ){
+
+	}
+	void AddLinePoint( const uint8_t * id, uint64_t position, uint128_t line_point ){
+		if( line_point == 0 ) return;
+		std::lock_guard<std::mutex> lk(mut);
+		cache[next_pos].line_point = line_point;
+		cache[next_pos].position = position;
+		cache[next_pos++].partial_id = ((uint64_t*)id)[0];
+		if( count < next_pos ) count = next_pos;
+		next_pos %= size;
+	}
+
+	uint128_t GetLinePoint( const uint8_t * id, uint64_t position ){
+		std::lock_guard<std::mutex> lk(mut);
+		for( uint32_t i = 1; i <= count; i++ ){
+			uint32_t idx = (next_pos - i)%size;
+			if( cache[idx].position == position && cache->partial_id == ((uint64_t*)id)[0] )
+				return cache[idx].line_point;
+		}
+		return 0; // NOT FOUND
+	}
+
+	~LinePointsCache(){ delete[] cache; }
+private:
+	LinePointCacheEntry *cache;
+	uint32_t next_pos = 0, count = 0;
+	std::mutex mut;
+};
+
+LinePointsCache LPCache;
+
 class Decompressor{
 public:
 	Decompressor() {}
@@ -87,7 +128,8 @@ public:
 		}
 	}
 
-	uint8_t GetCompressionLevel() { return bits_cut_no; }
+	uint8_t GetNumberOfRemovedBits() { return bits_cut_no; }
+
 	uint16_t ReadC3Park( std::ifstream& file, uint64_t idx, uint8_t *buf, uint16_t max_to_read ){
 		if( idx >= parks_counts[6] )
 			throw std::runtime_error( "too big C3 park index " + std::to_string(idx)
@@ -109,6 +151,116 @@ public:
 	}
 
 	uint128_t ReadLinePoint( std::ifstream& file, // this need for parallel reading - will support it later
+													uint8_t table_no /*0 is a first table*/,
+													uint64_t position ){
+		uint128_t line_point;
+		switch( table_no ){
+		case 0:
+			line_point = LPCache.GetLinePoint( plot_id, position );
+			if( line_point == 0 ){
+				std::cout << "Missing line point cache - qualit/proof could be incerroct at position " << position << std::endl;
+				return ReadLinePointReal( file, table_no, position );
+			}
+			return line_point;
+
+		case 1:
+			line_point = ReadLinePointReal( file, table_no, position );
+			// Now we need to fine line_point from table 1 to cache them
+			{
+				auto x1x2 = Encoding::LinePointToSquare( line_point );
+				if( LPCache.GetLinePoint( plot_id, x1x2.first ) == 0 || LPCache.GetLinePoint( plot_id, x1x2.second ) == 0 ) {
+					std::vector<uint128_t> lps1, lps2;
+					uint128_t valid_lp1 = ReadLinePointReal( file, 0, x1x2.first ),
+							valid_lp2 = ReadLinePointReal( file, 0, x1x2.second );
+					bool match = CheckMatch( valid_lp1, valid_lp2 );
+					while( !match && valid_lp1 ){
+						lps1.push_back( valid_lp1 );
+						valid_lp1 = RestoreNextLinePoint( valid_lp1 + 1, bits_cut_no );
+						match = valid_lp1 != 0 && CheckMatch( valid_lp1, valid_lp2 );
+					}
+					while( !match && valid_lp2 != 0 ){
+						lps2.push_back( valid_lp2 );
+						valid_lp2 = RestoreNextLinePoint( valid_lp2 + 1, bits_cut_no );
+						if( valid_lp2 != 0)
+							for( uint i = 0; !match && i < lps1.size(); i++ ){
+								match = CheckMatch( valid_lp1 = lps1[i], valid_lp2 );
+							}
+					}
+
+					LPCache.AddLinePoint( plot_id, x1x2.first, valid_lp1 ? valid_lp1 : lps1[0] );
+					LPCache.AddLinePoint( plot_id, x1x2.second, valid_lp2 ? valid_lp2 : lps2[0] );
+
+					if( !match ){
+						std::cout << "no match at table2 position " << position;
+						if( lps1.size() > 1 || lps2.size() > 1 )
+							std::cout << ". GOOD point to explore.";
+						std::cout << std::endl;
+
+						// TODO need to define WHY!!!
+						// is throw error?
+						//std::cout << "Error: Cannot find mach on table 2 level for position: " << position << std::endl;
+					}
+				}
+			}
+			return line_point;
+
+		default:
+			return ReadLinePointReal( file, table_no, position );
+		}
+	}
+
+private:
+	uint8_t k_size, plot_id[32];
+	uint32_t stubs_size, first_table_stubs_size;
+	uint8_t bits_cut_no;
+	uint64_t table_pointers[11], avg_delta_sizes[7];
+	uint32_t parks_counts[7];
+	std::atomic_uint32_t threads_count = 0;
+
+	// match 2 lp from table 1 and supposed they are correct.
+	bool CheckMatch( uint128_t lp1, uint128_t lp2 ){
+		F1Calculator f1( k_size, plot_id );
+		FxCalculator f_d2( k_size, 2 );
+		FxCalculator f_d3( k_size, 3 );
+
+
+		auto xs1 = Encoding::LinePointToSquare( lp1 ), xs2 = Encoding::LinePointToSquare( lp2 );
+		std::vector<Bits> xs;
+		xs.emplace_back( xs1.first, k_size );
+		xs.emplace_back( xs1.second, k_size );
+		xs.emplace_back( xs2.first, k_size );
+		xs.emplace_back( xs2.second, k_size );
+		std::vector<Bits> ys;
+		for( uint32_t i = 0; i < 4; i ++ )
+			ys.push_back( f1.CalculateF(xs[i]) );
+
+		// change order to proof order ?
+		if( ys[0].GetValue() > ys[1].GetValue() ) {
+			vectorswap( xs, 0, 1 );
+			vectorswap( ys, 0, 1 );
+		}
+		if( ys[2].GetValue() > ys[3].GetValue() ) {
+			vectorswap( xs, 2, 3 );
+			vectorswap( ys, 2, 3 );
+		}
+
+
+		auto new_ys1 = f_d2.CalculateBucket( ys[0], xs[0], xs[1] ).first.GetValue();
+		auto new_ys2 = f_d2.CalculateBucket( ys[2], xs[2], xs[3] ).first.GetValue();
+
+		uint64_t cdiff = new_ys1/kBC - new_ys2/kBC;
+
+		if( cdiff != 1 && cdiff != (uint64_t)-1 ) return false;
+		// TODO check match...
+
+		return true;
+	}
+
+	void vectorswap( std::vector<Bits> &v, uint32_t i, uint32_t j ){
+		auto val = v[i]; 		v[i] = v[j]; 		v[j] = val;
+	}
+
+	uint128_t ReadLinePointReal( std::ifstream& file, // this need for parallel reading - will support it later
 												 uint8_t table_no /*0 is a first table*/,
 												 uint64_t position ){
 
@@ -172,82 +324,12 @@ public:
 
 		if( table_no == 0 && bits_cut_no > 0 )
 			return RestoreLinePoint( line_point + big_delta );
-		// if( table_no == -1 ) {
-		// 	uint128_t lp = line_point + big_delta;
-		// 	checkLinePoint( table_no, position, lp );
-		// 	const uint128_t mask = 0xffff;
-		// 	const uint64_t shift = k_size-kStubMinusBits-16;
-		// 	lp -= lp&(mask<<shift);
-		// 	uint32_t match_count = 0;
-		// 	for( uint64_t i = 0; i < mask+1; i++ ){
-		// 		if( checkLinePoint( table_no, position, lp + (i<<shift) ) )
-		// 			match_count ++;
-		// 	}
-		// 	if( match_count != 1 )
-		// 		std::cout << "!!!!!!!!!number of matches: " << match_count << std::endl;
-		// }
 
 		return line_point + big_delta;
 	}
 
-	bool checkLinePoint( uint8_t table_no, uint64_t position, uint128_t line_point ){
-
-		auto x1x2 = Encoding::LinePointToSquare( line_point );
-		F1Calculator f1(k_size, plot_id);
-		std::vector<Bits> ys;
-
-		std::pair<Bits, Bits> results = f1.CalculateBucket( Bits(x1x2.second,k_size) );
-		ys.push_back(std::get<0>(results));
-		results = f1.CalculateBucket( Bits(x1x2.first,k_size) );
-		ys.push_back(std::get<0>(results));
-
-
-		FxCalculator f(k_size, 2);
-		std::vector<Bits> new_ys;
-		std::vector<Bits> new_metadata;
-
-		PlotEntry l_plot_entry{};
-		PlotEntry r_plot_entry{};
-		bool is_swap = ys[0].GetValue() > ys[1].GetValue();
-		l_plot_entry.y = ys[is_swap?1:0].GetValue();
-		r_plot_entry.y = ys[is_swap?0:1].GetValue(); // for this need the alt position?
-		std::vector<PlotEntry> bucket_L = {l_plot_entry};
-		std::vector<PlotEntry> bucket_R = {r_plot_entry};
-
-		// If there is no match, fails.
-		uint64_t cdiff = r_plot_entry.y / kBC - l_plot_entry.y / kBC;
-		if (cdiff != 1) {
-			return false;
-		} else {
-			if(f.FindMatches(bucket_L, bucket_R, nullptr, nullptr) != 1) {
-				return false;
-			}
-		}
-
-		return true;
-	}
-
-private:
-	uint8_t k_size, plot_id[32];
-	uint32_t stubs_size, first_table_stubs_size;
-	uint8_t bits_cut_no;
-	uint64_t table_pointers[11], avg_delta_sizes[7];
-	uint32_t parks_counts[7];
-#define MAX_RECENT_LINE_POINTS 100U
-	std::mutex mut_recent;
-	uint128_t recent_line_points[MAX_RECENT_LINE_POINTS];
-	uint32_t cur_recent_line_point = 0, recent_line_points_size = 0;
-	std::atomic_uint32_t threads_count = 0;
 
 	uint128_t RestoreLinePoint( uint128_t line_point ){
-
-		{
-			std::lock_guard<std::mutex> lk(mut_recent);
-			for( uint32_t i = 0; i < recent_line_points_size; i++ ){
-				if( (recent_line_points[i]>>bits_cut_no) == line_point )
-					return recent_line_points[i];
-			}
-		}
 
 		AtomicAdder threads_no( threads_count );
 		if( threads_no.inited_at < 8 && bits_cut_no > 14 ){
@@ -258,20 +340,24 @@ private:
 			if( val != 0 ) return val;
 			val = one.get();
 			if( val != 0 ) return val;
-			throw std::runtime_error( "Cannot restore linepoint " + std::to_string((uint64_t)(line_point>>64) )
-															 + ":" + std::to_string( (uint64_t)line_point ));
+		} else {
+			auto lp = RestoreLinePointPart( line_point, bits_cut_no );
+			if( lp != 0 ) return lp;
 		}
 
-		return RestoreLinePointPart( line_point, bits_cut_no );
+		throw std::runtime_error( "Cannot restore linepoint " + std::to_string((uint64_t)(line_point>>64) )
+														 + ":" + std::to_string( (uint64_t)line_point ));
 	}
 
 	uint128_t RestoreLinePointPart( uint128_t line_point, uint8_t removed_bits_no, std::atomic_bool *not_found = nullptr ){
 		assert( removed_bits_no >= kBatchSizes );
+		return RestoreNextLinePoint( line_point << removed_bits_no, removed_bits_no, not_found );
+	}
 
-		// restore line point to its size
-		uint128_t base_line_point = line_point << removed_bits_no;
+	uint128_t RestoreNextLinePoint( uint128_t line_point, uint8_t removed_bits_no, std::atomic_bool *not_found = nullptr ){
+		assert( removed_bits_no >= kBatchSizes );
 
-		auto x1x2 = Encoding::LinePointToSquare( base_line_point );
+		auto x1x2 = Encoding::LinePointToSquare( line_point );
 
 		F1Calculator f1( k_size, plot_id );
 		FxCalculator f( k_size, 2 );
@@ -283,10 +369,10 @@ private:
 		std::vector<PlotEntry> bucket_L(1);
 		std::vector<PlotEntry> bucket_R(1);
 
-		uint64_t b = x1x2.second, left_to_do = 1U << removed_bits_no;
+		uint64_t b = x1x2.second, left_to_do = (1U << removed_bits_no) - (line_point&((1ULL << removed_bits_no)-1));
 		while( left_to_do > 0 && ( not_found == nullptr || not_found->load(std::memory_order_relaxed) ) ){
 			f1.CalculateBuckets( b, BATCH_SIZE, batch );
-			uint64_t cur_batch_size = std::min( BATCH_SIZE, x1x2.first - b );
+			uint64_t cur_batch_size = std::min( left_to_do, std::min( BATCH_SIZE, x1x2.first - b ) ); // possible to minimize with left_to_do
 			for( uint32_t i = 0; i < cur_batch_size; i++ ){
 				uint64_t cdiff = firstY / kBC - batch[i] / kBC;
 				if( cdiff == 1 ){
@@ -301,15 +387,7 @@ private:
 					if( not_found != nullptr )
 						not_found->store( false, std::memory_order_relaxed );
 
-					//auto lp = RestoreLinePointPartOld( line_point, removed_bits_no );// debug
-					line_point = Encoding::SquareToLinePoint( x1x2.first, b+i );
-					// add to recent line points
-					{
-						std::lock_guard<std::mutex> lk(mut_recent);
-						recent_line_points[(cur_recent_line_point++)%MAX_RECENT_LINE_POINTS] = line_point;
-						recent_line_points_size = std::min(cur_recent_line_point, MAX_RECENT_LINE_POINTS);
-					}
-					return line_point;
+					return Encoding::SquareToLinePoint( x1x2.first, b+i );
 				}
 			}
 			left_to_do -= cur_batch_size;
@@ -320,71 +398,9 @@ private:
 			}
 		}
 
-
-		if( not_found == nullptr )
-			throw std::runtime_error( "cannot restore linepoint " + std::to_string((uint64_t)(base_line_point>>64) )
-															 + ":" + std::to_string( (uint64_t)base_line_point ));
-
-		return 0;
+		return 0; // NOT FOUND
 	}
 
-	// uint128_t RestoreLinePointPartOld( uint128_t line_point, uint8_t removed_bits_no, std::atomic_bool *not_found = nullptr ){
-
-	// 	// restore line point to its size
-	// 	uint128_t base_line_point = line_point << removed_bits_no;
-
-
-	// 	F1Calculator f1( k_size, plot_id );
-	// 	std::vector<Bits> ys;
-
-	// 	FxCalculator f(k_size, 2);
-	// 	Bits first_bits, second_bits;
-	// 	uint64_t last_first = 0;
-
-	// 	for( uint64_t i = 0; i < (1UL<<removed_bits_no)
-	// 											 && ( not_found == nullptr || not_found->load(std::memory_order_relaxed));
-	// 								i++ ){
-	// 		line_point = (base_line_point | (uint128_t)i);
-
-	// 		auto x1x2 = Encoding::LinePointToSquare( line_point );
-
-	// 		std::pair<Bits, Bits> results = f1.CalculateBucket( Bits(x1x2.second,k_size) );
-	// 		second_bits = std::get<0>(results);
-	// 		if( last_first != x1x2.first ){ // the first value usually not changed and could be not reavaluated
-	// 			results = f1.CalculateBucket( Bits( x1x2.first, k_size ) );
-	// 			first_bits = std::get<0>(results);
-	// 			last_first = x1x2.first;
-	// 		}
-
-	// 		PlotEntry l_plot_entry{};
-	// 		PlotEntry r_plot_entry{};
-	// 		bool is_swap = second_bits.GetValue() > first_bits.GetValue();
-	// 		l_plot_entry.y = (is_swap?first_bits:second_bits).GetValue();
-	// 		r_plot_entry.y = (is_swap?second_bits:first_bits).GetValue();
-	// 		std::vector<PlotEntry> bucket_L = {l_plot_entry};
-	// 		std::vector<PlotEntry> bucket_R = {r_plot_entry};
-
-	// 		// If there is no match, fails.
-	// 		uint64_t cdiff = r_plot_entry.y / kBC - l_plot_entry.y / kBC;
-	// 		if( cdiff == 1 && f.FindMatches(bucket_L, bucket_R, nullptr, nullptr) == 1){
-	// 			if( not_found != nullptr )
-	// 				not_found->store( false, std::memory_order_relaxed );
-	// 			// add to recent line points
-	// 			{
-	// 				std::lock_guard<std::mutex> lk(mut_recent);
-	// 				recent_line_points[(cur_recent_line_point++)%MAX_RECENT_LINE_POINTS] = line_point;
-	// 				recent_line_points_size = std::min(cur_recent_line_point, MAX_RECENT_LINE_POINTS);
-	// 			}
-	// 			return line_point;
-	// 		}
-	// 	}
-
-	// 	if( not_found == nullptr )
-	// 		throw std::runtime_error( "cannot restore linepoint " + std::to_string((uint64_t)(base_line_point>>64) )
-	// 													 + ":" + std::to_string( (uint64_t)base_line_point ));
-
-	// 	return 0;
-	// }
 };
 
 } // endof namespace

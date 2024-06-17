@@ -438,7 +438,12 @@ public:
 
 				if( decompressor != nullptr ){
 					decompressor->init( disk_file, memo.size(), k, header.id );
+					//decompressor->ReadLinePoint( disk_file, 1, 24815550963 ); // DEBUG
 				}
+				// else {
+				// 	auto lp = ReadLinePoint( disk_file, 1, 26052880532 ); // DEBUG
+				// 	std::cout << lp << std::endl;
+				// }
     }
 
     explicit DiskProver(const std::vector<uint8_t>& vecBytes)
@@ -618,8 +623,8 @@ public:
                         alt_position = xy.second;
                     }
                 }
-                uint128_t new_line_point = ReadLinePoint(disk_file, GetEndTable(), position);
-                std::pair<uint64_t, uint64_t> x1x2;
+								uint128_t new_line_point = ReadLinePoint(disk_file, GetEndTable(), position);
+								std::pair<uint64_t, uint64_t> x1x2;
                 
                 #if USE_GREEN_REAPER
                     if (compression_level > 0) {
@@ -846,12 +851,6 @@ private:
         }
         return 3;
     }
-
-		// uint128_t ReadLinePoint( std::ifstream& disk_file, uint8_t table_index, uint64_t position ){
-		// 	auto line_point = ReadLinePointReal( disk_file, table_index, position );
-		// 	std::cout << "table: " << (int)table_index << "; position: " << position << "; line_point: " << line_point << std::endl;
-		// 	return line_point;
-		// }
 
     // Reads exactly one line point (pair of two k bit back-pointers) from the given table.
     // The entry at index "position" is read. First, the park index is calculated, then
