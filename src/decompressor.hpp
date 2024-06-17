@@ -182,23 +182,15 @@ public:
 						lps2.push_back( valid_lp2 );
 						valid_lp2 = RestoreNextLinePoint( valid_lp2 + 1, bits_cut_no );
 						if( valid_lp2 != 0)
-							for( uint i = 0; !match && i < lps1.size(); i++ ){
+							for( uint i = 0; !match && i < lps1.size(); i++ )
 								match = CheckMatch( valid_lp1 = lps1[i], valid_lp2 );
-							}
 					}
 
-					LPCache.AddLinePoint( plot_id, x1x2.first, valid_lp1 ? valid_lp1 : lps1[0] );
-					LPCache.AddLinePoint( plot_id, x1x2.second, valid_lp2 ? valid_lp2 : lps2[0] );
-
-					if( !match ){
-						std::cout << "no match at table2 position " << position;
-						if( lps1.size() > 1 || lps2.size() > 1 )
-							std::cout << ". GOOD point to explore.";
-						std::cout << std::endl;
-
-						// TODO need to define WHY!!!
-						// is throw error?
-						//std::cout << "Error: Cannot find mach on table 2 level for position: " << position << std::endl;
+					if( match ){
+						LPCache.AddLinePoint( plot_id, x1x2.first, valid_lp1 );
+						LPCache.AddLinePoint( plot_id, x1x2.second, valid_lp2 );
+					} else {
+						std::cout << "no match at table2 position " << position << std::endl;
 					}
 				}
 			}
@@ -315,7 +307,7 @@ private:
 		for( uint32_t i = 0, start_bit = (3+cur_line_point_size)*8;
 				 i < std::min((uint32_t)(position % kEntriesPerPark), (uint32_t)deltas.size());
 				 i++) {
-			uint64_t stub = Util::EightBytesToInt(stubs_buf + start_bit / 8); // seems max k is 56
+			uint64_t stub = cur_stub_size_bits == 0 ? 0 : Util::EightBytesToInt(stubs_buf + start_bit / 8); // seems max k is 56
 			stub <<= start_bit % 8;
 			stub >>= 64 - cur_stub_size_bits;
 
@@ -334,10 +326,10 @@ private:
 	}
 
 
-	uint128_t RestoreLinePoint( uint128_t line_point ){
+	uint128_t RestoreLinePoint( uint128_t line_point, bool allow_threads = false ){
 
 		AtomicAdder threads_no( threads_count );
-		if( threads_no.inited_at < 8 && bits_cut_no > 14 ){
+		if( allow_threads && threads_no.inited_at < 8 && bits_cut_no > 14 ){
 			std::atomic_bool not_found = true;
 			auto zero = std::async( std::launch::async, &Decompressor::RestoreLinePointPart, this, line_point<<1, bits_cut_no - 1, &not_found );
 			auto one = std::async( std::launch::async, &Decompressor::RestoreLinePointPart, this, (line_point<<1)+1, bits_cut_no - 1, &not_found );
