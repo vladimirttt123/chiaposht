@@ -252,6 +252,11 @@ private:
 
 		if( cdiff != 1 && cdiff != (uint64_t)-1 ) return false;
 		// TODO check match...
+		std::vector<PlotEntry> bucket_L(1), bucket_R(1);
+		bucket_L[0].y = std::min( new_ys1, new_ys2 );
+		bucket_R[0].y = std::max( new_ys1, new_ys2 );
+		if( f_d3.FindMatches( bucket_L, bucket_R, nullptr, nullptr ) != 1)
+			return false;
 
 		return true;
 	}
