@@ -159,9 +159,11 @@ public:
 		case 0:
 			line_point = LPCache.GetLinePoint( plot_id, position );
 			if( line_point == 0 ){
-				std::cout << "Missing line point cache - qualit/proof could be incerroct at position " << position << std::endl;
 				line_point = ReadRealLinePoint( file, table_no, position );
-				if( bits_cut_no > 0 ) line_point = RestoreLinePoint( line_point << bits_cut_no );
+				if( bits_cut_no > 0 ){
+					std::cout << "Missing line point cache - qualit/proof could be incerroct at position " << position << std::endl;
+					line_point = RestoreLinePoint( line_point );
+				}
 			}
 			return line_point;
 
