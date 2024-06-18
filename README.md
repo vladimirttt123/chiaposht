@@ -5,6 +5,59 @@
 ![PyPI - Format](https://img.shields.io/pypi/format/chiapos?logo=pypi)
 ![GitHub](https://img.shields.io/github/license/Chia-Network/chiapos?logo=Github)
 [![Coverage Status](https://coveralls.io/repos/github/Chia-Network/chiapos/badge.svg?branch=main)](https://coveralls.io/github/Chia-Network/chiapos?branch=main)
+## Compression
+### Abstract
+This branch was build to provide some level of compression to exists plots of any size. 
+This achived by realligning data inside plot and/or removing some data from table 1.
+
+### Usage
+Get the branch from git
+```bash
+git git clone https://github.com/vladimirttt123/chiaposht.git -b compression
+```
+Build as described bellow for original file
+Now you have executable ProofOfSpace that could be used to compress and library usually with name
+chiapos.cpython-312-x86_64-linux-gnu.so (the axact name depends on python version and architecture)
+In order to compress use
+```bash
+./ProofOfSpace compress <level> <original.plot> -f <output.plot>
+```
+Level is a positive number translated to number of bits to remove from table 1 of the plot. 
+Level 0 does not remove any data just reallign data inside to save around 1.2-1.3% of sapce.
+
+Now you can check timing of proof generation for plot with current compression on your system
+```bash
+./ProofOfSpace check 10 -f <plot.file>
+```
+To use compressed plots for farming you need replace the mentioned before 
+library (chiapos.cpython-312-x86_64-linux-gnu.so) in original chia instalation.
+The usual place for it 
+```bash
+<chia_install_folder>/venv/lib64/python3.12/site-packages
+```
+Before replacing chia services should be stopped like this from CLI
+```bash
+chia stop -d all
+```
+Than replace and run chia back as usual. The new library should support all exists plots as usual.
+### Trableshooting
+If compressed plots do not work, enable support of compressed plots in chia config file.
+
+I do not have compressed plots of other type than I havn't check of other compressed plots 
+will work after replacing the library but since the branch is fork of original chiapos with
+very minimal changes in original code I hope it will work.
+
+The version of chia client I checked on is 2.3.1. I think it should work also for 2.3 
+and sure will not work for less than 2.1.
+
+### Donate
+If you thinks this compression is helpfull for you please consider to donate. My chia wallet is
+```bash
+xch1ch6s3q0enuj9wtemn473gkkvj0u8vlggypr375mk547e7aa48hmsql74e8
+```
+
+-------------------------------------------------------------------------------------------
+#
 
 Chia's proof of space is written in C++. Includes a plotter, prover, and
 verifier. It exclusively runs on 64 bit architectures. Read the
