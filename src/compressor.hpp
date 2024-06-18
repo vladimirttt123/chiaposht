@@ -16,7 +16,6 @@
 #include "encoding.hpp"
 #include "disk.hpp"
 
-#define _DEBUG_NO_WRITE_COMPRESSED_
 
 namespace TCompress {
 
@@ -421,9 +420,8 @@ public:
 		}
 
 		std::cout << "copy tables 7, C1, C2 " << std::flush;
-#ifndef _DEBUG_NO_WRITE_COMPRESSED
 		CopyData( table_pointers[6], table_pointers[9] - table_pointers[6], &output_file, new_table_pointers[6] );
-#endif
+
 		new_table_pointers[7] = new_table_pointers[6] + (table_pointers[7]-table_pointers[6]);
 		new_table_pointers[8] = new_table_pointers[7] + (table_pointers[8]-table_pointers[7]);
 		new_table_pointers[9] = new_table_pointers[8] + (table_pointers[9]-table_pointers[8]);
@@ -536,9 +534,7 @@ private:
 			disk_file.Read( buf, park_size );
 			deltas.Add( i,  Bits(buf, 2, 16).GetValue() );
 
-#ifndef _DEBUG_NO_WRITE_COMPRESSED
 			output_file->Write( deltas_position, buf + 2, deltas.all_sizes[i] );
-#endif
 			deltas_position += deltas.all_sizes[i];
 
 			deltas.TotalEndToBuf( i, positions + cur_pos_buf );
@@ -550,9 +546,8 @@ private:
 			}
 		}
 
-#ifndef _DEBUG_NO_WRITE_COMPRESSED
 		output_file->Write( next_buf_pos, positions, cur_pos_buf ); // write last positions
-#endif
+
 		// check all partially saved position could be restored
 		if( !deltas.IsDeltasPositionRestorable() )
 			throw std::runtime_error( "couldn't restore position of deltas" );
