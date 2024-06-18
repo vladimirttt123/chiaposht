@@ -37,19 +37,23 @@ struct LinePointCacheEntry{
 public:
 	uint64_t partial_id = 0, position = 0;
 	uint128_t line_point = 0;
+	uint8_t importance = 0;
 };
 
 struct LinePointsCache{
 public:
 	const uint32_t size;
-	LinePointsCache( uint32_t size = 1024) : size(size), cache(new LinePointCacheEntry[size] ){
+	LinePointsCache( uint32_t size = 4096) : size(size), cache(new LinePointCacheEntry[size] ){	}
 
-	}
-	void AddLinePoint( const uint8_t * id, uint64_t position, uint128_t line_point ){
+	void AddLinePoint( const uint8_t * id, uint64_t position, uint128_t line_point, bool important ){
 		if( line_point == 0 ) return;
 		std::lock_guard<std::mutex> lk(mut);
+		while( cache[next_pos].importance != 0 )
+			cache[next_pos++].importance--;
+
 		cache[next_pos].line_point = line_point;
 		cache[next_pos].position = position;
+		cache[next_pos].importance = important ? 3 : 0;
 		cache[next_pos++].partial_id = ((uint64_t*)id)[0];
 		if( count < next_pos ) count = next_pos;
 		next_pos %= size;
@@ -161,7 +165,7 @@ public:
 			if( line_point == 0 ){
 				line_point = ReadRealLinePoint( file, table_no, position );
 				if( bits_cut_no > 0 ){
-					std::cout << "Missing line point cache - qualit/proof could be incerroct at position " << position << std::endl;
+					std::cout << "tcompress: Missing line point cache - qualit/proof could be incerroct at position " << position << std::endl;
 					line_point = RestoreLinePoint( line_point );
 				}
 			}
@@ -197,8 +201,8 @@ public:
 					}
 
 					if( match ){
-						LPCache.AddLinePoint( plot_id, x1x2.first, valid_lp1 );
-						LPCache.AddLinePoint( plot_id, x1x2.second, valid_lp2 );
+						LPCache.AddLinePoint( plot_id, x1x2.first, valid_lp1, lps1.size() > 0 );
+						LPCache.AddLinePoint( plot_id, x1x2.second, valid_lp2, lps2.size() > 0 );
 					} else {
 						std::cout << "no match at table2 position " << position << std::endl;
 					}
