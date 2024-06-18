@@ -72,6 +72,7 @@ private:
 	std::mutex mut;
 };
 
+// this is a cache for restored line points
 LinePointsCache LPCache;
 
 class Decompressor{
@@ -159,28 +160,35 @@ public:
 			line_point = LPCache.GetLinePoint( plot_id, position );
 			if( line_point == 0 ){
 				std::cout << "Missing line point cache - qualit/proof could be incerroct at position " << position << std::endl;
-				return ReadLinePointReal( file, table_no, position );
+				line_point = ReadRealLinePoint( file, table_no, position );
+				if( bits_cut_no > 0 ) line_point = RestoreLinePoint( line_point << bits_cut_no );
 			}
 			return line_point;
 
 		case 1:
-			line_point = ReadLinePointReal( file, table_no, position );
-			// Now we need to fine line_point from table 1 to cache them
-			{
+			line_point = ReadRealLinePoint( file, table_no, position );
+			if( bits_cut_no > 0 )
+			{ // Now we need to fine line_point from table 1 to cache them
 				auto x1x2 = Encoding::LinePointToSquare( line_point );
 				if( LPCache.GetLinePoint( plot_id, x1x2.first ) == 0 || LPCache.GetLinePoint( plot_id, x1x2.second ) == 0 ) {
 					std::vector<uint128_t> lps1, lps2;
-					uint128_t valid_lp1 = ReadLinePointReal( file, 0, x1x2.first ),
-							valid_lp2 = ReadLinePointReal( file, 0, x1x2.second );
+					uint128_t valid_lp1 = ReadRealLinePoint( file, 0, x1x2.first ),
+							valid_lp2 = ReadRealLinePoint( file, 0, x1x2.second );
+
+					auto r_lp1 = std::async( std::launch::async, &Decompressor::RestoreLinePoint, this, valid_lp1 );
+					auto r_lp2 = std::async( std::launch::async, &Decompressor::RestoreLinePoint, this, valid_lp2 );
+					valid_lp1 = r_lp1.get();
+					valid_lp2 = r_lp2.get();
+
 					bool match = CheckMatch( valid_lp1, valid_lp2 );
 					while( !match && valid_lp1 ){
 						lps1.push_back( valid_lp1 );
-						valid_lp1 = RestoreNextLinePoint( valid_lp1 + 1, bits_cut_no );
+						valid_lp1 = FindNextLinePoint( valid_lp1 + 1, bits_cut_no );
 						match = valid_lp1 != 0 && CheckMatch( valid_lp1, valid_lp2 );
 					}
 					while( !match && valid_lp2 != 0 ){
 						lps2.push_back( valid_lp2 );
-						valid_lp2 = RestoreNextLinePoint( valid_lp2 + 1, bits_cut_no );
+						valid_lp2 = FindNextLinePoint( valid_lp2 + 1, bits_cut_no );
 						if( valid_lp2 != 0)
 							for( uint i = 0; !match && i < lps1.size(); i++ )
 								match = CheckMatch( valid_lp1 = lps1[i], valid_lp2 );
@@ -197,7 +205,7 @@ public:
 			return line_point;
 
 		default:
-			return ReadLinePointReal( file, table_no, position );
+			return ReadRealLinePoint( file, table_no, position );
 		}
 	}
 
@@ -257,7 +265,7 @@ private:
 		auto val = v[i]; 		v[i] = v[j]; 		v[j] = val;
 	}
 
-	uint128_t ReadLinePointReal( std::ifstream& file, // this need for parallel reading - will support it later
+	uint128_t ReadRealLinePoint( std::ifstream& file, // this need for parallel reading - will support it later
 												 uint8_t table_no /*0 is a first table*/,
 												 uint64_t position ){
 
@@ -278,9 +286,8 @@ private:
 			// Simplest case read first line point at the begining of park
 			uint8_t line_point_buf[cur_line_point_size + 7];
 			disk_file.Read( table_pointers[table_no] + plps_size*park_idx, line_point_buf, cur_line_point_size );
-			return (table_no == 0 && bits_cut_no > 0 ) ?
-					RestoreLinePoint( Util::SliceInt128FromBytes( line_point_buf, 0, cur_line_point_size_bits ) )
-																								: Util::SliceInt128FromBytes( line_point_buf, 0, cur_line_point_size_bits );
+			return table_no == 0 ? Util::SliceInt128FromBytes( line_point_buf, 0, cur_line_point_size_bits )
+													: Util::SliceInt128FromBytes( line_point_buf, 0, cur_line_point_size_bits );
 		}
 
 		uint8_t stubs_buf[plps_size + 3 /*because we read 2 deltas pointers*/];
@@ -318,40 +325,20 @@ private:
 		}
 
 		uint128_t big_delta = ((uint128_t)sum_deltas << cur_stub_size_bits) + sum_stubs;
-
-		if( table_no == 0 && bits_cut_no > 0 )
-			return RestoreLinePoint( line_point + big_delta );
-
 		return line_point + big_delta;
 	}
 
 
-	uint128_t RestoreLinePoint( uint128_t line_point, bool allow_threads = false ){
+	uint128_t RestoreLinePoint( uint128_t cutted_line_point ){
 
-		AtomicAdder threads_no( threads_count );
-		if( allow_threads && threads_no.inited_at < 8 && bits_cut_no > 14 ){
-			std::atomic_bool not_found = true;
-			auto zero = std::async( std::launch::async, &Decompressor::RestoreLinePointPart, this, line_point<<1, bits_cut_no - 1, &not_found );
-			auto one = std::async( std::launch::async, &Decompressor::RestoreLinePointPart, this, (line_point<<1)+1, bits_cut_no - 1, &not_found );
-			uint128_t val = zero.get();
-			if( val != 0 ) return val;
-			val = one.get();
-			if( val != 0 ) return val;
-		} else {
-			auto lp = RestoreLinePointPart( line_point, bits_cut_no );
-			if( lp != 0 ) return lp;
-		}
+		auto lp = FindNextLinePoint( cutted_line_point<<bits_cut_no, bits_cut_no );
+		if( lp != 0 ) return lp;
 
-		throw std::runtime_error( "Cannot restore linepoint " + std::to_string((uint64_t)(line_point>>64) )
-														 + ":" + std::to_string( (uint64_t)line_point ));
+		throw std::runtime_error( "Cannot restore linepoint " + std::to_string((uint64_t)(cutted_line_point>>64) )
+														 + ":" + std::to_string( (uint64_t)cutted_line_point ));
 	}
 
-	uint128_t RestoreLinePointPart( uint128_t line_point, uint8_t removed_bits_no, std::atomic_bool *not_found = nullptr ){
-		assert( removed_bits_no >= kBatchSizes );
-		return RestoreNextLinePoint( line_point << removed_bits_no, removed_bits_no, not_found );
-	}
-
-	uint128_t RestoreNextLinePoint( uint128_t line_point, uint8_t removed_bits_no, std::atomic_bool *not_found = nullptr ){
+	uint128_t FindNextLinePoint( uint128_t line_point, uint8_t removed_bits_no ){
 		assert( removed_bits_no >= kBatchSizes );
 
 		auto x1x2 = Encoding::LinePointToSquare( line_point );
@@ -367,7 +354,7 @@ private:
 		std::vector<PlotEntry> bucket_R(1);
 
 		uint64_t b = x1x2.second, left_to_do = (1U << removed_bits_no) - (line_point&((1ULL << removed_bits_no)-1));
-		while( left_to_do > 0 && ( not_found == nullptr || not_found->load(std::memory_order_relaxed) ) ){
+		while( left_to_do > 0 ){
 			f1.CalculateBuckets( b, BATCH_SIZE, batch );
 			uint64_t cur_batch_size = std::min( left_to_do, std::min( BATCH_SIZE, x1x2.first - b ) ); // possible to minimize with left_to_do
 			for( uint32_t i = 0; i < cur_batch_size; i++ ){
@@ -380,12 +367,8 @@ private:
 					bucket_R[0].y = batch[i];
 				}else continue;
 
-				if( f.FindMatches( bucket_L, bucket_R, nullptr, nullptr ) == 1){
-					if( not_found != nullptr )
-						not_found->store( false, std::memory_order_relaxed );
-
+				if( f.FindMatches( bucket_L, bucket_R, nullptr, nullptr ) == 1)
 					return Encoding::SquareToLinePoint( x1x2.first, b+i );
-				}
 			}
 			left_to_do -= cur_batch_size;
 			b += cur_batch_size;
