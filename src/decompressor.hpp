@@ -172,11 +172,11 @@ public:
 				auto x1x2 = Encoding::LinePointToSquare( line_point );
 				if( LPCache.GetLinePoint( plot_id, x1x2.first ) == 0 || LPCache.GetLinePoint( plot_id, x1x2.second ) == 0 ) {
 					std::vector<uint128_t> lps1, lps2;
-					uint128_t valid_lp1 = ReadRealLinePoint( file, 0, x1x2.first ),
-							valid_lp2 = ReadRealLinePoint( file, 0, x1x2.second );
-
+					uint128_t valid_lp1 = ReadRealLinePoint( file, 0, x1x2.first );
 					auto r_lp1 = std::async( std::launch::async, &Decompressor::RestoreLinePoint, this, valid_lp1 );
+					uint128_t valid_lp2 = ReadRealLinePoint( file, 0, x1x2.second );
 					auto r_lp2 = std::async( std::launch::async, &Decompressor::RestoreLinePoint, this, valid_lp2 );
+
 					valid_lp1 = r_lp1.get();
 					valid_lp2 = r_lp2.get();
 
