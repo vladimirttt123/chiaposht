@@ -13,9 +13,17 @@ This achived by realligning data inside plot and/or removing some data from tabl
 ### Usage
 Get the branch from git
 ```bash
-git git clone https://github.com/vladimirttt123/chiaposht.git -b compression
+git clone https://github.com/vladimirttt123/chiaposht.git -b compression
 ```
-Build as described bellow for original file
+Build as described bellow for original project
+```bash
+# Requires cmake 3.14+
+
+mkdir -p build && cd build
+cmake ../
+cmake --build . -- -j 6
+```
+
 Now you have executable ProofOfSpace that could be used to compress and library usually with name
 chiapos.cpython-312-x86_64-linux-gnu.so (the axact name depends on python version and architecture)
 In order to compress use
