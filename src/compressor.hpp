@@ -364,6 +364,7 @@ public:
 		disk_file.Read( memo, memo_size );
 
 		// now table pointers
+		std::cout << "Compress to " << filename << std::endl;
 		std::cout << "Tables pointers: ";
 		disk_file.Read( buf, 80 );
 		for( int i = 0; i < 10; i++ ){

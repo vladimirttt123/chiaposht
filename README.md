@@ -30,8 +30,8 @@ In order to compress use
 ```bash
 ./ProofOfSpace compress <level> <original.plot> -f <output.plot>
 ```
-Level is a positive number translated to number of bits to remove from table 1 of the plot. 
-Level 0 does not remove any data just reallign data inside to save around 1.2-1.3% of sapce.
+Level is a non negative number translated to number of bits to remove from table 1 of the plot. 
+Level 0 does not remove any data just reallign data inside to save around 1.3-1.7% of sapce.
 
 Now you can check timing of proof generation for plot with current compression on your system
 ```bash
@@ -48,6 +48,44 @@ Before replacing chia services should be stopped like this from CLI
 chia stop -d all
 ```
 Than replace and run chia back as usual. The new library should support all exists plots as usual.
+
+### Limitations
+* The maximum bits to cut by this method is k-3.
+* CPU only compression/decompression
+* The number of used threads for quality look up is 2.
+ * The maximum number of threads used for proof restore is 62 
+in case of parralel read is enabled (that is default) or 
+up to 2 if no parallel read.
+
+
+### Analyze
+
+Any compression level adds 1 IO request per table park. 
+Practically it means double of IO requests without adding thougutput.
+
+Any compression level depends on k size. Level 0 compression adds around 1.3-1.7% 
+and each bit cut removes around (2^(k-3))*0.81 bytes that for k32 is around 
+(2^(32-3))*0.81 ~ 410MiB. Than for k32 with size 103800MiB using 29 bits cut supposed final size
+is 103800 * 0.984 - 29 * (2^(32-3)) * 0.81 ~ 90243 MiB that means final file is around 87% from original.
+
+Proof look up time depends only on number of cutted bits. 
+It means that time for proof look up on k32 with 29 bits removed 
+in average be the same like for k37 with 29 bits removed. 
+But compression percent is decrease for same bits cut and higher k. 
+For example 29 bits cut on k37 gives 3 820 900 * 0.984 - 29 * (2^(37-3)) * 0.81 ~ 3 375 900 MiB
+that is around 88.4% from original file
+
+The timing of proof recovery depends on CPU and number of removed bits. 
+As example my AMD Ryzen 5500U capable 
+to restore proof from 27 bits cut for 2-2.5 seconds and 29 bits cut timing is 8-10 seconds.
+
+Any plot pass filter around 36 times a day. It means 36 quality look ups a day.
+By CPU usage 64 quality look ups equals to one proof look up. 
+The number of proofs look up depends on either this is OG or NFT plot farming for pool.
+Suppose plot with 27 bit cut on AMD 5500U CPU that farms for pool and has 3 proof
+look ups a day with 36 quality look ups it is around 4 proof look ups i.e. 8-10 second
+of CPU usage a day for decompression.
+
 ### Trableshooting
 If compressed plots do not work, enable support of compressed plots in chia config file.
 
