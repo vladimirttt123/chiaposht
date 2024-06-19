@@ -37,16 +37,15 @@ struct LinePointCacheEntry{
 public:
 	uint64_t partial_id = 0, position = 0;
 	uint128_t line_point = 0;
-	uint8_t importance = 0, k = 0;
+	uint8_t importance = 0, k = 0, table_no = 0;
 };
 
 struct LinePointsCache{
 public:
-	const uint32_t size;
 	LinePointsCache( uint32_t size = 4096) : size(size), cache(new LinePointCacheEntry[size] ){	}
 
-	void AddLinePoint( uint8_t k, const uint8_t * id, uint64_t position, uint128_t line_point, bool important ){
-		if( line_point == 0 ) return;
+	uint128_t AddLinePoint( uint8_t k, const uint8_t * id, uint8_t table_no, uint64_t position, uint128_t line_point, bool important = false ){
+		if( line_point == 0 ) return 0;
 		std::lock_guard<std::mutex> lk(mut);
 		while( cache[next_pos].importance != 0 ){
 			cache[next_pos].importance--;
@@ -54,25 +53,43 @@ public:
 		}
 
 		cache[next_pos].k = k;
-		cache[next_pos].line_point = line_point;
+		cache[next_pos].table_no = table_no;
 		cache[next_pos].position = position;
-		cache[next_pos].importance = important ? 3 : 0;
+		cache[next_pos].line_point = line_point;
+		cache[next_pos].importance = table_no > 1 ? 0 : ( important ? 3 : 1 );
 		cache[next_pos++].partial_id = ((uint64_t*)id)[0];
 		if( count < next_pos ) count = next_pos;
 		next_pos %= size;
+
+		return line_point;
 	}
 
-	uint128_t GetLinePoint( uint8_t k, const uint8_t * id, uint64_t position ){
+	uint128_t GetLinePoint( uint8_t k, const uint8_t * id, uint8_t table_no, uint64_t position ){
 		std::lock_guard<std::mutex> lk(mut);
 		for( uint32_t i = 1; i <= count; i++ ){
 			uint32_t idx = (next_pos - i)%size;
-			if( cache[idx].k == k && cache[idx].position == position && cache[idx].partial_id == ((uint64_t*)id)[0] )
+			if( cache[idx].k == k && cache[idx].table_no == table_no
+					&& cache[idx].position == position && cache[idx].partial_id == ((uint64_t*)id)[0] )
 				return cache[idx].line_point;
 		}
 		return 0; // NOT FOUND
 	}
 
+	void IncreaseSize() {
+		std::lock_guard<std::mutex> lk(mut);
+		if( count < size ) return; // not a time to increase ( may be increase from other thread )
+
+		uint32_t new_size = size * 2;
+		LinePointCacheEntry *new_cache = new LinePointCacheEntry[new_size];
+		memcpy( new_cache, cache, sizeof(LinePointCacheEntry)*count );
+		next_pos = size;
+		size = new_size;
+		delete [] cache;
+		cache = new_cache;
+	}
+
 	uint32_t GetCount() const { return count; }
+	uint32_t GetSize() const { return size; }
 	uint32_t GetImportantCount() const {
 		uint32_t res = 0;
 		for( uint32_t i = 0; i < count; i++ )
@@ -82,6 +99,7 @@ public:
 
 	~LinePointsCache(){ delete[] cache; }
 private:
+	uint32_t size;
 	LinePointCacheEntry *cache;
 	uint32_t next_pos = 0, count = 0;
 	std::mutex mut;
@@ -169,37 +187,39 @@ public:
 	uint128_t ReadLinePoint( std::ifstream& file, // this need for parallel reading - will support it later
 													uint8_t table_no /*0 is a first table*/,
 													uint64_t position ){
-		uint128_t line_point;
+		uint128_t line_point = LPCache.GetLinePoint( k_size, plot_id, table_no, position );
+		if( line_point != 0 ) return line_point;
+
 		switch( table_no ){
 		case 0:
-			line_point = LPCache.GetLinePoint( k_size, plot_id, position );
-			if( line_point == 0 ){
-				line_point = ReadRealLinePoint( file, table_no, position );
-				if( bits_cut_no > 0 ){
-					std::cout << "tcompress: Missing line point cache. plot: ( k: " << (int)k_size
-										<< ", id: " << Util::HexStr( plot_id, 32 ) << ", position: "
-										<< position << "), cache: (size: " << LPCache.size << ", count: "
-										<< LPCache.GetCount() << ", important count: " << LPCache.GetImportantCount() << ")"
-										<< std::endl;
-					line_point = RestoreLinePoint( line_point );
-				}
+			line_point = ReadRealLinePoint( file, table_no, position );
+			if( bits_cut_no > 0 ){
+				std::cout << "tcompress: Missing line point cache. plot: ( k: " << (int)k_size
+									<< ", id: " << Util::HexStr( plot_id, 32 ) << ", position: "
+									<< position << "), cache: (size: " << LPCache.GetSize() << ", count: "
+									<< LPCache.GetCount() << ", important count: " << LPCache.GetImportantCount() << ")"
+									<< std::endl;
+				LPCache.IncreaseSize();
+				line_point = RestoreLinePoint( line_point );
 			}
-			return line_point;
+			return line_point; // do not add here to cache sine it could be incorrect
 
 		case 1:
 			line_point = ReadRealLinePoint( file, table_no, position );
 			if( bits_cut_no > 0 )
 			{ // Now we need to fine line_point from table 1 to cache them
 				auto x1x2 = Encoding::LinePointToSquare( line_point );
-				if( LPCache.GetLinePoint( k_size, plot_id, x1x2.first ) == 0 || LPCache.GetLinePoint( k_size, plot_id, x1x2.second ) == 0 ) {
-					std::vector<uint128_t> lps1, lps2;
-					uint128_t valid_lp1 = ReadRealLinePoint( file, 0, x1x2.first );
-					auto r_lp1 = std::async( std::launch::async, &Decompressor::RestoreLinePoint, this, valid_lp1 );
-					uint128_t valid_lp2 = ReadRealLinePoint( file, 0, x1x2.second );
-					auto r_lp2 = std::async( std::launch::async, &Decompressor::RestoreLinePoint, this, valid_lp2 );
+				uint128_t valid_lp1 = LPCache.GetLinePoint( k_size, plot_id, 0, x1x2.first ),
+						valid_lp2 = LPCache.GetLinePoint( k_size, plot_id, 0, x1x2.second );
 
-					valid_lp1 = r_lp1.get();
-					valid_lp2 = r_lp2.get();
+				if( valid_lp1 == 0 || valid_lp2 == 0 ) { // one can survive in cache if it is important
+					std::vector<uint128_t> lps1, lps2;
+					std::vector<std::thread> threads;
+					if( valid_lp1 == 0 )
+						threads.emplace_back( [this, &valid_lp1](uint128_t lp ){ valid_lp1 = RestoreLinePoint(lp);}, ReadRealLinePoint( file, 0, x1x2.first )  );
+					if( valid_lp2 == 0 )
+						threads.emplace_back( [this, &valid_lp2](uint128_t lp ){ valid_lp2 = RestoreLinePoint(lp);}, ReadRealLinePoint( file, 0, x1x2.second )  );
+					for (auto& t : threads)  t.join();
 
 					bool match = CheckMatch( valid_lp1, valid_lp2 );
 					while( !match && valid_lp1 ){
@@ -216,17 +236,17 @@ public:
 					}
 
 					if( match ){
-						LPCache.AddLinePoint( k_size, plot_id, x1x2.first, valid_lp1, lps1.size() > 0 );
-						LPCache.AddLinePoint( k_size, plot_id, x1x2.second, valid_lp2, lps2.size() > 0 );
+						LPCache.AddLinePoint( k_size, plot_id, 0, x1x2.first, valid_lp1, lps1.size() > 0 );
+						LPCache.AddLinePoint( k_size, plot_id, 0, x1x2.second, valid_lp2, lps2.size() > 0 );
 					} else {
 						std::cout << "tcompress: No match at table2 position " << position << std::endl;
 					}
 				}
 			}
-			return line_point;
+			return LPCache.AddLinePoint( k_size, plot_id, table_no, position, line_point );
 
 		default:
-			return ReadRealLinePoint( file, table_no, position );
+			return LPCache.AddLinePoint( k_size, plot_id, table_no, position, ReadRealLinePoint( file, table_no, position ) );
 		}
 	}
 
