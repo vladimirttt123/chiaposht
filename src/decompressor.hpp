@@ -282,14 +282,17 @@ public:
 
 				for( uint32_t i = 0; valid_lp2 == 0 && i < restored_points.size(); i++ ){
 					while( points_flags[i] == 0 ) usleep( 1000 );
-					// restored_points[i] = RestoreLinePoint( restored_points[i] );
+					// there is not possibility for 2 identical line point and they should be on growing up order
+					// than if this point less or equal with previous we should find next one.
+					while( i > 0 && restored_points[i] <= restored_points[i-1] )
+						restored_points[i] = FindNextLinePoint( restored_points[i] + 1, bits_cut_no );
+
 					if( validator.CheckMatch( restored_points[i] ) ){
 						valid_lp2 = restored_points[i];
 						line_point = Encoding::SquareToLinePoint( x1x2.first, x1x2.second += i );
-						for (auto& t : threads)  t.join(); // wait for threads to not fail...
-						//std::cout << "evaluated overhead " << (evaluated_points-i) << std::endl;
 					}
 				}
+				for (auto& t : threads)  t.join(); // wait for threads to not fail...
 
 				if( valid_lp2 == 0 ){ // match didn't succeed
 					restored_points_first.push_back( valid_lp1 );
@@ -301,27 +304,28 @@ public:
 								line_point = Encoding::SquareToLinePoint( x1x2.first, x1x2.second += i );
 							}
 						}
-						if( valid_lp1 != 0 && valid_lp2 == 0 )
+						if( valid_lp1 == 0 || valid_lp2 == 0 )
 							restored_points_first.push_back( valid_lp1 );
 					}
 				}
-				if( valid_lp2 == 0 ){ // match didn't succeed... now we need pass all restored points and find additional for each of them
-					for( uint32_t i = 0; i < restored_points.size(); i++ ){
-						uint128_t itmp = restored_points[i];
-						while( valid_lp2 == 0 && itmp != 0 ){
-							itmp = FindNextLinePoint( itmp + 1, bits_cut_no );
-							if( itmp != 0 ) {
-								for( uint32_t i = 0; valid_lp2 != 0 && i < restored_points_first.size(); i++ ){
-									validator.ResetLP1( restored_points_first[i] );
-									if( validator.CheckMatch( itmp ) ){
-										valid_lp2 = itmp;
-										line_point = Encoding::SquareToLinePoint( x1x2.first, x1x2.second + i );
-									}
-								}
+
+				// if no match than valid_lp2 == 0 and this loop will proceed.
+				for( uint32_t i = 0; valid_lp2 == 0 && i < restored_points.size(); i++ ){
+					for( uint128_t itmp = FindNextLinePoint( restored_points[i] + 1, bits_cut_no );
+							 itmp != 0 && valid_lp2 == 0;
+							 itmp = FindNextLinePoint( itmp + 1, bits_cut_no) ){
+
+						// process new found point with any found from other side
+						for( uint32_t f = 0; valid_lp2 == 0 && f < restored_points_first.size(); f++ ){
+							validator.ResetLP1( valid_lp1 = restored_points_first[f] );
+							if( validator.CheckMatch( itmp ) ){
+								valid_lp2 = itmp;
+								line_point = Encoding::SquareToLinePoint( x1x2.first, x1x2.second += i );
 							}
 						}
 					}
 				}
+
 				if( valid_lp2 == 0 )
 					throw std::runtime_error( "cannot restore table 2 line point at position " + std::to_string(position) ); // TODO write all in exception include k and id
 

@@ -325,13 +325,15 @@ private:
 	inline bool MoveNext() {
 		if( !HasNext() ) return false;
 
-		uint64_t stub = Util::EightBytesToInt( cur_stub_buf )<<stubs_start_bit;
-		stub >>= 64 - stub_size_bits;
-		stubs_start_bit += stub_size_bits;
-		cur_stub_buf += stubs_start_bit/8;
-		stubs_start_bit %= 8;
+		if( stub_size_bits > 0 ){
+			uint64_t stub = Util::EightBytesToInt( cur_stub_buf )<<stubs_start_bit;
+			stub >>= 64 - stub_size_bits;
+			stubs_start_bit += stub_size_bits;
+			cur_stub_buf += stubs_start_bit/8;
+			stubs_start_bit %= 8;
 
-		stubs_sum += stub;
+			stubs_sum += stub;
+		}
 		deltas_sum += deltas[next_idx-1];
 		next_idx++;
 		return true;
