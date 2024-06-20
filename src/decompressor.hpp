@@ -282,7 +282,7 @@ public:
 
 				for( uint32_t i = 0; valid_lp2 == 0 && i < restored_points.size(); i++ ){
 					while( points_flags[i] == 0 ) usleep( 1000 );
-					// there is not possibility for 2 identical line point and they should be on growing up order
+					// there is no possibility for 2 identical line points and they should be on ascending up order
 					// than if this point less or equal with previous we should find next one.
 					while( i > 0 && restored_points[i] <= restored_points[i-1] )
 						restored_points[i] = FindNextLinePoint( restored_points[i] + 1, bits_cut_no );

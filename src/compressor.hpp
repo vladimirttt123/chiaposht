@@ -408,7 +408,8 @@ public:
 		uint8_t bits_to_cut = cmp_level_to_bits_cut( level );
 		bool cut_table2 = bits_to_cut > 18;
 		if( cut_table2 ) bits_to_cut -= 11;
-		std::cout << "Start compressing with level " << (int)level << " (" << (cut_table2?"table2 + ":"") << (int)bits_to_cut << "bits) to " << filename << std::endl;
+		std::cout << "Start compressing with level " << (int)level << " (" << (cut_table2?"table2 + ":"") << (int)bits_to_cut << "bits) to " << filename
+							<< (filename == "plot.dat" ? "\n *** !!! SEEMS YOU MISSING OUTPUT FILE PARAMETER !!! *** " : "" ) << std::endl;
 
 		if( std::filesystem::exists(filename) )
 			throw std::invalid_argument( "output file exists please delete manually: " + filename );
