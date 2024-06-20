@@ -404,7 +404,9 @@ public:
 
 	void CompressTo( const std::string& filename, uint8_t level ){
 		uint8_t bits_to_cut = cmp_level_to_bits_cut( level );
-		std::cout << "Start compressing with level " << (int)level << " ( " << (int)bits_to_cut << " bits) to " << filename << std::endl;
+		bool cut_table2 = bits_to_cut > 18;
+		if( cut_table2 ) bits_to_cut -= 11;
+		std::cout << "Start compressing with level " << (int)level << " (" << (cut_table2?"table2 + ":"") << (int)bits_to_cut << "bits) to " << filename << std::endl;
 
 		if( std::filesystem::exists(filename) )
 			throw std::invalid_argument( "output file exists please delete manually: " + filename );
@@ -422,7 +424,7 @@ public:
 		header[59] = memo_size;
 		memcpy( header + 60, memo, memo_size );
 		// next 80 bytes is new tables pointers
-		header[140+memo_size] = bits_to_cut; // compression level
+		header[140+memo_size] = bits_to_cut | (cut_table2?0x80:0); // compression level
 
 		uint64_t *new_table_pointers = (uint64_t*)(header+60+memo_size);
 		new_table_pointers[0] = header_size;
@@ -434,8 +436,9 @@ public:
 		for( uint32_t i = 1; i < 7; i++ ){
 			std::cout << "Table " << i << ": " << std::flush;
 
-			auto tinfo = (i == 1 && bits_to_cut > 0 ) ? CompressTable( i, &output_file, new_table_pointers[i-1], bits_to_cut )
-					: CompactTable( i, &output_file, new_table_pointers[i-1] );
+			auto tinfo = ((i == 1 && bits_to_cut > 0 ) || (i==2 && cut_table2) ) ?
+											CompressTable( i, &output_file, new_table_pointers[i-1], i==1 ? bits_to_cut : 11 )
+										: CompactTable( i, &output_file, new_table_pointers[i-1] );
 
 			new_table_pointers[i] = new_table_pointers[i-1] + tinfo.new_table_size;
 
@@ -596,7 +599,7 @@ private:
 	// The small deltas still is deltas but stubs now is not a deltas but real low bits of line point.
 	// Than we need to restore all line points and pack them new way
 	OriginalTableInfo CompressTable( int table_no, FileDisk * output_file, uint64_t output_position, uint32_t bits_to_remove = 0 ){
-		std::cout << " compressing " << std::flush;
+		std::cout << " compressing (" << bits_to_remove << ")" << std::flush;
 
 		OriginalTableInfo tinfo( k_size, table_no, table_pointers[table_no-1],
 														table_pointers[table_no] - table_pointers[table_no-1], bits_to_remove );

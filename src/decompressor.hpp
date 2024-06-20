@@ -21,6 +21,45 @@
 
 namespace TCompress {
 
+struct LinePointMatcher{
+public:
+	const uint8_t k_size;
+	LinePointMatcher( uint8_t k_size, uint8_t * plot_id, uint128_t lp1 )
+			: k_size(k_size), f1(k_size,plot_id), f_d2( k_size, 2 ), f_d3( k_size, 3 ), ys1(CalculateYs( lp1) )
+	{	}
+
+	void ResetLP1( uint128_t lp1 ) { ys1 = CalculateYs(lp1); }
+
+	uint64_t CalculateYs( uint128_t lp ){
+		auto x1x2 = Encoding::LinePointToSquare( lp );
+		Bits xs1( x1x2.first, k_size ), xs2( x1x2.second, k_size );
+		auto ys1 = f1.CalculateF(xs1), ys2 = f1.CalculateF(xs2);
+
+		return (ys1.GetValue() < ys2.GetValue() ? f_d2.CalculateBucket( ys1, xs1, xs2 )
+																						: f_d2.CalculateBucket( ys2, xs2, xs1 )).first.GetValue();
+	}
+
+	bool CheckMatch( uint128_t lp2 ){
+		auto ys2 = CalculateYs( lp2 );
+
+		uint64_t cdiff = ys1/kBC - ys2/kBC;
+
+		if( cdiff != 1 && cdiff != (uint64_t)-1 ) return false;
+
+		std::vector<PlotEntry> bucket_L(1), bucket_R(1);
+		bucket_L[0].y = std::min( ys1, ys2 );
+		bucket_R[0].y = std::max( ys1, ys2 );
+		if( f_d3.FindMatches( bucket_L, bucket_R, nullptr, nullptr ) != 1)
+			return false;
+
+		return true;
+	}
+private:
+	F1Calculator f1;
+	FxCalculator f_d2, f_d3;
+	uint64_t ys1;
+};
+
 struct LinePointCacheEntry{
 public:
 	uint64_t partial_id = 0, position = 0;
@@ -103,7 +142,6 @@ public:
 		k_size = other.k_size;
 		memcpy( plot_id, other.plot_id, 32 );
 		stubs_size = other.stubs_size;
-		first_table_stubs_size = other.first_table_stubs_size;
 		bits_cut_no = other.bits_cut_no;
 		memcpy( table_pointers, other.table_pointers, 11*8 );
 		memcpy( avg_delta_sizes, other.avg_delta_sizes, 7*8 );
@@ -135,17 +173,18 @@ public:
 
 		disk_file.Read( 60 + memo_size, (uint8_t*)table_pointers, 80 );
 		disk_file.Read( &bits_cut_no, 1 );
+		table2_cut = (0x80 & bits_cut_no) != 0;
+		bits_cut_no = 0x7f & bits_cut_no;
+
 		disk_file.Read( (uint8_t*)parks_counts, 28 );
 		for( uint i = 0; i < 10; i++ )
 			table_pointers[i] = bswap_64(table_pointers[i]);
 		table_pointers[10] = disk_file.Size();
 
-		first_table_stubs_size = Util::ByteAlign((kEntriesPerPark - 1) * (k - kStubMinusBits - bits_cut_no)) / 8;
-
 		for( uint i = 0; i < 7; i++ ){
 			parks_counts[i] = bswap_32( parks_counts[i] );
 			uint64_t table_size = table_pointers[ i == 6 ? 10 : (i+1)] - table_pointers[ i == 6 ? 9 : i];
-			uint64_t static_size = i == 6 ? 0 : ( ( i == 0 ? first_table_stubs_size : stubs_size ) + line_point_size);
+			uint64_t static_size = GetStubsSize( i ); // i == 6 ? 0 : ( ( i == 0 ? first_table_stubs_size : stubs_size ) + line_point_size);
 			avg_delta_sizes[i] = (table_size - (static_size+3)*parks_counts[i])/parks_counts[i];
 		}
 	}
@@ -183,7 +222,7 @@ public:
 			line_point = ReadRealLinePoint( file, table_no, position );
 			if( bits_cut_no > 0 ){
 				std::cout << "tcompress: Missing line point cache. plot: ( k: " << (int)k_size
-									<< ", id: " << Util::HexStr( plot_id, 32 ) << ", position: "
+									<< ", id: " << Util::HexStr( plot_id, 32 ) << ", table: " << (int)table_no << ", position: "
 									<< position << "), cache: (size: " << LPCache.GetSize() << ", count: "
 									<< LPCache.GetCount() << ", important count: " << LPCache.GetImportantCount() << ")"
 									<< std::endl;
@@ -196,7 +235,10 @@ public:
 			line_point = ReadRealLinePoint( file, table_no, position );
 			if( table2_cut ){
 				auto x1x2 = Encoding::LinePointToSquare( line_point << 11 );
-				// x1x2.first should point to real point and x1x2.second should point to park with this point
+
+				if( x1x2.second + kEntriesPerPark < x1x2.second )
+					throw std::runtime_error( "unsupported case of moving first" );
+
 				uint128_t valid_lp1 = LPCache.GetLinePoint( k_size, plot_id, 0, x1x2.first );
 				std::vector<std::thread> threads;
 				if( valid_lp1 == 0 )
@@ -204,23 +246,40 @@ public:
 
 				uint128_t valid_lp2 = 0;
 				std::vector<uint128_t> restored_points, restored_points_first;
-				auto pReader = GetParkReader( file, table_no, x1x2.second );
-				while( valid_lp2 == 0 && pReader.HasNext() ){
-					valid_lp2 = RestoreLinePoint( pReader.NextLinePoint() );
-					if( CheckMatch( valid_lp1, valid_lp2 ) )
-						line_point = Encoding::SquareToLinePoint( x1x2.first, x1x2.second + restored_points.size() );
-					else {
-						restored_points.push_back( valid_lp2 );
-						valid_lp2 = 0;
+				{ // time to read second parks
+					{
+						uint32_t pos_in_park = x1x2.second % kEntriesPerPark;
+						auto pReader = GetParkReader( file, 0, x1x2.second );
+						restored_points.push_back( pReader.NextLinePoint( pos_in_park ) );
+						while( pReader.HasNext() ) restored_points.push_back( pReader.NextLinePoint() );
+					}
+					if( restored_points.size() < kEntriesPerPark ){
+						auto pReader = GetParkReader( file, 0, x1x2.second + kEntriesPerPark );
+						while( restored_points.size() < kEntriesPerPark && pReader.HasNext() )
+							restored_points.push_back( pReader.NextLinePoint() );
 					}
 				}
+
+				for (auto& t : threads)  t.join(); // wait for valid_lp1
+
+				LinePointMatcher validator( k_size, plot_id, valid_lp1 );
+
+				for( uint32_t i = 0; valid_lp2 == 0 && i < restored_points.size(); i++ ){
+					restored_points[i] = RestoreLinePoint( restored_points[i] );
+					if( validator.CheckMatch( restored_points[i] ) ){
+						valid_lp2 = restored_points[i];
+						line_point = Encoding::SquareToLinePoint( x1x2.first, x1x2.second += i );
+					}
+				}
+
 				if( valid_lp2 == 0 ){ // match didn't succeed
 					restored_points_first.push_back( valid_lp1 );
 					while( valid_lp2 == 0 && (valid_lp1 = FindNextLinePoint( valid_lp1+1, bits_cut_no ) ) != 0 ){
+						validator.ResetLP1( valid_lp1 );
 						for( uint32_t i = 0; valid_lp2 == 0 && i < restored_points.size(); i++ ){
-							if( CheckMatch( valid_lp1, restored_points[i] ) ) {
+							if( validator.CheckMatch( restored_points[i] ) ) {
 								valid_lp2 = restored_points[i];
-								line_point = Encoding::SquareToLinePoint( x1x2.first, x1x2.second + i );
+								line_point = Encoding::SquareToLinePoint( x1x2.first, x1x2.second += i );
 							}
 						}
 						if( valid_lp1 != 0 && valid_lp2 == 0 )
@@ -233,11 +292,13 @@ public:
 						while( valid_lp2 == 0 && itmp != 0 ){
 							itmp = FindNextLinePoint( itmp + 1, bits_cut_no );
 							if( itmp != 0 ) {
-								for( uint32_t i = 0; valid_lp2 != 0 && i < restored_points_first.size(); i++ )
-									if( CheckMatch( valid_lp1, itmp ) ){
+								for( uint32_t i = 0; valid_lp2 != 0 && i < restored_points_first.size(); i++ ){
+									validator.ResetLP1( restored_points_first[i] );
+									if( validator.CheckMatch( itmp ) ){
 										valid_lp2 = itmp;
 										line_point = Encoding::SquareToLinePoint( x1x2.first, x1x2.second + i );
 									}
+								}
 							}
 						}
 					}
@@ -248,8 +309,7 @@ public:
 				LPCache.AddLinePoint( k_size, plot_id, 0, x1x2.first, valid_lp1, restored_points_first.size() > 0 );
 				LPCache.AddLinePoint( k_size, plot_id, 0, x1x2.second, valid_lp2, restored_points_first.size() > 0 );
 
-			}
-			else if( bits_cut_no > 0 )
+			}	else if( bits_cut_no > 0 )
 			{ // Now we need to fine line_point from table 1 to cache them
 				auto x1x2 = Encoding::LinePointToSquare( line_point );
 				uint128_t valid_lp1 = LPCache.GetLinePoint( k_size, plot_id, 0, x1x2.first ),
@@ -295,7 +355,7 @@ public:
 
 private:
 	uint8_t k_size, plot_id[32];
-	uint32_t stubs_size, first_table_stubs_size;
+	uint32_t stubs_size;
 	uint8_t bits_cut_no;
 	bool table2_cut = false;
 	uint64_t table_pointers[11], avg_delta_sizes[7];
@@ -307,6 +367,10 @@ private:
 		FxCalculator f_d2( k_size, 2 );
 		FxCalculator f_d3( k_size, 3 );
 
+		return CheckMatch( lp1, lp2, f1, f_d2, f_d3 );
+	}
+	// match 2 lp from table 1 and supposed they are correct.
+	bool CheckMatch( uint128_t lp1, uint128_t lp2, F1Calculator &f1, FxCalculator &f_d2, FxCalculator &f_d3 ){
 
 		auto xs1 = Encoding::LinePointToSquare( lp1 ), xs2 = Encoding::LinePointToSquare( lp2 );
 		std::vector<Bits> xs;
@@ -335,7 +399,7 @@ private:
 		uint64_t cdiff = new_ys1/kBC - new_ys2/kBC;
 
 		if( cdiff != 1 && cdiff != (uint64_t)-1 ) return false;
-		// TODO check match...
+
 		std::vector<PlotEntry> bucket_L(1), bucket_R(1);
 		bucket_L[0].y = std::min( new_ys1, new_ys2 );
 		bucket_R[0].y = std::max( new_ys1, new_ys2 );
@@ -349,6 +413,13 @@ private:
 		auto val = v[i]; 		v[i] = v[j]; 		v[j] = val;
 	}
 
+	inline uint32_t GetStubsSize( uint8_t table_no ){
+		if( table_no == 6 ) return 0;
+		if( table_no > (table2_cut?1:0) ) return stubs_size;
+		if( table_no == 1 ) return ((k_size - kStubMinusBits - 11)*(kEntriesPerPark-1)+7)/8;
+		return ((k_size - kStubMinusBits - bits_cut_no)*(kEntriesPerPark-1)+7)/8;
+	}
+
 	ParkReader GetParkReader( std::ifstream& file, // this need for parallel reading - will support it later
 													 uint8_t table_no /*0 is a first table*/,
 													 uint64_t position, bool for_single_point = false ){
@@ -358,7 +429,7 @@ private:
 		const uint64_t park_idx = position/kEntriesPerPark;
 		assert( park_idx < parks_counts[table_no] );
 
-		const uint8_t cur_bits_cut = (table_no?0:bits_cut_no) - ((table_no==1&&table2_cut)?11:0);
+		const uint8_t cur_bits_cut = (table_no?0:bits_cut_no) + ((table_no==1&&table2_cut)?11:0);
 		const uint32_t cur_line_point_size_bits = k_size*2 - cur_bits_cut;
 		const uint32_t cur_stub_size_bits = k_size - kStubMinusBits - cur_bits_cut;
 		const uint32_t cur_line_point_size = (cur_line_point_size_bits+7)/8;
