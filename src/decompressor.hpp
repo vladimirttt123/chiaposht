@@ -21,18 +21,6 @@
 
 namespace TCompress {
 
-struct AtomicAdder{
-	const uint32_t inited_at;
-	std::atomic_uint32_t &src;
-	AtomicAdder( std::atomic_uint32_t &src )
-			:inited_at( src.fetch_add( 1, std::memory_order_relaxed ) ), src(src)
-	{	}
-
-	~AtomicAdder(){
-		src.fetch_sub( 1, std::memory_order_relaxed );
-	}
-};
-
 struct LinePointCacheEntry{
 public:
 	uint64_t partial_id = 0, position = 0;
@@ -42,7 +30,7 @@ public:
 
 struct LinePointsCache{
 public:
-	LinePointsCache( uint32_t size = 4096) : size(size), cache(new LinePointCacheEntry[size] ){	}
+	LinePointsCache( uint32_t size = 4096 ) : size(size), cache( new LinePointCacheEntry[size] ){	}
 
 	uint128_t AddLinePoint( uint8_t k, const uint8_t * id, uint8_t table_no, uint64_t position, uint128_t line_point, bool important = false ){
 		if( line_point == 0 ) return 0;
@@ -206,7 +194,62 @@ public:
 
 		case 1:
 			line_point = ReadRealLinePoint( file, table_no, position );
-			if( bits_cut_no > 0 )
+			if( table2_cut ){
+				auto x1x2 = Encoding::LinePointToSquare( line_point << 11 );
+				// x1x2.first should point to real point and x1x2.second should point to park with this point
+				uint128_t valid_lp1 = LPCache.GetLinePoint( k_size, plot_id, 0, x1x2.first );
+				std::vector<std::thread> threads;
+				if( valid_lp1 == 0 )
+					threads.emplace_back( [this, &valid_lp1](uint128_t lp ){ valid_lp1 = RestoreLinePoint(lp);}, ReadRealLinePoint( file, 0, x1x2.first )  );
+
+				uint128_t valid_lp2 = 0;
+				std::vector<uint128_t> restored_points, restored_points_first;
+				auto pReader = GetParkReader( file, table_no, x1x2.second );
+				while( valid_lp2 == 0 && pReader.HasNext() ){
+					valid_lp2 = RestoreLinePoint( pReader.NextLinePoint() );
+					if( CheckMatch( valid_lp1, valid_lp2 ) )
+						line_point = Encoding::SquareToLinePoint( x1x2.first, x1x2.second + restored_points.size() );
+					else {
+						restored_points.push_back( valid_lp2 );
+						valid_lp2 = 0;
+					}
+				}
+				if( valid_lp2 == 0 ){ // match didn't succeed
+					restored_points_first.push_back( valid_lp1 );
+					while( valid_lp2 == 0 && (valid_lp1 = FindNextLinePoint( valid_lp1+1, bits_cut_no ) ) != 0 ){
+						for( uint32_t i = 0; valid_lp2 == 0 && i < restored_points.size(); i++ ){
+							if( CheckMatch( valid_lp1, restored_points[i] ) ) {
+								valid_lp2 = restored_points[i];
+								line_point = Encoding::SquareToLinePoint( x1x2.first, x1x2.second + i );
+							}
+						}
+						if( valid_lp1 != 0 && valid_lp2 == 0 )
+							restored_points_first.push_back( valid_lp1 );
+					}
+				}
+				if( valid_lp2 == 0 ){ // match didn't succeed... now we need pass all restored points and find additional for each of them
+					for( uint32_t i = 0; i < restored_points.size(); i++ ){
+						uint128_t itmp = restored_points[i];
+						while( valid_lp2 == 0 && itmp != 0 ){
+							itmp = FindNextLinePoint( itmp + 1, bits_cut_no );
+							if( itmp != 0 ) {
+								for( uint32_t i = 0; valid_lp2 != 0 && i < restored_points_first.size(); i++ )
+									if( CheckMatch( valid_lp1, itmp ) ){
+										valid_lp2 = itmp;
+										line_point = Encoding::SquareToLinePoint( x1x2.first, x1x2.second + i );
+									}
+							}
+						}
+					}
+				}
+				if( valid_lp2 == 0 )
+					throw std::runtime_error( "cannot restore table 2 line point at position " + std::to_string(position) ); // TODO write all in exception include k and id
+
+				LPCache.AddLinePoint( k_size, plot_id, 0, x1x2.first, valid_lp1, restored_points_first.size() > 0 );
+				LPCache.AddLinePoint( k_size, plot_id, 0, x1x2.second, valid_lp2, restored_points_first.size() > 0 );
+
+			}
+			else if( bits_cut_no > 0 )
 			{ // Now we need to fine line_point from table 1 to cache them
 				auto x1x2 = Encoding::LinePointToSquare( line_point );
 				uint128_t valid_lp1 = LPCache.GetLinePoint( k_size, plot_id, 0, x1x2.first ),
@@ -254,9 +297,9 @@ private:
 	uint8_t k_size, plot_id[32];
 	uint32_t stubs_size, first_table_stubs_size;
 	uint8_t bits_cut_no;
+	bool table2_cut = false;
 	uint64_t table_pointers[11], avg_delta_sizes[7];
 	uint32_t parks_counts[7];
-	std::atomic_uint32_t threads_count = 0;
 
 	// match 2 lp from table 1 and supposed they are correct.
 	bool CheckMatch( uint128_t lp1, uint128_t lp2 ){
@@ -306,67 +349,116 @@ private:
 		auto val = v[i]; 		v[i] = v[j]; 		v[j] = val;
 	}
 
-	uint128_t ReadRealLinePoint( std::ifstream& file, // this need for parallel reading - will support it later
-												 uint8_t table_no /*0 is a first table*/,
-												 uint64_t position ){
-
+	ParkReader GetParkReader( std::ifstream& file, // this need for parallel reading - will support it later
+													 uint8_t table_no /*0 is a first table*/,
+													 uint64_t position, bool for_single_point = false ){
 		if( table_no >=6 )
 			throw std::invalid_argument( "table couldn't be bigger than 5 for reading line point: " + std::to_string(table_no) );
 
-		const uint32_t cur_line_point_size_bits = k_size*2 - (table_no?0:bits_cut_no);
-		const uint32_t cur_stub_size_bits = k_size - kStubMinusBits - (table_no?0:bits_cut_no);
-		const uint32_t cur_line_point_size = (cur_line_point_size_bits+7)/8;
-		const uint64_t plps_size = 3 + cur_line_point_size + (table_no ? stubs_size : first_table_stubs_size );
 		const uint64_t park_idx = position/kEntriesPerPark;
-
 		assert( park_idx < parks_counts[table_no] );
+
+		const uint8_t cur_bits_cut = (table_no?0:bits_cut_no) - ((table_no==1&&table2_cut)?11:0);
+		const uint32_t cur_line_point_size_bits = k_size*2 - cur_bits_cut;
+		const uint32_t cur_stub_size_bits = k_size - kStubMinusBits - cur_bits_cut;
+		const uint32_t cur_line_point_size = (cur_line_point_size_bits+7)/8;
+		const uint32_t stubs_size = (cur_stub_size_bits*(kEntriesPerPark-1)+7)/8;
+		const uint64_t plps_size = 3 + cur_line_point_size + stubs_size;
+
 
 		ReadFileWrapper disk_file( &file );
 
-		if( (position%kEntriesPerPark) == 0 ){
+		if( for_single_point ){
 			// Simplest case read first line point at the begining of park
 			uint8_t line_point_buf[cur_line_point_size + 7];
 			disk_file.Read( table_pointers[table_no] + plps_size*park_idx, line_point_buf, cur_line_point_size );
-			return table_no == 0 ? Util::SliceInt128FromBytes( line_point_buf, 0, cur_line_point_size_bits )
-													: Util::SliceInt128FromBytes( line_point_buf, 0, cur_line_point_size_bits );
+			return ParkReader( line_point_buf, cur_line_point_size_bits );
 		}
 
-		uint8_t stubs_buf[plps_size + 3 /*because we read 2 deltas pointers*/];
+		uint8_t * stubs_buf = new uint8_t[plps_size + 3 /*because we read 2 deltas pointers*/];
 		disk_file.Read( table_pointers[table_no] + plps_size*park_idx - 3 /* to read prev delta pointer */, stubs_buf, 3+plps_size );
 		uint64_t deltas_pos;
 		uint16_t deltas_size;
 		DeltasStorage::RestoreParkPositionAndSize( avg_delta_sizes[table_no], park_idx, stubs_buf, stubs_buf+plps_size, deltas_pos, deltas_size );
 
-		auto line_point = Util::SliceInt128FromBytes( stubs_buf+3, 0, cur_line_point_size_bits ); // base line point
+		if( deltas_size > EntrySizes::CalculateMaxDeltasSize( k_size, table_no + 1 ) )
+			throw std::runtime_error( "incorrect deltas size " + std::to_string( deltas_size ) );
 
-		std::vector<uint8_t> deltas;
-		{
-			if( deltas_size > EntrySizes::CalculateMaxDeltasSize( k_size, table_no + 1 ) )
-				throw std::runtime_error( "incorrect deltas size " + std::to_string( deltas_size ) );
+		uint8_t deltas_buf[deltas_size];
+		disk_file.Read( table_pointers[table_no] + plps_size*parks_counts[table_no] + deltas_pos, deltas_buf, deltas_size );
 
-			uint8_t deltas_buf[deltas_size];
-			disk_file.Read( table_pointers[table_no] + plps_size*parks_counts[table_no] + deltas_pos, deltas_buf, deltas_size );
-			const double R = kRValues[table_no];
-			deltas = Encoding::ANSDecodeDeltas(deltas_buf, deltas_size, kEntriesPerPark - 1, R);
-		}
+		return ParkReader( stubs_buf, deltas_buf, deltas_size, cur_line_point_size_bits, cur_stub_size_bits, table_no );
+	}
 
-		uint64_t sum_deltas = 0, sum_stubs = 0;
+	uint128_t ReadRealLinePoint( std::ifstream& file, // this need for parallel reading - will support it later
+												 uint8_t table_no /*0 is a first table*/,
+												 uint64_t position ){
+		const uint64_t pos_in_park = position%kEntriesPerPark;
+		return GetParkReader( file, table_no, position, pos_in_park == 0 ).NextLinePoint( pos_in_park );
 
-		for( uint32_t i = 0, start_bit = (3+cur_line_point_size)*8;
-				 i < std::min((uint32_t)(position % kEntriesPerPark), (uint32_t)deltas.size());
-				 i++) {
-			uint64_t stub = cur_stub_size_bits == 0 ? 0 : Util::EightBytesToInt(stubs_buf + start_bit / 8); // seems max k is 56
-			stub <<= start_bit % 8;
-			stub >>= 64 - cur_stub_size_bits;
+		// if( table_no >=6 )
+		// 	throw std::invalid_argument( "table couldn't be bigger than 5 for reading line point: " + std::to_string(table_no) );
 
-			sum_stubs += stub;
-			start_bit += cur_stub_size_bits;
+		// const uint32_t cur_line_point_size_bits = k_size*2 - (table_no?0:bits_cut_no);
+		// const uint32_t cur_stub_size_bits = k_size - kStubMinusBits - (table_no?0:bits_cut_no);
+		// const uint32_t cur_line_point_size = (cur_line_point_size_bits+7)/8;
+		// const uint64_t plps_size = 3 + cur_line_point_size + (table_no ? stubs_size : first_table_stubs_size );
+		// const uint64_t park_idx = position/kEntriesPerPark;
 
-			sum_deltas += deltas[i];
-		}
+		// assert( park_idx < parks_counts[table_no] );
 
-		uint128_t big_delta = ((uint128_t)sum_deltas << cur_stub_size_bits) + sum_stubs;
-		return line_point + big_delta;
+		// ReadFileWrapper disk_file( &file );
+
+		// if( pos_in_park == 0 ){
+		// 	// Simplest case read first line point at the begining of park
+		// 	uint8_t line_point_buf[cur_line_point_size + 7];
+		// 	disk_file.Read( table_pointers[table_no] + plps_size*park_idx, line_point_buf, cur_line_point_size );
+		// 	return table_no == 0 ? Util::SliceInt128FromBytes( line_point_buf, 0, cur_line_point_size_bits )
+		// 											: Util::SliceInt128FromBytes( line_point_buf, 0, cur_line_point_size_bits );
+		// }
+
+		// uint8_t stubs_buf[plps_size + 3 /*because we read 2 deltas pointers*/];
+		// disk_file.Read( table_pointers[table_no] + plps_size*park_idx - 3 /* to read prev delta pointer */, stubs_buf, 3+plps_size );
+		// uint64_t deltas_pos;
+		// uint16_t deltas_size;
+		// DeltasStorage::RestoreParkPositionAndSize( avg_delta_sizes[table_no], park_idx, stubs_buf, stubs_buf+plps_size, deltas_pos, deltas_size );
+
+		// auto line_point = Util::SliceInt128FromBytes( stubs_buf+3, 0, cur_line_point_size_bits ); // base line point
+
+		// std::vector<uint8_t> deltas;
+		// {
+		// 	if( deltas_size > EntrySizes::CalculateMaxDeltasSize( k_size, table_no + 1 ) )
+		// 		throw std::runtime_error( "incorrect deltas size " + std::to_string( deltas_size ) );
+
+		// 	uint8_t deltas_buf[deltas_size];
+		// 	disk_file.Read( table_pointers[table_no] + plps_size*parks_counts[table_no] + deltas_pos, deltas_buf, deltas_size );
+		// 	const double R = kRValues[table_no];
+		// 	deltas = Encoding::ANSDecodeDeltas(deltas_buf, deltas_size, kEntriesPerPark - 1, R);
+		// }
+
+		// uint64_t sum_deltas = 0, sum_stubs = 0;
+
+		// for( uint32_t i = 0, start_bit = (3+cur_line_point_size)*8;
+		// 		 i < std::min((uint32_t)(position % kEntriesPerPark), (uint32_t)deltas.size());
+		// 		 i++) {
+		// 	uint64_t stub = cur_stub_size_bits == 0 ? 0 : Util::EightBytesToInt(stubs_buf + start_bit / 8); // seems max k is 56
+		// 	stub <<= start_bit % 8;
+		// 	stub >>= 64 - cur_stub_size_bits;
+
+		// 	sum_stubs += stub;
+		// 	start_bit += cur_stub_size_bits;
+
+		// 	sum_deltas += deltas[i];
+		// }
+
+		// uint128_t big_delta = ((uint128_t)sum_deltas << cur_stub_size_bits) + sum_stubs;
+
+		// auto pR = GetParkReader( file, table_no, position, pos_in_park == 0 );
+		// auto byParkReader = pR.NextLinePoint( pos_in_park );
+
+		// assert( byParkReader == line_point + big_delta );
+
+		// return line_point + big_delta;
 	}
 
 
