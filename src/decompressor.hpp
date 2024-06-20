@@ -143,6 +143,7 @@ public:
 		memcpy( plot_id, other.plot_id, 32 );
 		stubs_size = other.stubs_size;
 		bits_cut_no = other.bits_cut_no;
+		table2_cut = other.table2_cut;
 		memcpy( table_pointers, other.table_pointers, 11*8 );
 		memcpy( avg_delta_sizes, other.avg_delta_sizes, 7*8 );
 		memcpy( parks_counts, other.parks_counts, 7*4 );
@@ -489,70 +490,6 @@ private:
 												 uint64_t position ){
 		const uint64_t pos_in_park = position%kEntriesPerPark;
 		return GetParkReader( file, table_no, position, pos_in_park == 0 ).NextLinePoint( pos_in_park );
-
-		// if( table_no >=6 )
-		// 	throw std::invalid_argument( "table couldn't be bigger than 5 for reading line point: " + std::to_string(table_no) );
-
-		// const uint32_t cur_line_point_size_bits = k_size*2 - (table_no?0:bits_cut_no);
-		// const uint32_t cur_stub_size_bits = k_size - kStubMinusBits - (table_no?0:bits_cut_no);
-		// const uint32_t cur_line_point_size = (cur_line_point_size_bits+7)/8;
-		// const uint64_t plps_size = 3 + cur_line_point_size + (table_no ? stubs_size : first_table_stubs_size );
-		// const uint64_t park_idx = position/kEntriesPerPark;
-
-		// assert( park_idx < parks_counts[table_no] );
-
-		// ReadFileWrapper disk_file( &file );
-
-		// if( pos_in_park == 0 ){
-		// 	// Simplest case read first line point at the begining of park
-		// 	uint8_t line_point_buf[cur_line_point_size + 7];
-		// 	disk_file.Read( table_pointers[table_no] + plps_size*park_idx, line_point_buf, cur_line_point_size );
-		// 	return table_no == 0 ? Util::SliceInt128FromBytes( line_point_buf, 0, cur_line_point_size_bits )
-		// 											: Util::SliceInt128FromBytes( line_point_buf, 0, cur_line_point_size_bits );
-		// }
-
-		// uint8_t stubs_buf[plps_size + 3 /*because we read 2 deltas pointers*/];
-		// disk_file.Read( table_pointers[table_no] + plps_size*park_idx - 3 /* to read prev delta pointer */, stubs_buf, 3+plps_size );
-		// uint64_t deltas_pos;
-		// uint16_t deltas_size;
-		// DeltasStorage::RestoreParkPositionAndSize( avg_delta_sizes[table_no], park_idx, stubs_buf, stubs_buf+plps_size, deltas_pos, deltas_size );
-
-		// auto line_point = Util::SliceInt128FromBytes( stubs_buf+3, 0, cur_line_point_size_bits ); // base line point
-
-		// std::vector<uint8_t> deltas;
-		// {
-		// 	if( deltas_size > EntrySizes::CalculateMaxDeltasSize( k_size, table_no + 1 ) )
-		// 		throw std::runtime_error( "incorrect deltas size " + std::to_string( deltas_size ) );
-
-		// 	uint8_t deltas_buf[deltas_size];
-		// 	disk_file.Read( table_pointers[table_no] + plps_size*parks_counts[table_no] + deltas_pos, deltas_buf, deltas_size );
-		// 	const double R = kRValues[table_no];
-		// 	deltas = Encoding::ANSDecodeDeltas(deltas_buf, deltas_size, kEntriesPerPark - 1, R);
-		// }
-
-		// uint64_t sum_deltas = 0, sum_stubs = 0;
-
-		// for( uint32_t i = 0, start_bit = (3+cur_line_point_size)*8;
-		// 		 i < std::min((uint32_t)(position % kEntriesPerPark), (uint32_t)deltas.size());
-		// 		 i++) {
-		// 	uint64_t stub = cur_stub_size_bits == 0 ? 0 : Util::EightBytesToInt(stubs_buf + start_bit / 8); // seems max k is 56
-		// 	stub <<= start_bit % 8;
-		// 	stub >>= 64 - cur_stub_size_bits;
-
-		// 	sum_stubs += stub;
-		// 	start_bit += cur_stub_size_bits;
-
-		// 	sum_deltas += deltas[i];
-		// }
-
-		// uint128_t big_delta = ((uint128_t)sum_deltas << cur_stub_size_bits) + sum_stubs;
-
-		// auto pR = GetParkReader( file, table_no, position, pos_in_park == 0 );
-		// auto byParkReader = pR.NextLinePoint( pos_in_park );
-
-		// assert( byParkReader == line_point + big_delta );
-
-		// return line_point + big_delta;
 	}
 
 
