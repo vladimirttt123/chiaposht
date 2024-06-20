@@ -261,14 +261,25 @@ public:
 				}
 
 				for (auto& t : threads)  t.join(); // wait for valid_lp1
+				threads.clear();
+				const uint32_t look_ahead = 3; // equal to threads cound
+				for( uint32_t i = 0; i < look_ahead; i++ )
+					threads.emplace_back( [this,i, &restored_points](){ restored_points[i] = RestoreLinePoint( restored_points[i] ); } );
 
 				LinePointMatcher validator( k_size, plot_id, valid_lp1 );
 
 				for( uint32_t i = 0; valid_lp2 == 0 && i < restored_points.size(); i++ ){
-					restored_points[i] = RestoreLinePoint( restored_points[i] );
+					threads[i].join();
+					// restored_points[i] = RestoreLinePoint( restored_points[i] );
 					if( validator.CheckMatch( restored_points[i] ) ){
 						valid_lp2 = restored_points[i];
 						line_point = Encoding::SquareToLinePoint( x1x2.first, x1x2.second += i );
+						for( uint32_t t = i+1; t < threads.size(); t++ )
+							threads[t].join(); // wait for all threads to not fail.
+					} else {
+						uint32_t next_idx = threads.size();
+						if( next_idx < restored_points.size() )
+							threads.emplace_back( [this, next_idx, &restored_points](){ restored_points[next_idx] = RestoreLinePoint( restored_points[next_idx] ); } );
 					}
 				}
 
@@ -542,7 +553,7 @@ private:
 														 + ":" + std::to_string( (uint64_t)cutted_line_point ));
 	}
 
-	uint128_t FindNextLinePoint( uint128_t line_point, uint8_t removed_bits_no ){
+	uint128_t FindNextLinePoint( uint128_t line_point, uint8_t removed_bits_no ) const {
 		assert( removed_bits_no >= kBatchSizes );
 
 		auto x1x2 = Encoding::LinePointToSquare( line_point );
