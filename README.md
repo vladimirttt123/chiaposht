@@ -8,7 +8,7 @@
 ## Compression
 ### Abstract
 This branch was build to provide some level of compression to exists plots of any size. 
-This achived by realligning data inside plot and/or removing some data from table 1.
+This achived by realligning data inside plot and/or removing some data from tables 1 and 2.
 
 ### Usage
 Get the branch from git
@@ -30,7 +30,9 @@ In order to compress use
 ```bash
 ./ProofOfSpace compress <level> <original.plot> -f <output.plot>
 ```
-Level is a non negative number translated to number of bits to remove from table 1 of the plot. 
+Compression process has low CPU usage (some CPU used on compressed tables) and with good CPU 
+depends mostly on IO capabilities.
+Level is a non negative number translated to number of bits to remove from table 1 or/and table 2 of the plot. 
 Level 0 does not remove any data just reallign data inside to save around 1.3-1.7% of sapce.
 
 Now you can check timing of proof generation for plot with current compression on your system
@@ -50,18 +52,19 @@ chia stop -d all
 Than replace and run chia back as usual. The new library should support all exists plots as usual.
 
 ### Limitations
-* The maximum bits to cut by this method is k-3.
+* The maximum bits to cut by this method is k+8 (11 from table 2 and k-2 from table 1).
 * CPU only compression/decompression
-* The number of used threads for quality look up is 2.
- * The maximum number of threads used for proof restore is 62 
+* The number of used threads for quality look up is up to 3.
+* The maximum number of threads used for proof restore is 93 
 in case of parralel read is enabled (that is default) or 
-up to 2 if no parallel read.
+up to 3 if no parallel read.
 
 
 ### Analyze
 
 Any compression level adds 1 IO request per table park. 
 Practically it means double of IO requests without adding thougutput.
+Compression level removing bits from table 2 adds some more IO request with adding some thoughtput.
 
 Any compression level depends on k size. Level 0 compression adds around 1.3-1.7% 
 and each bit cut removes around (2^(k-3))*0.81 bytes that for k32 is around 
