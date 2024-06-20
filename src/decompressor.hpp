@@ -262,24 +262,32 @@ public:
 
 				for (auto& t : threads)  t.join(); // wait for valid_lp1
 				threads.clear();
-				const uint32_t look_ahead = 3; // equal to threads cound
-				for( uint32_t i = 0; i < look_ahead; i++ )
-					threads.emplace_back( [this,i, &restored_points](){ restored_points[i] = RestoreLinePoint( restored_points[i] ); } );
+
+				//run some thread to read points ahead
+				const uint32_t threads_number = 3; // equal to threads cound
+				std::atomic_uint32_t evaluated_points = 0;
+				uint8_t points_flags[restored_points.size()];
+				memset( points_flags, 0, restored_points.size() );
+				auto thread_func = [this, &restored_points, &evaluated_points, &valid_lp2, &points_flags](){
+						for( uint32_t i = evaluated_points.fetch_add(1, std::memory_order_relaxed); valid_lp2 == 0 && i < restored_points.size();
+								 i = evaluated_points.fetch_add(1, std::memory_order_relaxed) ){
+							restored_points[i] = RestoreLinePoint( restored_points[i] );
+							points_flags[i] = 1;
+						}
+					};
+				for( uint32_t i = 0; i < threads_number; i++ )
+					threads.emplace_back( thread_func );
 
 				LinePointMatcher validator( k_size, plot_id, valid_lp1 );
 
 				for( uint32_t i = 0; valid_lp2 == 0 && i < restored_points.size(); i++ ){
-					threads[i].join();
+					while( points_flags[i] == 0 ) usleep( 1000 );
 					// restored_points[i] = RestoreLinePoint( restored_points[i] );
 					if( validator.CheckMatch( restored_points[i] ) ){
 						valid_lp2 = restored_points[i];
 						line_point = Encoding::SquareToLinePoint( x1x2.first, x1x2.second += i );
-						for( uint32_t t = i+1; t < threads.size(); t++ )
-							threads[t].join(); // wait for all threads to not fail.
-					} else {
-						uint32_t next_idx = threads.size();
-						if( next_idx < restored_points.size() )
-							threads.emplace_back( [this, next_idx, &restored_points](){ restored_points[next_idx] = RestoreLinePoint( restored_points[next_idx] ); } );
+						for (auto& t : threads)  t.join(); // wait for threads to not fail...
+						//std::cout << "evaluated overhead " << (evaluated_points-i) << std::endl;
 					}
 				}
 
