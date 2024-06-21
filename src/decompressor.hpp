@@ -236,7 +236,7 @@ public:
 									<< LPCache.GetCount() << ", important count: " << LPCache.GetImportantCount() << ")"
 									<< std::endl;
 				LPCache.IncreaseSize();
-				line_point = RestoreLinePoint( line_point );
+				CheckRestored( line_point = RestoreLinePoint( line_point ), position );
 			}
 			return line_point; // do not add here to cache sine it could be incorrect
 
@@ -286,19 +286,22 @@ public:
 					threads.emplace_back( thread_func );
 
 				if( lp1_thread ) lp1_thread->join();
+				CheckRestored( valid_lp1, x1x2.first, position );
 
 				LinePointMatcher validator( k_size, plot_id, valid_lp1 );
 
 				for( uint32_t i = 0; valid_lp2 == 0 && i < restored_points.size(); i++ ){
 					while( points_flags[i] == 0 ) usleep( 1000 );
-					// there is no possibility for 2 identical line points and they should be on ascending up order
-					// than if this point less or equal with previous we should find next one.
-					while( i > 0 && restored_points[i] <= restored_points[i-1] )
-						restored_points[i] = FindNextLinePoint( restored_points[i] + 1, bits_cut_no );
+					if( CheckRestored( restored_points[i], x1x2.second + i, position, false ) ){
+						// there is no possibility for 2 identical line points and they should be on ascending up order
+						// than if this point less or equal with previous we should find next one.
+						while( i > 0 && restored_points[i] <= restored_points[i-1] )
+							restored_points[i] = FindNextLinePoint( restored_points[i] + 1, bits_cut_no );
 
-					if( validator.CheckMatch( restored_points[i] ) ){
-						valid_lp2 = restored_points[i];
-						line_point = Encoding::SquareToLinePoint( x1x2.first, x1x2.second += i );
+						if( validator.CheckMatch( restored_points[i] ) ){
+							valid_lp2 = restored_points[i];
+							line_point = Encoding::SquareToLinePoint( x1x2.first, x1x2.second += i );
+						}
 					}
 				}
 				for (auto& t : threads)  t.join(); // wait for threads to not fail...
@@ -335,8 +338,8 @@ public:
 					}
 				}
 
-				if( valid_lp2 == 0 )
-					throw std::runtime_error( "cannot restore table 2 line point at position " + std::to_string(position) ); // TODO write all in exception include k and id
+				CheckRestored( valid_lp1, x1x2.first, position );
+				CheckRestored( valid_lp2, x1x2.second, position );
 
 				LPCache.AddLinePoint( k_size, plot_id, 0, x1x2.first, valid_lp1, restored_points_first.size() > 0 );
 				LPCache.AddLinePoint( k_size, plot_id, 0, x1x2.second, valid_lp2, restored_points_first.size() > 0 );
@@ -355,6 +358,8 @@ public:
 					if( valid_lp2 == 0 )
 						threads.emplace_back( [this, &valid_lp2](uint128_t lp ){ valid_lp2 = RestoreLinePoint(lp);}, ReadRealLinePoint( file, 0, x1x2.second )  );
 					for (auto& t : threads)  t.join();
+					CheckRestored( valid_lp1, x1x2.first, position );
+					CheckRestored( valid_lp2, x1x2.second, position );
 
 					bool match = CheckMatch( valid_lp1, valid_lp2 );
 					while( !match && valid_lp1 ){
@@ -392,6 +397,19 @@ private:
 	bool table2_cut = false;
 	uint64_t table_pointers[11], avg_delta_sizes[7];
 	uint32_t parks_counts[7];
+
+	inline bool CheckRestored( uint128_t lp, uint64_t table1_pos, uint64_t table2_pos = 0, bool with_exception = true ){
+		if( lp == 0 ){
+			auto msg = "Cannot restore line point on table 1 position " + std::to_string(table1_pos)
+								 + (table2_pos == 0 ? "" : (", table 2 position " + std::to_string(table2_pos) ) )
+								 + ", plotid " + Util::HexStr(plot_id,32);
+			if( with_exception ) throw std::runtime_error( msg );
+
+			std::cout << msg << " - SKIPPING " << std::endl;
+			return false;
+		}
+		return true;
+	}
 
 	// match 2 lp from table 1 and supposed they are correct.
 	bool CheckMatch( uint128_t lp1, uint128_t lp2 ){
@@ -500,14 +518,8 @@ private:
 		return GetParkReader( file, table_no, position, pos_in_park == 0 ).NextLinePoint( pos_in_park );
 	}
 
-
-	uint128_t RestoreLinePoint( uint128_t cutted_line_point ){
-
-		auto lp = FindNextLinePoint( cutted_line_point<<bits_cut_no, bits_cut_no );
-		if( lp != 0 ) return lp;
-
-		throw std::runtime_error( "Cannot restore linepoint " + std::to_string((uint64_t)(cutted_line_point>>64) )
-														 + ":" + std::to_string( (uint64_t)cutted_line_point ));
+	inline uint128_t RestoreLinePoint( uint128_t cutted_line_point ){
+		return FindNextLinePoint( cutted_line_point<<bits_cut_no, bits_cut_no );
 	}
 
 	uint128_t FindNextLinePoint( uint128_t line_point, uint8_t removed_bits_no ) const {
