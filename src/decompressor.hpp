@@ -163,10 +163,10 @@ public:
 
 	void ShowInfo(){
 		std::cout << "Chia plot compressing software made by Vladimir T" << std::endl;
-		std::cout << "If you thinks this compression is helpfull for you, please consider to donate to " << std::endl;
-		std::cout << "   xch1ch6s3q0enuj9wtemn473gkkvj0u8vlggypr375mk547e7aa48hmsql74e8" << std::endl << std::endl;
+		std::cout << "If you thinks this compression is helpfull for you, please consider donate to " << std::endl;
+		std::cout << "   xch1ch6s3q0enuj9wtemn473gkkvj0u8vlggypr375mk547e7aa48hmsql74e8 " << std::endl << std::endl;
 
-		std::cout << "Compression: " << (table2_cut?"table2 + " : "" ) << (int)bits_cut_no << " bits" << std::endl;
+		std::cout << "Compression: " << (table2_cut?"table2 + " : "" ) << (int)bits_cut_no << " bits" << std::endl << std::endl;
 	}
 
 	void init( std::ifstream& file, uint16_t memo_size, uint8_t k, const uint8_t *plot_id ){
