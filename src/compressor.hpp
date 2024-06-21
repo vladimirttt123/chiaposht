@@ -211,38 +211,83 @@ private:
 	}
 };
 
+struct BufWriter{
+	static const uint32_t SIZE = 1024*1024; // 1Mb
+	BufWriter( FileDisk *output_file, uint64_t output_pos )
+			: output_file(output_file), write_pos( output_pos ){}
+
+	void Write( const uint8_t *next_buf, uint32_t length ){
+		assert( length < SIZE );
+		if( (buf_length + length) > SIZE )
+			Flush();
+
+		memcpy( buf + buf_length, next_buf, length );
+		buf_length += length;
+	}
+
+	uint64_t Flush() {
+		output_file->Write( write_pos, buf, buf_length );
+		write_pos += buf_length;
+		buf_length = 0;
+		return write_pos;
+	}
+
+	uint64_t GetPosition() const { return write_pos + buf_length; }
+
+	~BufWriter() {Flush();}
+private:
+	FileDisk *output_file;
+	uint64_t write_pos;
+	uint32_t buf_length = 0;
+	uint8_t buf[SIZE];
+};
+
 struct TableWriter {
 public:
 	const uint64_t output_position, stub_size, parks_count;
 	TableWriter( FileDisk * output_file, uint64_t output_position, uint64_t stub_size, uint64_t parks_count )
 			:output_position(output_position), stub_size(stub_size), parks_count(parks_count)
-			, output_file(output_file), stubs_position( output_position ), deltas_position( output_position + parks_count*stub_size )
+			, output_file(output_file), stubs_writer( output_file, output_position )
+			, deltas_writer( output_file, output_position + parks_count*stub_size)
+			//, stubs_position( output_position ), deltas_position( output_position + parks_count*stub_size )
 	{	}
 
 	void WriteNext( uint8_t *stubs, uint8_t * deltas, uint64_t deltas_size ){
-		assert( stubs_position < output_position + parks_count*stub_size ); // check for too many parks
+		assert( stubs_writer.GetPosition() < output_position + parks_count*stub_size ); // check for too many parks
 		if( output_file != nullptr ){
-			output_file->Write( stubs_position, stubs, stub_size );
-			output_file->Write( deltas_position, deltas, deltas_size );
+			stubs_writer.Write( stubs, stub_size );
+			deltas_writer.Write( deltas, deltas_size );
+			// output_file->Write( stubs_position, stubs, stub_size );
+			// output_file->Write( deltas_position, deltas, deltas_size );
 		}
-		stubs_position += stub_size;
-		deltas_position += deltas_size;
+		// stubs_position += stub_size;
+		// deltas_position += deltas_size;
 	}
 
 	void WriteNext( uint8_t *stubs, uint8_t *stubs_end, uint8_t * deltas, uint64_t deltas_size ){
-		assert( stubs_position < output_position + parks_count*stub_size ); // check for too many parks
+		assert( stubs_writer.GetPosition() < output_position + parks_count*stub_size ); // check for too many parks
 		if( output_file != nullptr ){
-			output_file->Write( deltas_position, deltas, deltas_size );
-			memcpy( stubs + stub_size-3, stubs_end, 3 );
-			output_file->Write( stubs_position, stubs, stub_size );
+			stubs_writer.Write( stubs, stub_size - 3 );
+			stubs_writer.Write( stubs_end, 3 );
+			deltas_writer.Write( deltas, deltas_size );
+
+			// output_file->Write( deltas_position, deltas, deltas_size );
+			// memcpy( stubs + stub_size-3, stubs_end, 3 );
+			// output_file->Write( stubs_position, stubs, stub_size );
 		}
-		stubs_position += stub_size;
-		deltas_position += deltas_size;
+		// stubs_position += stub_size;
+		// deltas_position += deltas_size;
 	}
-	uint64_t getWrittenSize() const { return deltas_position - output_position; }
+	uint64_t getWrittenSize() const { return deltas_writer.GetPosition() - output_position; }
+
+	void Flush(){
+		stubs_writer.Flush();
+		deltas_writer.Flush();
+	}
 private:
 	FileDisk *output_file;
-	uint64_t stubs_position, deltas_position;
+	BufWriter stubs_writer, deltas_writer;
+	//uint64_t stubs_position, deltas_position;
 };
 
 struct ParkReader{

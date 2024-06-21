@@ -536,6 +536,8 @@ private:
 		FxCalculator f( k_size, 2 );
 
 		uint64_t firstY = f1.CalculateF( Bits( x1x2.first, k_size ) ).GetValue();
+		uint64_t firstYkBC = firstY / kBC;
+
 		const uint64_t BATCH_SIZE = 1U << kBatchSizes; //256
 		uint64_t batch[BATCH_SIZE];
 
@@ -547,7 +549,7 @@ private:
 			f1.CalculateBuckets( b, BATCH_SIZE, batch );
 			uint64_t cur_batch_size = std::min( left_to_do, std::min( BATCH_SIZE, x1x2.first - b ) ); // possible to minimize with left_to_do
 			for( uint32_t i = 0; i < cur_batch_size; i++ ){
-				uint64_t cdiff = firstY / kBC - batch[i] / kBC;
+				uint64_t cdiff = firstYkBC - batch[i] / kBC;
 				if( cdiff == 1 ){
 					bucket_L[0].y = batch[i];
 					bucket_R[0].y = firstY;
@@ -563,6 +565,7 @@ private:
 			b += cur_batch_size;
 			if( b == x1x2.first ){
 				firstY = f1.CalculateF( Bits( ++(x1x2.first), k_size ) ).GetValue();
+				firstYkBC = firstY / kBC;
 				b = 0;
 			}
 		}
