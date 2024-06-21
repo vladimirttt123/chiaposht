@@ -254,64 +254,69 @@ public:
 					lp1_thread.reset( new std::thread( [this, &valid_lp1](uint128_t lp ){ valid_lp1 = RestoreLinePoint(lp);}, ReadRealLinePoint( file, 0, x1x2.first )  ) );
 
 				uint128_t valid_lp2 = 0;
-				std::vector<uint128_t> restored_points, restored_points_first;
+				std::vector<uint128_t> read_points;
 				{ // time to read second parks
 					{
 						uint32_t pos_in_park = x1x2.second % kEntriesPerPark;
 						auto pReader = GetParkReader( file, 0, x1x2.second );
-						restored_points.push_back( pReader.NextLinePoint( pos_in_park ) );
-						while( pReader.HasNext() ) restored_points.push_back( pReader.NextLinePoint() );
+						read_points.push_back( pReader.NextLinePoint( pos_in_park ) );
+						while( pReader.HasNext() ) read_points.push_back( pReader.NextLinePoint() );
 					}
-					if( restored_points.size() < kEntriesPerPark ){
+					if( read_points.size() < kEntriesPerPark ){
 						auto pReader = GetParkReader( file, 0, x1x2.second + kEntriesPerPark );
-						while( restored_points.size() < kEntriesPerPark && pReader.HasNext() )
-							restored_points.push_back( pReader.NextLinePoint() );
+						while( read_points.size() < kEntriesPerPark && pReader.HasNext() )
+							read_points.push_back( pReader.NextLinePoint() );
 					}
 				}
 
 				//run some thread to read points ahead
-				std::vector<std::thread> threads;
 				const uint32_t threads_number = 3; // equal to threads cound
-				std::atomic_uint32_t evaluated_points = 0;
-				uint8_t points_flags[restored_points.size()];
-				memset( points_flags, 0, restored_points.size() );
-				auto thread_func = [this, &restored_points, &evaluated_points, &valid_lp2, &points_flags](){
-						for( uint32_t i = evaluated_points.fetch_add(1, std::memory_order_relaxed); valid_lp2 == 0 && i < restored_points.size();
-								 i = evaluated_points.fetch_add(1, std::memory_order_relaxed) ){
-							restored_points[i] = RestoreLinePoint( restored_points[i] );
-							points_flags[i] = 1;
+				std::vector<uint128_t> restored_points(read_points.size());
+				std::vector<std::thread> threads;
+				std::atomic_int32_t next_point_idx = 0, found_at_idx = -1;
+				auto thread_func = [this, &restored_points, &next_point_idx, &read_points, &position, &x1x2, &valid_lp1, &found_at_idx](){
+						LinePointMatcher validator( k_size, plot_id, valid_lp1 );
+
+						for( int32_t i = next_point_idx.fetch_add(1, std::memory_order_relaxed);
+								 found_at_idx.load(std::memory_order_relaxed) == -1 && i < read_points.size();
+								 i = next_point_idx.fetch_add(1, std::memory_order_relaxed) ){
+							if( i > 0 && read_points[i] == read_points[i-1] ) continue; // same point evaluated in same threads
+							restored_points[i] = RestoreLinePoint( read_points[i] );
+							if( CheckRestored( restored_points[i], x1x2.second + i, position, false ) && validator.CheckMatch( restored_points[i] ) )
+								found_at_idx.store( i, std::memory_order_relaxed );
+							else {
+								while( ++i < read_points.size() && read_points[i-1] == read_points[i] && found_at_idx.load(std::memory_order_relaxed ) == -1 ){
+									restored_points[i] = restored_points[i-1] == 0 ? 0 : FindNextLinePoint( restored_points[i-1]+1, bits_cut_no );
+									if( CheckRestored( restored_points[i], x1x2.second + i, position, false ) && validator.CheckMatch( restored_points[i] ) ){
+										found_at_idx.store(i ,std::memory_order_relaxed );
+										return;
+									}
+								}
+							}
 						}
 					};
-				for( uint32_t i = 0; i < threads_number; i++ )
-					threads.emplace_back( thread_func );
 
 				if( lp1_thread ) lp1_thread->join();
 				CheckRestored( valid_lp1, x1x2.first, position );
 
-				LinePointMatcher validator( k_size, plot_id, valid_lp1 );
+				for( uint32_t i = 0; i < threads_number; i++ )
+					threads.emplace_back( thread_func );
 
-				for( uint32_t i = 0; valid_lp2 == 0 && i < restored_points.size(); i++ ){
-					while( points_flags[i] == 0 ) usleep( 1000 );
-					if( CheckRestored( restored_points[i], x1x2.second + i, position, false ) ){
-						// there is no possibility for 2 identical line points and they should be on ascending up order
-						// than if this point less or equal with previous we should find next one.
-						while( i > 0 && restored_points[i] <= restored_points[i-1] )
-							restored_points[i] = FindNextLinePoint( restored_points[i] + 1, bits_cut_no );
-
-						if( validator.CheckMatch( restored_points[i] ) ){
-							valid_lp2 = restored_points[i];
-							line_point = Encoding::SquareToLinePoint( x1x2.first, x1x2.second += i );
-						}
-					}
-				}
 				for (auto& t : threads)  t.join(); // wait for threads to not fail...
+				if( found_at_idx >= 0 ){
+					valid_lp2 = restored_points[found_at_idx];
+					line_point =  Encoding::SquareToLinePoint( x1x2.first, x1x2.second += found_at_idx );
+				}
+
+				LinePointMatcher validator( k_size, plot_id, valid_lp1 );
+				std::vector<uint128_t> restored_points_first;
 
 				if( valid_lp2 == 0 ){ // match didn't succeed
 					restored_points_first.push_back( valid_lp1 );
 					while( valid_lp2 == 0 && (valid_lp1 = FindNextLinePoint( valid_lp1+1, bits_cut_no ) ) != 0 ){
 						validator.ResetLP1( valid_lp1 );
 						for( uint32_t i = 0; valid_lp2 == 0 && i < restored_points.size(); i++ ){
-							if( validator.CheckMatch( restored_points[i] ) ) {
+							if( restored_points[i] != 0 && validator.CheckMatch( restored_points[i] ) ) {
 								valid_lp2 = restored_points[i];
 								line_point = Encoding::SquareToLinePoint( x1x2.first, x1x2.second += i );
 							}

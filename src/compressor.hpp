@@ -356,9 +356,9 @@ public:
 	explicit Compressor( const std::string& filename )
 			:filename(filename), disk_file( filename )
 	{
-		std::cout << "Chia plot compressing software made by Vladimir T" << std::endl;
-		std::cout << "If you thinks this compression is helpfull for you, please consider donate to " << std::endl;
-		std::cout << "   xch1ch6s3q0enuj9wtemn473gkkvj0u8vlggypr375mk547e7aa48hmsql74e8" << std::endl << std::endl;
+		std::cout << "*** Chia plot compressing software made by Vladimir T" << std::endl;
+		std::cout << "*** If this compression is helpfull for you, please consider donate " << std::endl;
+		std::cout << "***   xch1ch6s3q0enuj9wtemn473gkkvj0u8vlggypr375mk547e7aa48hmsql74e8" << std::endl << std::endl;
 		std::cout << "Create compressor on " << filename << std::endl;
 
 		// 19 bytes  - "Proof of Space Plot" (utf-8)
