@@ -276,6 +276,9 @@ int main(int argc, char *argv[]) try {
         std::vector<uint8_t> id_bytes = prover.GetId();
         k = prover.GetSize();
 
+				std::unique_ptr<TCompress::Decompressor> tdec( TCompress::Decompressor::CheckForCompressed( filename, prover.GetMemo().size(), prover.GetSize(), prover.GetId().data() ) );
+				if( tdec ) tdec->ShowInfo();
+
         for (uint32_t num = 0; num < iterations; num++) {
 
 						vector<unsigned char> hash_input = intToBytes(num+initial_challenge, 4);
@@ -299,7 +302,7 @@ int main(int argc, char *argv[]) try {
                     uint8_t *proof_data = new uint8_t[proof.GetSize() / 8];
                     proof.ToBytes(proof_data);
 										cout << "i: " << (num + initial_challenge) << " (" << num << "), succeed: "
-												 << (num-failures) << " (" << ((num-failures)*100.0/num) << "%), proofs: "
+												 << (num-failures-exceptions) << " (" << ((num-failures-exceptions)*100.0/num) << "%), proofs: "
 												 << success << std::endl;
                     cout << "challenge: 0x" << Util::HexStr(hash.data(), 256 / 8) << endl;
                     cout << "proof: 0x" << Util::HexStr(proof_data, k * 8) << endl;
@@ -337,7 +340,7 @@ int main(int argc, char *argv[]) try {
 			TCompress::Compressor plot_compress( argv[3] );
 			plot_compress.CompressTo( filename , std::stoi(argv[2]) );
     } else {
-        cout << "Invalid operation '" << operation << "'. Use create/prove/verify/check" << endl;
+				cout << "Invalid operation '" << operation << "'. Use create/prove/verify/check/compress" << endl;
     }
     return 0;
 } catch (const cxxopts::exceptions::exception &e) {
