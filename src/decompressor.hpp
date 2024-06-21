@@ -241,9 +241,9 @@ public:
 					throw std::runtime_error( "unsupported case of moving first" );
 
 				uint128_t valid_lp1 = LPCache.GetLinePoint( k_size, plot_id, 0, x1x2.first );
-				std::vector<std::thread> threads;
+				std::unique_ptr<std::thread> lp1_thread;
 				if( valid_lp1 == 0 )
-					threads.emplace_back( [this, &valid_lp1](uint128_t lp ){ valid_lp1 = RestoreLinePoint(lp);}, ReadRealLinePoint( file, 0, x1x2.first )  );
+					lp1_thread.reset( new std::thread( [this, &valid_lp1](uint128_t lp ){ valid_lp1 = RestoreLinePoint(lp);}, ReadRealLinePoint( file, 0, x1x2.first )  ) );
 
 				uint128_t valid_lp2 = 0;
 				std::vector<uint128_t> restored_points, restored_points_first;
@@ -261,10 +261,8 @@ public:
 					}
 				}
 
-				for (auto& t : threads)  t.join(); // wait for valid_lp1
-				threads.clear();
-
 				//run some thread to read points ahead
+				std::vector<std::thread> threads;
 				const uint32_t threads_number = 3; // equal to threads cound
 				std::atomic_uint32_t evaluated_points = 0;
 				uint8_t points_flags[restored_points.size()];
@@ -278,6 +276,8 @@ public:
 					};
 				for( uint32_t i = 0; i < threads_number; i++ )
 					threads.emplace_back( thread_func );
+
+				if( lp1_thread ) lp1_thread->join();
 
 				LinePointMatcher validator( k_size, plot_id, valid_lp1 );
 
@@ -517,7 +517,7 @@ private:
 		std::vector<PlotEntry> bucket_L(1);
 		std::vector<PlotEntry> bucket_R(1);
 
-		uint64_t b = x1x2.second, left_to_do = (1U << removed_bits_no) - (line_point&((1ULL << removed_bits_no)-1));
+		uint64_t b = x1x2.second, left_to_do = (1ULL << removed_bits_no) - (line_point&((1ULL << removed_bits_no)-1));
 		while( left_to_do > 0 ){
 			f1.CalculateBuckets( b, BATCH_SIZE, batch );
 			uint64_t cur_batch_size = std::min( left_to_do, std::min( BATCH_SIZE, x1x2.first - b ) ); // possible to minimize with left_to_do
