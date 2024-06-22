@@ -100,7 +100,7 @@ public:
         return ctime(&tt);  // ctime includes newline
     }
 
-    void PrintElapsed(const std::string &name) const
+		void PrintElapsed(const std::string &name, bool is_short = false) const
     {
         auto end = std::chrono::steady_clock::now();
         auto wall_clock_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -128,8 +128,8 @@ public:
 
         double cpu_ratio = static_cast<int>(10000 * (cpu_time_ms / wall_clock_ms)) / 100.0;
 
-        std::cout << name << " " << (wall_clock_ms / 1000.0) << " seconds. CPU (" << cpu_ratio
-                  << "%) " << Timer::GetNow();
+				std::cout << name << " " << (wall_clock_ms / 1000.0) << " seconds. CPU (" << cpu_ratio
+									<< "%) " << (is_short ? "\n" : Timer::GetNow() );
     }
 
 private:

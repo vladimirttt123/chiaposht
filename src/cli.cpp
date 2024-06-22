@@ -288,16 +288,15 @@ int main(int argc, char *argv[]) try {
             picosha2::hash256(hash_input.begin(), hash_input.end(), hash.begin(), hash.end());
 
 
-						auto start = high_resolution_clock::now();
+						Timer q_time;
 						vector<LargeBits> qualities = prover.GetQualitiesForChallenge(hash.data());
-						auto stop = high_resolution_clock::now();
-						std::cout << "Qualties time: " << (duration_cast<milliseconds>(stop - start).count()) << "ms" << std::endl;
+						q_time.PrintElapsed( "Qualties " + std::to_string( qualities.size() ) + " time: ", true );
 
             for (uint32_t i = 0; i < qualities.size(); i++) {
                 try {
-										start = high_resolution_clock::now();
+										Timer p_time;
 										LargeBits proof = prover.GetFullProof(hash.data(), i, parallel_read);
-										stop = high_resolution_clock::now();
+										p_time.PrintElapsed( "Proof time: ", true );
 
                     uint8_t *proof_data = new uint8_t[proof.GetSize() / 8];
                     proof.ToBytes(proof_data);
@@ -316,8 +315,6 @@ int main(int argc, char *argv[]) try {
                         cout << "Proof verification failed." << endl;
                         failures += 1;
                     }
-
-										std::cout << "Proof time: " << duration_cast<milliseconds>(stop - start).count() << "ms" << std::endl;
 
                     delete[] proof_data;
 

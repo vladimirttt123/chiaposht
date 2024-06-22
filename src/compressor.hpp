@@ -386,14 +386,15 @@ private:
 };
 
 struct ProgressCounter{
-	ProgressCounter( uint64_t total) : scale( total/20 ){}
+	ProgressCounter( uint64_t total ) : scale( total/20 ){}
 	void ShowNext( uint64_t current ){
 		for( uint64_t cur = current/scale; shown < cur; shown++ )
 			std::cout << (((shown+1)%5)?'-':'*') << std::flush;
 	}
-	~ProgressCounter() { std::cout<<std::endl; }
+	~ProgressCounter() { progres_time.PrintElapsed( "  " ); }
 private:
 	uint64_t scale, shown = 0;
+	Timer progres_time;
 };
 
 class Compressor {
@@ -437,16 +438,16 @@ public:
 		disk_file.Read( memo, memo_size );
 
 		// now table pointers
-		std::cout << "Compress to " << filename << std::endl;
-		std::cout << "Tables pointers: ";
+		// std::cout << "Compress to " << filename << std::endl;
+		// std::cout << "Tables pointers: ";
 		disk_file.Read( buf, 80 );
 		for( int i = 0; i < 10; i++ ){
 			table_pointers[i] = Util::EightBytesToInt( buf + i*8 );
-			std::cout << table_pointers[i] << ", ";
+			// std::cout << table_pointers[i] << ", ";
 		}
 		table_pointers[10] = disk_file.Size();
 
-		std::cout << std::endl;
+		// std::cout << std::endl;
 	}
 
 	void CompressTo( const std::string& filename, uint8_t level ){
@@ -478,6 +479,7 @@ public:
 		new_table_pointers[0] = header_size;
 		uint32_t *parks_count = (uint32_t*)(header+60+memo_size + 10*8 + 1 );
 		uint64_t total_saved = 0;
+		Timer total_timer;
 
 		FileDisk output_file( filename );
 		output_file.Write( 0, header, header_size ); // could be done at the end when everythins is full;
@@ -487,7 +489,6 @@ public:
 			auto tinfo = ((i == 1 && bits_to_cut > 0 ) || (i==2 && cut_table2) ) ?
 											CompressTable( i, &output_file, new_table_pointers[i-1], i==1 ? bits_to_cut : 11 )
 										: CompactTable( i, &output_file, new_table_pointers[i-1] );
-
 			new_table_pointers[i] = new_table_pointers[i-1] + tinfo.new_table_size;
 
 			if( tinfo.parks_count > 0xffffffffUL ) throw std::runtime_error("too many parks");
@@ -495,12 +496,13 @@ public:
 
 			uint64_t saved = tinfo.table_size - tinfo.new_table_size;
 			total_saved += saved;
-			std::cout << "		original size: " << tinfo.table_size << " (" << (tinfo.table_size>>20) << "MiB)"
-								<< "; compacted size: " << tinfo.new_table_size << " (" << (tinfo.new_table_size>>20) << "MiB)"
-								<< "; saved: " << saved << " (" << (saved>>20) << "MiB)" << std::endl;
+			std::cout << std::fixed << std::setprecision(2)
+								<< "        original size: " << (tinfo.table_size>>20) << "MiB, compacted size: "
+								<< (tinfo.new_table_size>>20) << "MiB (" << (tinfo.new_table_size*100.0/tinfo.table_size)
+								<< "%), saved: " << (saved>>20) << "MiB" << std::endl;
 		}
 
-		std::cout << "copy tables 7, C1, C2 " << std::flush;
+		std::cout << "Tables 7, C1, C2: copy      " << std::flush;
 		CopyData( table_pointers[6], table_pointers[9] - table_pointers[6], &output_file, new_table_pointers[6] );
 
 		new_table_pointers[7] = new_table_pointers[6] + (table_pointers[7]-table_pointers[6]);
@@ -520,8 +522,12 @@ public:
 
 		// save final header
 		output_file.Write( 0, header, header_size ); // could be done at the end when everythins is full;
-
-		std::cout << "Total decrease size: " << total_saved << " (" << (total_saved>>20) << "MiB)" << std::endl;
+		total_timer.PrintElapsed( "Total time: " );
+		std::cout << "Original size: " << (table_pointers[10]>>20) << "MiB; compacted size: "
+							<< ((table_pointers[10]-total_saved)>>20) << "MiB ("
+							<< std::fixed << std::setprecision(2)
+							<< ((table_pointers[10]-total_saved)*100.0/table_pointers[10]) << "%); saved:"
+							<< (total_saved>>20) << "MiB" << std::endl;
 	}
 
 	~Compressor(){
@@ -539,7 +545,7 @@ private:
 
 
 	void CopyData( uint64_t src_position, uint64_t size,  FileDisk *output_file, uint64_t output_position ){
-		const uint64_t BUF_SIZE = 64*1024;
+		const uint64_t BUF_SIZE = 128*1024;
 		uint8_t buf[BUF_SIZE];
 		ProgressCounter progress( size );
 
@@ -563,7 +569,7 @@ private:
 	// 3. 3 bottom bytes of pointer to deltas location after deltas of this part added.
 	//    it is supposed that first pointer is 0 and at length of deltas could be evaluated by substracting prev and next pointer.
 	OriginalTableInfo CompactTable( int table_no, FileDisk * output_file, uint64_t output_position ){
-		std::cout << " compacting " << std::flush;
+		std::cout << " compacting       " << std::flush;
 
 		OriginalTableInfo tinfo( k_size, table_no, table_pointers[table_no-1], table_pointers[table_no] - table_pointers[table_no-1] );
 		const uint64_t lps_size =  tinfo.line_point_size + tinfo.stubs_size;
@@ -647,7 +653,7 @@ private:
 	// The small deltas still is deltas but stubs now is not a deltas but real low bits of line point.
 	// Than we need to restore all line points and pack them new way
 	OriginalTableInfo CompressTable( int table_no, FileDisk * output_file, uint64_t output_position, uint32_t bits_to_remove = 0 ){
-		std::cout << " compressing (" << bits_to_remove << ")" << std::flush;
+		std::cout << " compressing (" << bits_to_remove << ") " << std::flush;
 
 		OriginalTableInfo tinfo( k_size, table_no, table_pointers[table_no-1],
 														table_pointers[table_no] - table_pointers[table_no-1], bits_to_remove );
@@ -727,7 +733,6 @@ private:
 
 			writer.WriteNext( new_stubs_buf, deltas_buf, deltas_size );
 		}
-
 
 		tinfo.new_table_size = (new_lps_size + 3)*tinfo.parks_count + new_deltas_storage.total_size;
 
