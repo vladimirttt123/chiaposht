@@ -25,7 +25,7 @@ cmake --build . -- -j 6
 ```
 
 Now you have executable ProofOfSpace that could be used to compress and library usually with name
-chiapos.cpython-312-x86_64-linux-gnu.so (the axact name depends on python version and architecture)
+chiapos.cpython-312-x86_64-linux-gnu.so (the exact name depends on python version and architecture)
 In order to compress use
 ```bash
 ./ProofOfSpace compress <level> <original.plot> -f <output.plot>
@@ -52,7 +52,7 @@ chia stop -d all
 Than replace and run chia back as usual. The new library should support all exists plots as usual.
 
 ### Limitations
-* The maximum bits to cut by this method is k+8 (11 from table 2 and k-2 from table 1).
+* The maximum bits to cut by this method is k+8 (11 from table 2 and k-3 from table 1).
 * CPU only compression/decompression
 * The number of used threads for quality look up is up to 3.
 * The maximum number of threads used for proof restore is 93 
@@ -64,30 +64,32 @@ up to 3 if no parallel read.
 
 Any compression level adds 1 IO request per table park. 
 Practically it means double of IO requests without adding thougutput.
-Compression level removing bits from table 2 adds some more IO request with adding some thoughtput.
+Compression level removing bits from table 2 adds some more IO request 
+with adding some minor thoughtput.
 
-Any compression level depends on k size. Level 0 compression adds around 1.3-1.7% 
-and each bit cut removes around (2^(k-3))*0.81 bytes that for k32 is around 
+Any compression level depends on k size. Level 0 compression adds around 1.3-1.7%.
+Each removed bit saves around (2^(k-3))*0.81 bytes that for k32 is around 
 (2^(32-3))*0.81 ~ 410MiB. Than for k32 with size 103800MiB using 29 bits cut supposed final size
 is 103800 * 0.984 - 29 * (2^(32-3)) * 0.81 ~ 90243 MiB that means final file is around 87% from original.
 
-Proof look up time depends only on number of cutted bits. 
+Proof look up time depends only on number of removed bits. 
 It means that time for proof look up on k32 with 29 bits removed 
 in average be the same like for k37 with 29 bits removed. 
-But compression percent is decrease for same bits cut and higher k. 
+But compression percent decreases for same amount of removed bits on higher k. 
 For example 29 bits cut on k37 gives 3 820 900 * 0.984 - 29 * (2^(37-3)) * 0.81 ~ 3 375 900 MiB
 that is around 88.4% from original file
 
 The timing of proof recovery depends on CPU and number of removed bits. 
 As example my AMD Ryzen 5500U capable 
-to restore proof from 27 bits cut for 2-2.5 seconds and 29 bits cut timing is 8-10 seconds.
+to restore proof from 29 bits cut for 2-2.5 seconds and 31 bits cut timing is 8-10 seconds.
 
-Any plot pass filter around 36 times a day. It means 36 quality look ups a day.
+Any plot passes filter around 36 times a day. It means 36 quality look ups a day.
 By CPU usage 64 quality look ups equals to one proof look up. 
 The number of proofs look up depends on either this is OG or NFT plot farming for pool.
-Suppose plot with 27 bit cut on AMD 5500U CPU that farms for pool and has 3 proof
+Suppose plot with 29 bit cut on AMD 5500U CPU that farms for pool and has 3 proof
 look ups a day with 36 quality look ups it is around 4 proof look ups i.e. 8-10 second
-of CPU usage a day for decompression.
+of CPU usage a day for decompression. It means that around 1000 plots will fill CPU for 10%.
+With plots of huge size like k37+ such CPU could support a very big farm.
 
 ### Trableshooting
 If compressed plots do not work, enable support of compressed plots in chia config file.
