@@ -494,22 +494,17 @@ public:
 			if( tinfo.parks_count > 0xffffffffUL ) throw std::runtime_error("too many parks");
 			parks_count[i-1] = tinfo.parks_count;
 
-			uint64_t saved = tinfo.table_size - tinfo.new_table_size;
-			total_saved += saved;
-			std::cout << std::fixed << std::setprecision(2)
-								<< "        original size: " << (tinfo.table_size>>20) << "MiB, compacted size: "
-								<< (tinfo.new_table_size>>20) << "MiB (" << (tinfo.new_table_size*100.0/tinfo.table_size)
-								<< "%), saved: " << (saved>>20) << "MiB" << std::endl;
+			total_saved += ShowTableSaved( tinfo.table_size, tinfo.new_table_size );
 		}
 
-		std::cout << "Tables 7, C1, C2: copy      " << std::flush;
+		std::cout << "Tables 7, C1, C2: copy     " << std::flush;
 		CopyData( table_pointers[6], table_pointers[9] - table_pointers[6], &output_file, new_table_pointers[6] );
 
 		new_table_pointers[7] = new_table_pointers[6] + (table_pointers[7]-table_pointers[6]);
 		new_table_pointers[8] = new_table_pointers[7] + (table_pointers[8]-table_pointers[7]);
 		new_table_pointers[9] = new_table_pointers[8] + (table_pointers[9]-table_pointers[8]);
 
-		std::cout << "Table C3: compacting " << std::flush;
+		std::cout << "Table C3: compacting       " << std::flush;
 		parks_count[6] = CompactC3Table( &output_file, new_table_pointers[9], total_saved );
 
 
@@ -523,10 +518,10 @@ public:
 		// save final header
 		output_file.Write( 0, header, header_size ); // could be done at the end when everythins is full;
 		total_timer.PrintElapsed( "Total time: " );
-		std::cout << "Original size: " << (table_pointers[10]>>20) << "MiB; compacted size: "
+		std::cout << "Original file size: " << (table_pointers[10]>>20) << "MiB; compacted file size: "
 							<< ((table_pointers[10]-total_saved)>>20) << "MiB ("
 							<< std::fixed << std::setprecision(2)
-							<< ((table_pointers[10]-total_saved)*100.0/table_pointers[10]) << "%); saved:"
+							<< ((table_pointers[10]-total_saved)*100.0/table_pointers[10]) << "%); saved: "
 							<< (total_saved>>20) << "MiB" << std::endl;
 	}
 
@@ -544,6 +539,15 @@ private:
 	uint64_t table_pointers[11];
 
 
+	uint64_t ShowTableSaved( uint64_t original_size, uint64_t compacted_size ){
+		uint64_t saved = original_size - compacted_size;
+		std::cout << std::fixed << std::setprecision(2)
+							<< "        original size: " << (original_size>>20) << "MiB, compacted size: "
+							<< (compacted_size>>20) << "MiB (" << (compacted_size*100.0/original_size)
+							<< "%), saved: " << (saved>>20) << "MiB" << std::endl;
+		return saved;
+	}
+
 	void CopyData( uint64_t src_position, uint64_t size,  FileDisk *output_file, uint64_t output_position ){
 		const uint64_t BUF_SIZE = 128*1024;
 		uint8_t buf[BUF_SIZE];
@@ -558,6 +562,7 @@ private:
 			disk_file.Read( buf, to_copy );
 			output_file->Write( output_position + i, buf, to_copy );
 		}
+		progress.ShowNext( size );
 	}
 
 	// Compacted table has following structuer:
@@ -612,28 +617,30 @@ private:
 		uint64_t deltas_position = output_position + parks_count*3;
 
 		DeltasStorage deltas(parks_count);
-		ProgressCounter progress( parks_count );
+		{ // to show timing at the end of writing
+			ProgressCounter progress( parks_count );
 
-		disk_file.Seek( table_pointers[9] );
-		for( uint64_t i = 0; i < parks_count; i++ ){
-			progress.ShowNext( i );
+			disk_file.Seek( table_pointers[9] );
+			for( uint64_t i = 0; i < parks_count; i++ ){
+				progress.ShowNext( i );
 
-			disk_file.Read( buf, park_size );
-			deltas.Add( i,  Bits(buf, 2, 16).GetValue() );
+				disk_file.Read( buf, park_size );
+				deltas.Add( i,  Bits(buf, 2, 16).GetValue() );
 
-			output_file->Write( deltas_position, buf + 2, deltas.all_sizes[i] );
-			deltas_position += deltas.all_sizes[i];
+				output_file->Write( deltas_position, buf + 2, deltas.all_sizes[i] );
+				deltas_position += deltas.all_sizes[i];
 
-			deltas.TotalEndToBuf( i, positions + cur_pos_buf );
-			cur_pos_buf += 3;
-			if( cur_pos_buf >= POS_BUF_SIZE ){
-				output_file->Write( next_buf_pos, positions, cur_pos_buf );
-				next_buf_pos += POS_BUF_SIZE;
-				cur_pos_buf = 0;
+				deltas.TotalEndToBuf( i, positions + cur_pos_buf );
+				cur_pos_buf += 3;
+				if( cur_pos_buf >= POS_BUF_SIZE ){
+					output_file->Write( next_buf_pos, positions, cur_pos_buf );
+					next_buf_pos += POS_BUF_SIZE;
+					cur_pos_buf = 0;
+				}
 			}
-		}
 
-		output_file->Write( next_buf_pos, positions, cur_pos_buf ); // write last positions
+			output_file->Write( next_buf_pos, positions, cur_pos_buf ); // write last positions
+		}
 
 		// check all partially saved position could be restored
 		if( !deltas.IsDeltasPositionRestorable() )
@@ -641,10 +648,7 @@ private:
 
 		uint64_t original_size = park_size * parks_count,
 				compacted_size = (3*parks_count + deltas.total_size);
-		uint64_t saved = original_size - compacted_size ;
-		total_saved += saved;
-		std::cout << "		original size " << original_size
-							<< "; compressed size: " << compacted_size << std::endl;
+		total_saved += ShowTableSaved( original_size, compacted_size );
 
 		return parks_count;
 	}
