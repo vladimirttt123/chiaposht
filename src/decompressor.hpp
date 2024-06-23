@@ -162,9 +162,9 @@ public:
 	}
 
 	void ShowInfo(){
-		std::cout << "Chia plot compressing software made by Vladimir T" << std::endl;
-		std::cout << "If you thinks this compression is helpfull for you, please consider donate to " << std::endl;
-		std::cout << "   xch1ch6s3q0enuj9wtemn473gkkvj0u8vlggypr375mk547e7aa48hmsql74e8 " << std::endl << std::endl;
+		std::cout << "*** Chia plot compressing software made by Vladimir T" << std::endl;
+		std::cout << "*** If this compression is helpfull for you, please consider donate " << std::endl;
+		std::cout << "***   xch1ch6s3q0enuj9wtemn473gkkvj0u8vlggypr375mk547e7aa48hmsql74e8" << std::endl << std::endl;
 
 		std::cout << "Compression: " << (table2_cut?"table2 + " : "" ) << (int)bits_cut_no << " bits" << std::endl << std::endl;
 	}
@@ -422,11 +422,6 @@ private:
 		FxCalculator f_d2( k_size, 2 );
 		FxCalculator f_d3( k_size, 3 );
 
-		return CheckMatch( lp1, lp2, f1, f_d2, f_d3 );
-	}
-	// match 2 lp from table 1 and supposed they are correct.
-	bool CheckMatch( uint128_t lp1, uint128_t lp2, F1Calculator &f1, FxCalculator &f_d2, FxCalculator &f_d3 ){
-
 		auto xs1 = Encoding::LinePointToSquare( lp1 ), xs2 = Encoding::LinePointToSquare( lp2 );
 		std::vector<Bits> xs;
 		xs.emplace_back( xs1.first, k_size );
@@ -476,8 +471,9 @@ private:
 	}
 
 	ParkReader GetParkReader( std::ifstream& file, // this need for parallel reading - will support it later
-													 uint8_t table_no /*0 is a first table*/,
-													 uint64_t position, bool for_single_point = false ){
+														uint8_t table_no /*0 is a first table*/,
+														uint64_t position, bool
+														for_single_point = false /* is to read only check point line point */ ){
 		if( table_no >=6 )
 			throw std::invalid_argument( "table couldn't be bigger than 5 for reading line point: " + std::to_string(table_no) );
 
