@@ -76,6 +76,7 @@ public:
 		memcpy( parks_counts, other.parks_counts, 7*4 );
 	}
 
+	// Check if plot represented by this filename is compressed. It it is returnes decompressor for it.
 	static Decompressor* CheckForCompressed( const std::string& filename, uint16_t memo_size, uint8_t k, const uint8_t *plot_id ){
 		ReadFileWrapper disk_file( filename );
 		uint8_t buf[4];
@@ -89,11 +90,8 @@ public:
 	}
 
 	void ShowInfo(){
-		std::cout << "*** Chia plot compressing software made by Vladimir T" << std::endl;
-		std::cout << "*** If this compression is helpfull for you, please consider donate " << std::endl;
-		std::cout << "***   xch1ch6s3q0enuj9wtemn473gkkvj0u8vlggypr375mk547e7aa48hmsql74e8" << std::endl << std::endl;
-
-		std::cout << "Compression: " << (table2_cut?"table2 + " : "" ) << (int)bits_cut_no << " bits" << std::endl << std::endl;
+		std::cout << program_header << std::endl
+							<< "Compression: " << (table2_cut?"table2 + " : "" ) << (int)bits_cut_no << " bits" << std::endl << std::endl;
 	}
 
 	void init( std::ifstream& file, uint16_t memo_size, uint8_t k, const uint8_t *plot_id ){

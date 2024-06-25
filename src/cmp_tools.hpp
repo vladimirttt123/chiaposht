@@ -19,6 +19,9 @@ namespace TCompress {
 const std::string tFormatDescription = "t0.1";
 const char* plotMagicFrase = "Proof of Space Plot";
 
+const char * program_header = "*** Chia plot compressing software made by Vladimir T\n"
+			"*** If this compression is helpfull for you, please consider donate\n"
+			"***   xch1ch6s3q0enuj9wtemn473gkkvj0u8vlggypr375mk547e7aa48hmsql74e8\n";
 
 
 struct LinePointCacheEntry{
