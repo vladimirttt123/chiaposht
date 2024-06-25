@@ -23,32 +23,7 @@ namespace TCompress {
 const std::string tFormatDescription = "t0.1";
 const char* plotMagicFrase = "Proof of Space Plot";
 
-struct OriginalTableInfo{
-public:
-	const uint64_t table_pointer, table_size;
-	const uint8_t k, line_point_size;
-	const uint64_t delta_size, single_stub_size_bits, stubs_size, park_size, parks_count;
-	const uint64_t new_single_stub_size_bits, new_stubs_size, new_line_point_size;
-	const uint64_t single_stub_mask;
 
-	uint64_t new_table_size = 0;
-
-	OriginalTableInfo( uint8_t k, uint8_t table_no, uint64_t table_pointer, uint64_t table_size, uint32_t stubs_bits_to_remove = 0 )
-			: table_pointer(table_pointer), table_size(table_size), k(k)
-			, line_point_size( EntrySizes::CalculateLinePointSize(k) )
-			, delta_size( EntrySizes::CalculateMaxDeltasSize( k, table_no ) )
-			, single_stub_size_bits( k - kStubMinusBits )
-			, stubs_size( EntrySizes::CalculateStubsSize( k ) )
-			, park_size( EntrySizes::CalculateParkSize( k, table_no ) )
-			, parks_count( table_size / park_size )
-			, new_single_stub_size_bits( single_stub_size_bits - stubs_bits_to_remove )
-			, new_stubs_size( Util::ByteAlign((kEntriesPerPark - 1) * ( new_single_stub_size_bits )) / 8 )
-			, new_line_point_size( Util::ByteAlign( 2*k-stubs_bits_to_remove )/8 )
-			, single_stub_mask( ((uint64_t)-1)>>(64-single_stub_size_bits))
-	{
-	}
-
-};
 
 struct ReadFileWrapper{
 public:
@@ -210,6 +185,60 @@ private:
 		return (((uint64_t)top)<<24) | (((uint64_t)high)<<16) | (((uint64_t)med)<<8)  | (((uint64_t)low));
 	}
 };
+
+struct OriginalTableInfo{
+public:
+	const uint64_t table_pointer, table_size;
+	const uint8_t k, line_point_size;
+	const uint64_t delta_size, single_stub_size_bits, stubs_size, park_size, parks_count;
+	const uint64_t new_single_stub_size_bits, new_stubs_size, new_line_point_size;
+	const uint64_t single_stub_mask;
+
+	uint64_t new_table_size = 0;
+	std::unique_ptr<DeltasStorage> new_deltas;
+
+	OriginalTableInfo( uint8_t k, uint8_t table_no, uint64_t table_pointer, uint64_t table_size, uint32_t stubs_bits_to_remove = 0 )
+			: table_pointer(table_pointer), table_size(table_size), k(k)
+			, line_point_size( EntrySizes::CalculateLinePointSize(k) )
+			, delta_size( EntrySizes::CalculateMaxDeltasSize( k, table_no ) )
+			, single_stub_size_bits( k - kStubMinusBits )
+			, stubs_size( EntrySizes::CalculateStubsSize( k ) )
+			, park_size( EntrySizes::CalculateParkSize( k, table_no ) )
+			, parks_count( table_size / park_size )
+			, new_single_stub_size_bits( single_stub_size_bits - stubs_bits_to_remove )
+			, new_stubs_size( Util::ByteAlign((kEntriesPerPark - 1) * ( new_single_stub_size_bits )) / 8 )
+			, new_line_point_size( Util::ByteAlign( 2*k-stubs_bits_to_remove )/8 )
+			, single_stub_mask( ((uint64_t)-1)>>(64-single_stub_size_bits))
+			, new_deltas( new DeltasStorage( parks_count ) )
+	{
+	}
+
+	// check all partially saved position could be restored
+	std::thread CheckNewDeltas(){
+		return std::thread( []( DeltasStorage * deltas){
+			if( !deltas->IsDeltasPositionRestorable() ){
+				delete deltas;
+				throw std::runtime_error( "couldn't restore position of deltas" );
+			}
+			delete deltas;
+		}, new_deltas.release() );
+	}
+};
+
+// struct BufReader{
+// public:
+// 	const uint32_t per_buf_size, bufs_to_read, read_ahead_count;
+// 	BufReader( ReadFileWrapper *file, uint32_t per_buf_size, uint32_t bufs_to_read, uint8_t read_ahead_count = 10 )
+// 			: per_buf_size(per_buf_size), bufs_to_read(bufs_to_read), read_ahead_count(read_ahead_count), disk(file)
+// 			, big_buf( new uint8_t[per_buf_size*bufs_to_read*2] )
+// 	{
+
+// 	}
+// private:
+// 	ReadFileWrapper *disk;
+// 	uint8_t *big_buf, *cur_bufs_src = nullptr;
+
+// };
 
 struct BufWriter{
 	static const uint32_t SIZE = 1024*1024; // 1Mb
@@ -480,6 +509,7 @@ public:
 		uint32_t *parks_count = (uint32_t*)(header+60+memo_size + 10*8 + 1 );
 		uint64_t total_saved = 0;
 		Timer total_timer;
+		std::vector<std::thread> delta_check_threads;
 
 		FileDisk output_file( filename );
 		output_file.Write( 0, header, header_size ); // could be done at the end when everythins is full;
@@ -495,6 +525,8 @@ public:
 			parks_count[i-1] = tinfo.parks_count;
 
 			total_saved += ShowTableSaved( tinfo.table_size, tinfo.new_table_size );
+
+			delta_check_threads.push_back( tinfo.CheckNewDeltas() );
 		}
 
 		std::cout << "Tables 7, C1, C2: copy     " << std::flush;
@@ -507,6 +539,8 @@ public:
 		std::cout << "Table C3: compacting       " << std::flush;
 		parks_count[6] = CompactC3Table( &output_file, new_table_pointers[9], total_saved );
 
+
+		for( uint32_t i = 0; i < delta_check_threads.size(); i++ ) delta_check_threads[i].join();
 
 		// invert table pointers - TODO check endians and skip if not needed
 		for( uint32_t i = 0; i < 10; i++ ){
@@ -581,7 +615,6 @@ private:
 		TableWriter writer( output_file, output_position, 3+lps_size, tinfo.parks_count );
 
 		uint8_t buf[tinfo.park_size+7], small_buf[8];
-		DeltasStorage deltas( tinfo.parks_count );
 		ProgressCounter progress( tinfo.parks_count );
 
 		disk_file.Seek( table_pointers[table_no-1] ); // seek to start of the table
@@ -590,18 +623,14 @@ private:
 
 			disk_file.Read( buf, tinfo.park_size );
 
-			deltas.Add( i, 0x7fff & ( ((uint32_t)buf[lps_size])
+			tinfo.new_deltas->Add( i, 0x7fff & ( ((uint32_t)buf[lps_size])
 															| (((uint32_t)buf[lps_size + 1])<<8) ) );
-			deltas.TotalEndToBuf( i, small_buf ); // this is buf with pointer already to next postion it is OK
+			tinfo.new_deltas->TotalEndToBuf( i, small_buf ); // this is buf with pointer already to next postion it is OK
 
-			writer.WriteNext( buf, small_buf, buf+lps_size+2, deltas.all_sizes[i] );
+			writer.WriteNext( buf, small_buf, buf+lps_size+2, tinfo.new_deltas->all_sizes[i] );
 		}
 
-		tinfo.new_table_size = (lps_size + 3)*tinfo.parks_count + deltas.total_size;
-
-		// check all partially saved position could be restored
-		if( !deltas.IsDeltasPositionRestorable() )
-			throw std::runtime_error( "couldn't restore position of deltas" );
+		tinfo.new_table_size = (lps_size + 3)*tinfo.parks_count + tinfo.new_deltas->total_size;
 
 		return tinfo;
 	}
@@ -673,7 +702,6 @@ private:
 		uint8_t buf[tinfo.park_size+7],
 				new_stubs_buf[new_lps_size + 3 + 7/* safe distance*/],
 				new_compressed_deltas_buf[kEntriesPerPark];
-		DeltasStorage new_deltas_storage( tinfo.parks_count );
 		ProgressCounter progress( tinfo.parks_count );
 
 		disk_file.Seek( table_pointers[table_no-1] ); // seek to start of the table
@@ -732,19 +760,14 @@ private:
 				memset( new_stubs_buf + tinfo.line_point_size + new_stubs_size_bytes, 0, tinfo.new_stubs_size-new_stubs_size_bytes );
 			}
 
-			new_deltas_storage.Add( i, deltas_size );
-			new_deltas_storage.TotalEndToBuf( i, new_stubs_buf + new_lps_size );
+			tinfo.new_deltas->Add( i, deltas_size );
+			tinfo.new_deltas->TotalEndToBuf( i, new_stubs_buf + new_lps_size );
 
 			writer.WriteNext( new_stubs_buf, deltas_buf, deltas_size );
 		}
 
-		tinfo.new_table_size = (new_lps_size + 3)*tinfo.parks_count + new_deltas_storage.total_size;
-
+		tinfo.new_table_size = (new_lps_size + 3)*tinfo.parks_count + tinfo.new_deltas->total_size;
 		assert( tinfo.new_table_size == writer.getWrittenSize() );
-
-		// check all partially saved position could be restored
-		if( !new_deltas_storage.IsDeltasPositionRestorable() )
-			throw std::runtime_error( "couldn't restore position of deltas" );
 
 		return tinfo;
 	}
