@@ -1,7 +1,6 @@
 #ifndef SRC_CPP_DECOMPRESSOR_HPP_
 #define SRC_CPP_DECOMPRESSOR_HPP_
 
-#include "compressor.hpp"
 #include <atomic>
 #include <cstdint>
 #include <cstring>
@@ -11,13 +10,12 @@
 #include <string>
 #include <iostream>
 #include <fstream>
-#include <future>
 
 #include "util.hpp"
 #include "pos_constants.hpp"
 #include "entry_sizes.hpp"
 #include "encoding.hpp"
-#include "compressor.hpp"
+#include "cmp_tools.hpp"
 
 namespace TCompress {
 
@@ -60,77 +58,6 @@ private:
 	uint64_t ys1;
 };
 
-struct LinePointCacheEntry{
-public:
-	uint64_t partial_id = 0, position = 0;
-	uint128_t line_point = 0;
-	uint8_t importance = 0, k = 0, table_no = 0;
-};
-
-struct LinePointsCache{
-public:
-	LinePointsCache( uint32_t size = 4096 ) : size(size), cache( new LinePointCacheEntry[size] ){	}
-
-	uint128_t AddLinePoint( uint8_t k, const uint8_t * id, uint8_t table_no, uint64_t position, uint128_t line_point, bool important = false ){
-		if( line_point == 0 ) return 0;
-		std::lock_guard<std::mutex> lk(mut);
-		while( cache[next_pos].importance != 0 ){
-			cache[next_pos].importance--;
-			next_pos = (next_pos+1)%size;
-		}
-
-		cache[next_pos].k = k;
-		cache[next_pos].table_no = table_no;
-		cache[next_pos].position = position;
-		cache[next_pos].line_point = line_point;
-		cache[next_pos].importance = table_no > 1 ? 0 : ( important ? 3 : 1 );
-		cache[next_pos++].partial_id = ((uint64_t*)id)[0];
-		if( count < next_pos ) count = next_pos;
-		next_pos %= size;
-
-		return line_point;
-	}
-
-	uint128_t GetLinePoint( uint8_t k, const uint8_t * id, uint8_t table_no, uint64_t position ){
-		std::lock_guard<std::mutex> lk(mut);
-		for( uint32_t i = 1; i <= count; i++ ){
-			uint32_t idx = (next_pos - i)%size;
-			if( cache[idx].k == k && cache[idx].table_no == table_no
-					&& cache[idx].position == position && cache[idx].partial_id == ((uint64_t*)id)[0] )
-				return cache[idx].line_point;
-		}
-		return 0; // NOT FOUND
-	}
-
-	void IncreaseSize() {
-		std::lock_guard<std::mutex> lk(mut);
-		if( count < size ) return; // not a time to increase ( may be increase from other thread )
-
-		uint32_t new_size = size * 2;
-		LinePointCacheEntry *new_cache = new LinePointCacheEntry[new_size];
-		memcpy( new_cache, cache, sizeof(LinePointCacheEntry)*count );
-		next_pos = size;
-		size = new_size;
-		delete [] cache;
-		cache = new_cache;
-	}
-
-	uint32_t GetCount() const { return count; }
-	uint32_t GetSize() const { return size; }
-	uint32_t GetImportantCount() const {
-		uint32_t res = 0;
-		for( uint32_t i = 0; i < count; i++ )
-			if( cache[i].importance > 0 ) res++;
-		return res;
-	}
-
-	~LinePointsCache(){ delete[] cache; }
-private:
-	uint32_t size;
-	LinePointCacheEntry *cache;
-	uint32_t next_pos = 0, count = 0;
-	std::mutex mut;
-};
 
 // this is a cache for restored line points
 LinePointsCache LPCache;
@@ -177,7 +104,6 @@ public:
 	void init( ReadFileWrapper& disk_file, uint16_t memo_size, uint8_t k, const uint8_t *plot_id ){
 		k_size = k;
 		memcpy( this->plot_id, plot_id, 32 );
-		uint32_t line_point_size = EntrySizes::CalculateLinePointSize(k);
 		stubs_size = EntrySizes::CalculateStubsSize(k);
 
 		disk_file.Read( 60 + memo_size, (uint8_t*)table_pointers, 80 );
@@ -193,7 +119,7 @@ public:
 		for( uint i = 0; i < 7; i++ ){
 			parks_counts[i] = bswap_32( parks_counts[i] );
 			uint64_t table_size = table_pointers[ i == 6 ? 10 : (i+1)] - table_pointers[ i == 6 ? 9 : i];
-			uint64_t static_size = GetStubsSize( i ); // i == 6 ? 0 : ( ( i == 0 ? first_table_stubs_size : stubs_size ) + line_point_size);
+			uint64_t static_size = GetStubsSize( i );
 			avg_delta_sizes[i] = (table_size - (static_size+3)*parks_counts[i])/parks_counts[i];
 		}
 	}
@@ -269,6 +195,23 @@ public:
 					}
 				}
 
+				// { // DEBUGGER
+				// 	const uint64_t more_bits = 6;
+				// 	uint64_t seconds[read_points.size()];
+				// 	for( uint64_t i = 0; i < read_points.size(); i++ )
+				// 		seconds[i] = Encoding::LinePointToSquare( (read_points[i]>>more_bits) << (bits_cut_no+more_bits) ).second;
+				// 	std::qsort( seconds, read_points.size(), 8, []( const void* p1, const void* p2 ){
+				// 		auto l = *static_cast<const uint64_t*>(p1);
+				// 		auto r = *static_cast<const uint64_t*>(p2);
+				// 		return l==r?0:(l<r?-1:1);} );
+				// 	uint64_t overhead = 0;
+				// 	for( uint64_t i = 1; i < read_points.size(); i++ )
+				// 		if( seconds[i-1]+(1<<(bits_cut_no+more_bits)) >= seconds[i] ){
+				// 			overhead +=  (seconds[i-1]+(1<<(bits_cut_no+more_bits))) - seconds[i];
+				// 			std::cout << seconds[i-1] << "~" << seconds[i] << std::endl;
+				// 		}
+				// 	std::cout << "over=" << overhead << std::endl;
+				// }
 				//run some thread to read points ahead
 				const uint32_t threads_number = 3; // equal to threads cound
 				std::vector<uint128_t> restored_points(read_points.size());
@@ -278,14 +221,14 @@ public:
 						LinePointMatcher validator( k_size, plot_id, valid_lp1 );
 
 						for( int32_t i = next_point_idx.fetch_add(1, std::memory_order_relaxed);
-								 found_at_idx.load(std::memory_order_relaxed) == -1 && i < read_points.size();
+								 found_at_idx.load(std::memory_order_relaxed) == -1 && i < (int32_t)read_points.size();
 								 i = next_point_idx.fetch_add(1, std::memory_order_relaxed) ){
 							if( i > 0 && read_points[i] == read_points[i-1] ) continue; // same point evaluated in same threads
 							restored_points[i] = RestoreLinePoint( read_points[i] );
 							if( CheckRestored( restored_points[i], x1x2.second + i, position, false ) && validator.CheckMatch( restored_points[i] ) )
 								found_at_idx.store( i, std::memory_order_relaxed );
 							else {
-								while( ++i < read_points.size() && read_points[i-1] == read_points[i] && found_at_idx.load(std::memory_order_relaxed ) == -1 ){
+								while( ++i < (int32_t)read_points.size() && read_points[i-1] == read_points[i] && found_at_idx.load(std::memory_order_relaxed ) == -1 ){
 									restored_points[i] = restored_points[i-1] == 0 ? 0 : FindNextLinePoint( restored_points[i-1]+1, bits_cut_no );
 									if( CheckRestored( restored_points[i], x1x2.second + i, position, false ) && validator.CheckMatch( restored_points[i] ) ){
 										found_at_idx.store(i ,std::memory_order_relaxed );
