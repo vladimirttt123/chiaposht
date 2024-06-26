@@ -12,6 +12,7 @@
 #include <fstream>
 
 #include "util.hpp"
+#include "pos_constants.hpp"
 
 namespace TCompress {
 
@@ -358,6 +359,35 @@ private:
 };
 
 
+
+struct LinePointInfo{
+public:
+	uint128_t orig_line_point = 0, full_line_point = 0;
+	uint64_t position = (uint64_t)-1; // default unknown
+	uint8_t skip_points = 0;
+	LinePointInfo(){};
+	LinePointInfo( uint64_t position, uint128_t orig_line_point, uint128_t full_line_point = 0 )
+			: orig_line_point(orig_line_point), full_line_point(full_line_point), position(position){};
+
+	void Set( uint8_t position, uint128_t orig_line_point, uint8_t skip_points ){
+		this->position = position;
+		this->orig_line_point = orig_line_point;
+		this->skip_points = skip_points;
+	}
+};
+
+
+struct LinePointTable2{
+	LinePointInfo left;
+	LinePointInfo right[kEntriesPerPark];
+	uint16_t right_count = 0;
+};
+
+// 1st get input and find all appropriate points.
+// 2nd collect all point to ranges includes ys[first] and min:max x[second]
+//		every point could create number of ranges.
+//	sort by x[second].min
+//	evaluate buckets and find matches.
 } // namespace tcompress
 
 

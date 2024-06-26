@@ -4,6 +4,8 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <future>
+#include <thread>
 #ifndef _WIN32
 #include <unistd.h>
 #endif
@@ -64,8 +66,10 @@ LinePointsCache LPCache;
 
 class Decompressor{
 public:
-	Decompressor() {}
-	Decompressor(Decompressor& other) noexcept{
+	Decompressor( const std::string & filename) : filename(filename) {}
+	Decompressor(Decompressor& other) noexcept
+	{
+		filename = other.filename;
 		k_size = other.k_size;
 		memcpy( plot_id, other.plot_id, 32 );
 		stubs_size = other.stubs_size;
@@ -82,7 +86,7 @@ public:
 		uint8_t buf[4];
 		disk_file.Read( 54, buf, 4 );
 		if( memcmp( buf, tFormatDescription.c_str(), 4 ) == 0 ){
-			Decompressor *res = new Decompressor();
+			Decompressor *res = new Decompressor( filename );
 			res->init( disk_file, memo_size, k, plot_id );
 			return res;
 		}
@@ -336,6 +340,58 @@ public:
 		}
 	}
 
+	std::vector<Bits> GetInputs(uint64_t position, std::ifstream* disk_file = nullptr)
+	{
+		std::vector<Bits> res;
+
+		auto realInputs = GetInputsReal( position, 5, disk_file );
+
+		assert( realInputs.size() == 16 ); // this is table 2 point than each point now contains 4 xs
+
+		if( bits_cut_no >  0) {
+		// now restore all line points ...
+			auto fill_lp = [this]( LinePointInfo & lp ){
+				if( lp.full_line_point == 0 ){
+					lp.full_line_point = RestoreLinePoint( lp.orig_line_point );
+					for( uint8_t j = 0; j < lp.skip_points; j++ )
+						lp.full_line_point = FindNextLinePoint( lp.full_line_point + 1, bits_cut_no );
+				}
+			};
+			LinePointMatcher validator( k_size, plot_id, 0 );
+			for( uint8_t i = 0; i < realInputs.size(); i++ ){
+				fill_lp( realInputs[i].left );
+				auto xy = Encoding::LinePointToSquare( realInputs[i].left.full_line_point );
+				res.emplace_back( xy.first, k_size );
+				res.emplace_back( xy.second, k_size );
+
+				validator.ResetLP1( realInputs[i].left.full_line_point );
+				int16_t right_match_idx = -1;
+				for( uint16_t j = 0; right_match_idx == -1 && j < realInputs[i].right_count; j++ ){
+					fill_lp( realInputs[i].right[j] );
+					if( validator.CheckMatch( realInputs[i].right[j].full_line_point ) )
+						right_match_idx = j;
+				}
+				if( right_match_idx == -1 )
+					throw std::runtime_error( "Currently unsupported case of not found right point" );
+
+				xy = Encoding::LinePointToSquare( realInputs[i].right[right_match_idx].full_line_point );
+				res.emplace_back( xy.first, k_size );
+				res.emplace_back( xy.second, k_size );
+			}
+		} else { // case of not cut tables - may be possible to join (run it after) with restore
+			for( uint i = 0; i < realInputs.size(); i++ ){
+				auto xy = Encoding::LinePointToSquare( realInputs[i].left.orig_line_point );
+				res.emplace_back( xy.first, k_size );
+				res.emplace_back( xy.second, k_size );
+				assert( realInputs[i].right_count == 1 );
+				xy = Encoding::LinePointToSquare( realInputs[i].right[0].orig_line_point );
+				res.emplace_back( xy.first, k_size );
+				res.emplace_back( xy.second, k_size );
+			}
+		}
+
+		return res;
+	}
 private:
 	uint8_t k_size, plot_id[32];
 	uint32_t stubs_size;
@@ -343,6 +399,86 @@ private:
 	bool table2_cut = false;
 	uint64_t table_pointers[11], avg_delta_sizes[7];
 	uint32_t parks_counts[7];
+	std::string filename;
+
+
+	std::vector<LinePointTable2> GetInputsReal(uint64_t position, uint8_t table_no, std::ifstream* disk_file = nullptr)
+	{
+		std::unique_ptr<std::ifstream> file;
+		auto get_file = [&disk_file, &file, this](){
+			if( disk_file ) return disk_file;
+			// No disk file passed in, so we assume here we are doing parallel reads
+			// Create individual file handles to allow parallel processing
+			if( !file )
+				file.reset( new std::ifstream( filename, std::ios::in | std::ios::binary ));
+			return file.get();
+		};
+
+		auto read_lp = [this, &get_file]( uint8_t table_no, uint64_t position ){
+			LinePointInfo res( position, LPCache.GetLinePoint( k_size, plot_id, table_no, position )  );
+			if( res.orig_line_point == 0 ){
+				auto r = ReadLinePointFull( *get_file(), table_no, position );
+				if( table_no > 1 ) LPCache.AddLinePoint( k_size, plot_id, table_no, position, r.orig_line_point );
+				return r;
+			}
+
+			res.full_line_point = res.orig_line_point;
+			return res;
+		};
+
+		LinePointInfo lp = read_lp( table_no, position );
+
+		std::vector<LinePointTable2> left, right;
+
+		if( table_no == 1 ) {
+			LinePointTable2 lp_t2;
+			if( lp.full_line_point != 0 ){ // got from cache exact point
+				std::pair<uint64_t, uint64_t> xy = Encoding::LinePointToSquare(lp.full_line_point);
+				lp_t2.left = read_lp( 0, xy.first );
+				lp_t2.right[0] = read_lp( 0, xy.second );
+				lp_t2.right_count = 1;
+			}else{
+				std::pair<uint64_t, uint64_t> xy = Encoding::LinePointToSquare( lp.orig_line_point << (table2_cut?11:0) );
+				if( table2_cut && xy.first < ( xy.second  + (1ULL<<11) ) )
+					throw std::runtime_error( "Currently unsupported case of double left line point on table 2. position: " + std::to_string( position ) );
+				lp_t2.left = read_lp( 0, xy.first );
+				if( table2_cut ) { // time to read right points
+					uint32_t pos_in_park = xy.second % kEntriesPerPark;
+					auto pReader = GetParkReader( *get_file(), 0, xy.second );
+					pReader.NextLinePoint( pos_in_park - 1 );
+					while( pReader.HasNext() ) // Is try to read LP from cache here?
+						lp_t2.right[lp_t2.right_count++].Set( xy.second++, pReader.NextLinePoint(), pReader.GetSameDeltasCount() );
+
+					if( lp_t2.right_count < kEntriesPerPark ){
+						auto pReader = GetParkReader( *get_file(), 0, xy.second );
+						while( lp_t2.right_count < kEntriesPerPark && pReader.HasNext() ) // Is try to read LP from cache here?
+							lp_t2.right[lp_t2.right_count++].Set( xy.second++, pReader.NextLinePoint(), pReader.GetSameDeltasCount() );
+					}
+				} else {
+					lp_t2.right[0] = read_lp(0, xy.second);
+					lp_t2.right_count = 1;
+				}
+			}
+			left.push_back( lp_t2 );
+		} else {
+			std::pair<uint64_t, uint64_t> xy = Encoding::LinePointToSquare(lp.orig_line_point);
+			if( !disk_file && false /*DEBUG*/) {
+				// no disk_file, so we do parallel reads here
+				auto left_fut=std::async(std::launch::async, &Decompressor::GetInputsReal, this, (uint64_t)xy.second, (uint8_t)(table_no - 1), nullptr );
+				auto right_fut=std::async(std::launch::async, &Decompressor::GetInputsReal, this, (uint64_t)xy.first, (uint8_t)(table_no - 1), nullptr );
+				left = left_fut.get();
+				right = right_fut.get();
+
+			} else {
+				left = GetInputsReal( xy.second, table_no - 1, disk_file );  // y
+				right = GetInputsReal( xy.first, table_no - 1, disk_file );  // x
+			}
+
+			left.insert( left.end(), right.begin(), right.end() );
+		}
+
+		return left;
+	}
 
 	inline bool CheckRestored( uint128_t lp, uint64_t table1_pos, uint64_t table2_pos = 0, bool with_exception = true ){
 		if( lp == 0 ){
@@ -456,8 +592,18 @@ private:
 	uint128_t ReadRealLinePoint( std::ifstream& file, // this need for parallel reading - will support it later
 												 uint8_t table_no /*0 is a first table*/,
 												 uint64_t position ){
+		return ReadLinePointFull( file, table_no, position).orig_line_point;
+	}
+
+	LinePointInfo ReadLinePointFull(std::ifstream& file, // this need for parallel reading - will support it later
+																	uint8_t table_no /*0 is a first table*/,
+																	uint64_t position ){
 		const uint64_t pos_in_park = position%kEntriesPerPark;
-		return GetParkReader( file, table_no, position, pos_in_park == 0 ).NextLinePoint( pos_in_park );
+		auto park = GetParkReader( file, table_no, position, pos_in_park == 0 );
+
+		LinePointInfo res(position, park.NextLinePoint( pos_in_park ) );
+		res.skip_points = park.GetSameDeltasCount();
+		return res;
 	}
 
 	inline uint128_t RestoreLinePoint( uint128_t cutted_line_point ){
