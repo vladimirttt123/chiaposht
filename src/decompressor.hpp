@@ -21,44 +21,7 @@
 
 namespace TCompress {
 
-struct LinePointMatcher{
-public:
-	const uint8_t k_size;
-	LinePointMatcher( uint8_t k_size, uint8_t * plot_id, uint128_t lp1 )
-			: k_size(k_size), f1(k_size,plot_id), f_d2( k_size, 2 ), f_d3( k_size, 3 ), ys1(CalculateYs( lp1) )
-	{	}
 
-	void ResetLP1( uint128_t lp1 ) { ys1 = CalculateYs(lp1); }
-
-	uint64_t CalculateYs( uint128_t lp ){
-		auto x1x2 = Encoding::LinePointToSquare( lp );
-		Bits xs1( x1x2.first, k_size ), xs2( x1x2.second, k_size );
-		auto ys1 = f1.CalculateF(xs1), ys2 = f1.CalculateF(xs2);
-
-		return (ys1.GetValue() < ys2.GetValue() ? f_d2.CalculateBucket( ys1, xs1, xs2 )
-																						: f_d2.CalculateBucket( ys2, xs2, xs1 )).first.GetValue();
-	}
-
-	bool CheckMatch( uint128_t lp2 ){
-		auto ys2 = CalculateYs( lp2 );
-
-		uint64_t cdiff = ys1/kBC - ys2/kBC;
-
-		if( cdiff != 1 && cdiff != (uint64_t)-1 ) return false;
-
-		std::vector<PlotEntry> bucket_L(1), bucket_R(1);
-		bucket_L[0].y = std::min( ys1, ys2 );
-		bucket_R[0].y = std::max( ys1, ys2 );
-		if( f_d3.FindMatches( bucket_L, bucket_R, nullptr, nullptr ) != 1)
-			return false;
-
-		return true;
-	}
-private:
-	F1Calculator f1;
-	FxCalculator f_d2, f_d3;
-	uint64_t ys1;
-};
 
 
 // this is a cache for restored line points
@@ -340,6 +303,7 @@ public:
 		}
 	}
 
+	// Replacement for GetInputs of proover
 	std::vector<Bits> GetInputs(uint64_t position, std::ifstream* disk_file = nullptr)
 	{
 		std::vector<Bits> res;
@@ -348,46 +312,48 @@ public:
 
 		assert( realInputs.size() == 16 ); // this is table 2 point than each point now contains 4 xs
 
-		if( bits_cut_no >  0) {
-		// now restore all line points ...
-			auto fill_lp = [this]( LinePointInfo & lp ){
-				if( lp.full_line_point == 0 ){
-					lp.full_line_point = RestoreLinePoint( lp.orig_line_point );
-					for( uint8_t j = 0; j < lp.skip_points; j++ )
-						lp.full_line_point = FindNextLinePoint( lp.full_line_point + 1, bits_cut_no );
-				}
-			};
-			LinePointMatcher validator( k_size, plot_id, 0 );
-			for( uint8_t i = 0; i < realInputs.size(); i++ ){
-				fill_lp( realInputs[i].left );
-				auto xy = Encoding::LinePointToSquare( realInputs[i].left.full_line_point );
-				res.emplace_back( xy.first, k_size );
-				res.emplace_back( xy.second, k_size );
+		RestoreProof( realInputs );
 
-				validator.ResetLP1( realInputs[i].left.full_line_point );
-				int16_t right_match_idx = -1;
-				for( uint16_t j = 0; right_match_idx == -1 && j < realInputs[i].right_count; j++ ){
-					fill_lp( realInputs[i].right[j] );
-					if( validator.CheckMatch( realInputs[i].right[j].full_line_point ) )
-						right_match_idx = j;
-				}
-				if( right_match_idx == -1 )
-					throw std::runtime_error( "Currently unsupported case of not found right point" );
+		// if( bits_cut_no >  0) {
+		// // now restore all line points ...
+		// 	auto fill_lp = [this]( LinePointInfo & lp ){
+		// 		if( lp.full_line_point == 0 ){
+		// 			lp.full_line_point = RestoreLinePoint( lp.orig_line_point );
+		// 			for( uint8_t j = 0; j < lp.skip_points; j++ )
+		// 				lp.full_line_point = FindNextLinePoint( lp.full_line_point + 1, bits_cut_no );
+		// 		}
+		// 	};
+		// 	LinePointMatcher validator( k_size, plot_id, 0 );
+		// 	for( uint8_t i = 0; i < realInputs.size(); i++ ){
+		// 		fill_lp( realInputs[i].left );
+		// 		auto xy = Encoding::LinePointToSquare( realInputs[i].left.full_line_point );
+		// 		res.emplace_back( xy.first, k_size );
+		// 		res.emplace_back( xy.second, k_size );
 
-				xy = Encoding::LinePointToSquare( realInputs[i].right[right_match_idx].full_line_point );
-				res.emplace_back( xy.first, k_size );
-				res.emplace_back( xy.second, k_size );
-			}
-		} else { // case of not cut tables - may be possible to join (run it after) with restore
-			for( uint i = 0; i < realInputs.size(); i++ ){
-				auto xy = Encoding::LinePointToSquare( realInputs[i].left.orig_line_point );
-				res.emplace_back( xy.first, k_size );
-				res.emplace_back( xy.second, k_size );
-				assert( realInputs[i].right_count == 1 );
-				xy = Encoding::LinePointToSquare( realInputs[i].right[0].orig_line_point );
-				res.emplace_back( xy.first, k_size );
-				res.emplace_back( xy.second, k_size );
-			}
+		// 		validator.ResetLP1( realInputs[i].left.full_line_point );
+		// 		int16_t right_match_idx = -1;
+		// 		for( uint16_t j = 0; right_match_idx == -1 && j < realInputs[i].right_count; j++ ){
+		// 			fill_lp( realInputs[i].right[j] );
+		// 			if( validator.CheckMatch( realInputs[i].right[j].full_line_point ) )
+		// 				right_match_idx = j;
+		// 		}
+		// 		if( right_match_idx == -1 )
+		// 			throw std::runtime_error( "Currently unsupported case of not found right point" );
+
+		// 		xy = Encoding::LinePointToSquare( realInputs[i].right[right_match_idx].full_line_point );
+		// 		res.emplace_back( xy.first, k_size );
+		// 		res.emplace_back( xy.second, k_size );
+		// 	}
+		// } else { // case of not cut tables - may be possible to join (run it after) with restore
+
+		for( uint i = 0; i < realInputs.size(); i++ ){
+			auto xy = Encoding::LinePointToSquare( realInputs[i].left.full_line_point );
+			res.emplace_back( xy.first, k_size );
+			res.emplace_back( xy.second, k_size );
+			assert( realInputs[i].right_count == 1 );
+			xy = Encoding::LinePointToSquare( realInputs[i].right[0].full_line_point );
+			res.emplace_back( xy.first, k_size );
+			res.emplace_back( xy.second, k_size );
 		}
 
 		return res;
@@ -480,6 +446,158 @@ private:
 		return left;
 	}
 
+	// restores all points from table 2
+	void RestoreProof( std::vector<LinePointTable2> &points ){
+		std::vector<LinePointRange> ranges;
+		Table2MatchData matches[points.size()];
+		LinePointMatcher validator( k_size, plot_id );
+
+		// create ranges from not matched points
+		for( uint32_t i = 0; i < points.size(); i++ ){
+			if( !matches[i].AddLeft( points[i].left.full_line_point, validator ) )
+				points[i].left.ToRanges( ranges, i, -1, bits_cut_no );
+			for( uint16_t j = 0; j < points[i].right_count; j++ ){
+				if( !matches[i].AddRight( j, points[i].right[j].full_line_point, validator ) )
+					points[i].right[j].ToRanges( ranges, i, j, bits_cut_no );
+			}
+		}
+
+		std::atomic_uint_fast32_t matched_count = 0;
+		for( uint32_t i = 0; i < points.size(); i++ )
+			if( matches[i].matched_left != 0 ) matched_count++;
+
+		if( ranges.size() == 0 || matched_count == points.size() ) return; // evrything from cache? :)
+
+		// sort ranges by evaluation order
+		std::qsort( ranges.data(), ranges.size(), sizeof(LinePointRange), [](const void *l, const void*r){
+			return ((const LinePointRange*)l)->second.compareTo( ((const LinePointRange*)r)->second );
+		});
+
+
+		// define evaluation thread
+		std::atomic_uint64_t next_batch_start = 0;
+		uint64_t run_up_to = 0;
+		const uint32_t BATCH_SIZE = 1UL << kBatchSizes;
+
+		auto thread_func = [&ranges, &next_batch_start, this, &points, &matches, &matched_count, &run_up_to]( uint32_t start_range ){
+			LinePointMatcher validator( k_size, plot_id );
+
+			uint64_t batch[BATCH_SIZE];
+			std::vector<PlotEntry> bucket_L(1);
+			std::vector<PlotEntry> bucket_R(1);
+
+			// run wile all point matched
+			for( uint64_t work_on = start_range, cur_batch_start = next_batch_start.fetch_add( BATCH_SIZE, std::memory_order_relaxed );
+					 work_on < ranges.size() && matched_count.load(std::memory_order_relaxed) < points.size() && cur_batch_start < run_up_to;
+					 cur_batch_start = next_batch_start.fetch_add( BATCH_SIZE, std::memory_order_relaxed ) ){
+				const uint64_t cur_batch_end = cur_batch_start + BATCH_SIZE;
+
+				while( work_on < ranges.size() && ( cur_batch_start > ranges[work_on].second.to || ranges[work_on].second_match != 0 ) )
+					work_on++; // move to next range
+
+				if( ranges[work_on].second.from >= cur_batch_end ) continue;
+
+				validator.f1.CalculateBuckets( cur_batch_start, BATCH_SIZE, batch );
+				for( uint32_t i = work_on; ranges[i].second_match == 0 && ranges[i].second.IsIn( cur_batch_start, cur_batch_end ); i++ ){
+					LinePointRange & rng = ranges[i];
+					if( rng.first_y == 0 ) rng.first_y = validator.f1.CalculateF( Bits(rng.first, k_size ) ).GetValue();
+
+					for( uint32_t b = std::max( cur_batch_start, rng.second.from ) - cur_batch_start;
+							 b < BATCH_SIZE && rng.second.to > ( cur_batch_start + b ); b++ ){
+
+							uint64_t cdiff = rng.first_y / kBC - batch[b] / kBC;
+							if( cdiff == 1 ){
+								bucket_L[0].y = batch[b];
+								bucket_R[0].y = rng.first_y;
+							}else if( cdiff == (uint64_t)-1 ){
+								bucket_L[0].y = rng.first_y;
+								bucket_R[0].y = batch[b];
+							}else continue;
+
+							if( validator.f_d2.FindMatches( bucket_L, bucket_R, nullptr, nullptr ) == 1){
+								rng.second_match = cur_batch_start + b; // set matched x
+								batch[b] = 0; // reset to not match same point with other
+								if( matches[rng.t2_idx].Add( rng.right_idx, rng.first, rng.second_match, validator ) ){
+									matched_count.fetch_add( 1, std::memory_order_relaxed );
+									// mark all matched ranges now
+									for( uint32_t i = start_range;  i < ranges.size(); i++ )
+										if( ranges[i].t2_idx == rng.t2_idx && ranges[i].second_match == 0 )
+											ranges[i].second_match = (uint64_t)-1;
+								}
+							}
+						}
+					}
+
+				}
+			};
+
+
+		const uint32_t threads_count = 1;
+
+		auto run_threads = [&next_batch_start, &thread_func, &run_up_to]( uint64_t from, uint64_t to, uint32_t from_range = 0 ){
+			std::vector<std::thread> threads;
+
+			next_batch_start = from >> kBatchSizes << kBatchSizes;
+			run_up_to = (to+BATCH_SIZE-1)>> kBatchSizes << kBatchSizes;
+			for( uint32_t i = 0; i < threads_count; i++ )
+				threads.emplace_back( thread_func, from_range );
+			for( auto &t : threads ) t.join();
+			return run_up_to;
+		};
+
+		// define ranges to run
+		std::vector<Range> left_ranges;
+		// add ranges of left points
+		for( uint32_t i = 0; i < ranges.size(); i++ )
+			if( ranges[i].right_idx == -1 ){
+				if( left_ranges.size() > 0 && left_ranges.back().to >= ranges[i].second.from )
+					left_ranges.back().to = ranges[i].second.to;
+				else left_ranges.push_back( ranges[i].second );
+			}
+
+		for( const Range &r : left_ranges )
+			run_threads( r.from, r.to );
+
+		// run_threads( ranges[0].second.from, ranges.back().second.to );
+		const uint64_t MIN_RANGE_HOLE = 100 * BATCH_SIZE * threads_count; // add number of threads to this params
+
+		// run threads for left ranges
+		uint32_t right_idx = 0;
+		while( matched_count < points.size() && right_idx < ranges.size()){
+			const uint32_t from_range = right_idx;
+
+			// find range without interuptions.
+			Range to_run( ranges[right_idx].second.from, ranges[right_idx].second.to );
+			while( right_idx < ranges.size() && ranges[right_idx].second.from <= ( to_run.to + MIN_RANGE_HOLE ) ){
+				to_run.to = ranges[right_idx].second.to;
+				right_idx++;
+			}
+
+			// run found range with interaption for already done
+			for( uint32_t i = 0; i < left_ranges.size() && to_run.to > left_ranges[i].from
+													 && to_run.to > to_run.from; i++ ){
+				if( to_run.from < left_ranges[i].from  ){ // range before calculated left
+					run_threads( to_run.from, left_ranges[i].from, from_range );
+					to_run.from = left_ranges[i].to;
+				}
+			}
+			if( to_run.to > to_run.from )
+				run_threads( to_run.from, to_run.to, from_range );
+		}
+
+
+		// here everythin should be matched
+		if( matched_count != points.size() )
+			throw std::runtime_error( "Not everything match - unsupported case?");
+
+		for( uint32_t i = 0; i < points.size(); i++ ){
+			points[i].left.full_line_point = matches[i].matched_left;
+			points[i].right[0].full_line_point = matches[i].matched_right;
+			points[i].right_count = 1;
+		}
+	}
+
+
 	inline bool CheckRestored( uint128_t lp, uint64_t table1_pos, uint64_t table2_pos = 0, bool with_exception = true ){
 		if( lp == 0 ){
 			auto msg = "Cannot restore line point on table 1 position " + std::to_string(table1_pos)
@@ -535,6 +653,7 @@ private:
 
 		return true;
 	}
+
 
 	void vectorswap( std::vector<Bits> &v, uint32_t i, uint32_t j ){
 		auto val = v[i]; 		v[i] = v[j]; 		v[j] = val;

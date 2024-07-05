@@ -190,16 +190,11 @@ public:
 		disk_file.Read( memo, memo_size );
 
 		// now table pointers
-		// std::cout << "Compress to " << filename << std::endl;
-		// std::cout << "Tables pointers: ";
 		disk_file.Read( buf, 80 );
 		for( int i = 0; i < 10; i++ ){
 			table_pointers[i] = Util::EightBytesToInt( buf + i*8 );
-			// std::cout << table_pointers[i] << ", ";
 		}
 		table_pointers[10] = disk_file.Size();
-
-		// std::cout << std::endl;
 	}
 
 	void CompressTo( const std::string& filename, uint8_t level ){
@@ -447,7 +442,7 @@ private:
 				assert( park.GetNextIdx() == j+1 );
 				uint128_t next_line_point = park.NextLinePoint();
 				uint128_t new_line_point = next_line_point>>bits_to_remove;
-				
+
 				uint128_t new_big_delta = new_line_point - line_point;
 				uint32_t new_small_delta = new_big_delta >> tinfo.new_single_stub_size_bits;
 				if( new_small_delta > 255 )
@@ -469,18 +464,17 @@ private:
 				deltas_size = Encoding::ANSEncodeDeltas(park_deltas, R, new_compressed_deltas_buf);
 				if( deltas_size <= 0 || deltas_size >= kEntriesPerPark-1 ){
 					// uncompressed deltas -> need to think what to do
-					throw std::runtime_error( "uncopressed deltas is not support yet" );
+					throw std::runtime_error( "Unsupported case of uncompressed deltas at park " + std::to_string(i) + " of " + std::to_string( tinfo.parks_count ) );
 				}
 				deltas_buf = new_compressed_deltas_buf;
 			}
 
 			assert( park_stubs_bits.GetSize() ==  park.DeltasSize()*tinfo.new_single_stub_size_bits );
 
-
 			park_stubs_bits.ToBytes( new_stubs_buf + tinfo.new_line_point_size );
 			if( park.DeltasSize() < (kEntriesPerPark-1) ){ // need to fill end of stabus by zeros to create same file each time
 				uint32_t new_stubs_size_bytes = (park.DeltasSize()*tinfo.new_single_stub_size_bits + 7)/8;
-				memset( new_stubs_buf + tinfo.line_point_size + new_stubs_size_bytes, 0, tinfo.new_stubs_size-new_stubs_size_bytes );
+				memset( new_stubs_buf + tinfo.new_line_point_size + new_stubs_size_bytes, 0, tinfo.new_stubs_size-new_stubs_size_bytes );
 			}
 
 			tinfo.new_deltas->Add( i, deltas_size );

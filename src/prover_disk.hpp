@@ -367,7 +367,7 @@ public:
                 // OK
 						} else if (fmt_desc_len == kFormatDescription.size() &&
 											 !memcmp(header.fmt_desc, TCompress::tFormatDescription.c_str(), fmt_desc_len)) {
-							decompressor = new TCompress::Decompressor();
+							decompressor = new TCompress::Decompressor( filename );
 						} else {
                 throw std::invalid_argument("Invalid plot file format");
             }
@@ -710,12 +710,11 @@ public:
             }
 
             // Gets the 64 leaf x values, concatenated together into a k*64 bit string.
-            std::vector<Bits> xs;
-            if (parallel_read) {
-                xs = GetInputs(p7_entries[index], 6, nullptr);
-            } else {
-                xs = GetInputs(p7_entries[index], 6, &disk_file); // Passing in a disk_file disabled the parallel reads
-            }
+						std::vector<Bits> xs =
+								// decompressor != nullptr ?
+								// // Passing in a disk_file disabled the parallel reads
+								// 	decompressor->GetInputs( p7_entries[index], parallel_read ? nullptr: &disk_file ) :
+																			 GetInputs(p7_entries[index], 6, parallel_read ? nullptr: &disk_file );
 
             #if USE_GREEN_REAPER
                 if (compression_level > 0) {

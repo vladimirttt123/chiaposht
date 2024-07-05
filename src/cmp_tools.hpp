@@ -1,9 +1,12 @@
 #ifndef SRC_CPP_CMP_TOOLS_HPP_
 #define SRC_CPP_CMP_TOOLS_HPP_
 
+#include "calculate_bucket.hpp"
+#include "encoding.hpp"
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #ifndef _WIN32
 #include <unistd.h>
 #endif
@@ -284,13 +287,17 @@ public:
 			, buf(buf), cur_stub_buf( buf + line_point_size )
 
 	{
-		if( deltas_size&0x8000 )
-			throw std::runtime_error( "uncompressed deltas is not supported yet" );
+		if( deltas_size&0x8000 ){
+			if( deltas_size & 0x7fff )
+				throw std::runtime_error( "Unsupported case of uncompressed deltas" );
+			deltas_size = 0;
+		}
 		if( deltas_size > max_deltas_size )
 			throw std::runtime_error( "incorrect deltas size " + std::to_string( deltas_size ) );
 
 		uint8_t *deltas_buf = buf + line_point_size + stubs_size + 2;
-		deltas = Encoding::ANSDecodeDeltas( deltas_buf , deltas_size, kEntriesPerPark - 1, kRValues[table_no-1] );
+		if( deltas_size > 0 )
+			deltas = Encoding::ANSDecodeDeltas( deltas_buf , deltas_size, kEntriesPerPark - 1, kRValues[table_no-1] );
 	}
 
 	ParkReader( uint8_t *buf, uint8_t *deltas_buf, uint16_t deltas_size, uint64_t line_point_size_bits, uint64_t stub_size_bits, uint8_t table_no )
@@ -359,7 +366,83 @@ private:
 };
 
 
+struct LinePointMatcher{
+	const uint8_t k_size;
+	F1Calculator f1;
+	FxCalculator f_d2, f_d3;
 
+	LinePointMatcher( uint8_t k_size, uint8_t * plot_id, uint128_t lp1 = 0 )
+			: k_size(k_size), f1(k_size,plot_id), f_d2( k_size, 2 ), f_d3( k_size, 3 ), ys1(CalculateYs( lp1) )
+	{	}
+
+	uint64_t ResetLP1( uint128_t lp1 ) { return ys1 = CalculateYs(lp1); }
+	uint64_t ResetLP1( uint64_t x1, uint64_t x2 ) { return ys1 = CalculateYs(x1, x2); }
+
+
+	uint64_t CalculateYs( uint128_t lp ){
+		auto x1x2 = Encoding::LinePointToSquare( lp );
+		return CalculateYs( x1x2.first, x1x2.second );
+	}
+
+	uint64_t CalculateYs( uint64_t x1, uint64_t x2 ){
+		Bits xs1( x1, k_size ), xs2( x2, k_size );
+		auto ys1 = f1.CalculateF(xs1), ys2 = f1.CalculateF(xs2);
+
+		return (ys1.GetValue() < ys2.GetValue() ? f_d2.CalculateBucket( ys1, xs1, xs2 )
+																						: f_d2.CalculateBucket( ys2, xs2, xs1 )).first.GetValue();
+
+	}
+
+	inline bool CheckMatch( uint128_t lp2 ){
+		auto x1x2 = Encoding::LinePointToSquare( lp2 );
+		return CheckMatch( x1x2.first, x1x2.second );
+	}
+
+	inline bool CheckMatch( uint64_t x1, uint64_t x2 ){
+		return isYsMatch( ys1, CalculateYs( x1, x2 ) );
+	}
+	bool isYsMatch( uint64_t ys2 ){ return isYsMatch( ys1, ys2 );	}
+
+	bool isYsMatch( uint64_t ys1, uint64_t ys2 ){
+		uint64_t cdiff = ys1/kBC - ys2/kBC;
+
+		if( cdiff != 1 && cdiff != (uint64_t)-1 ) return false;
+
+		std::vector<PlotEntry> bucket_L(1), bucket_R(1);
+		bucket_L[0].y = std::min( ys1, ys2 );
+		bucket_R[0].y = std::max( ys1, ys2 );
+		if( f_d3.FindMatches( bucket_L, bucket_R, nullptr, nullptr ) != 1)
+			return false;
+
+		return true;
+	}
+
+
+private:
+	uint64_t ys1;
+};
+
+struct Range{
+	uint64_t from, to;
+	Range( uint64_t from = 0, uint64_t to = 0 ) : from(from), to(to){};
+
+	inline bool IsIn( uint64_t min, uint64_t max ){
+		return ( from <= min && min < to ) || ( from <= max && max < to );
+	}
+
+	inline int compareTo( const Range &other ) const {
+		return from==other.from ? (to==other.to?0:(to<other.to?-1:1)) : (from<other.from?-1:1);
+	}
+};
+
+struct LinePointRange{
+	uint64_t first, first_y = 0, second_match = 0;
+	Range second;
+	uint8_t t2_idx;
+	int16_t right_idx = -1;
+	LinePointRange( uint8_t t2_idx, int16_t right_idx, uint64_t first, uint64_t second_min, uint64_t second_max )
+			: first(first), second( second_min, second_max), t2_idx(t2_idx), right_idx(right_idx) {}
+};
 struct LinePointInfo{
 public:
 	uint128_t orig_line_point = 0, full_line_point = 0;
@@ -374,14 +457,103 @@ public:
 		this->orig_line_point = orig_line_point;
 		this->skip_points = skip_points;
 	}
-};
 
+	void ToRanges( std::vector<LinePointRange> &ranges, uint8_t t2_idx, uint16_t r_idx,  uint8_t bits_cut ){
+		if( full_line_point != 0 ) return ;
+		auto lp = orig_line_point << bits_cut;
+		for( int64_t range = 1ULL << bits_cut; range > 0; ){
+			auto x1x2 = Encoding::LinePointToSquare( lp );
+			ranges.emplace_back( t2_idx, r_idx, x1x2.first, x1x2.second, std::min( x1x2.first, x1x2.second + range ) );
+			uint64_t r = ranges[ranges.size()-1].second.to - ranges[ranges.size()-1].second.from;
+			range -= r;
+			lp += r;
+		}
+	}
+};
 
 struct LinePointTable2{
 	LinePointInfo left;
 	LinePointInfo right[kEntriesPerPark];
-	uint16_t right_count = 0;
+	int16_t right_count = 0, matched_right = -1;
 };
+
+
+
+struct LinePointToMatch{
+	uint16_t orig_idx;
+	uint64_t x1, x2, ys;
+	LinePointToMatch( uint16_t idx = 0, uint64_t x1 = 0, uint64_t x2 = 0, uint64_t ys = 0 )
+			:orig_idx(idx), x1(x1),x2(x2), ys(ys) {}
+};
+
+struct MatchVector{
+	const uint16_t max_size;
+	std::unique_ptr<LinePointToMatch[]> points;
+	std::atomic_uint_fast16_t size = 0;
+	MatchVector( uint16_t max_size ) :max_size(max_size), points( new LinePointToMatch[max_size] ){	}
+
+	void Add( uint16_t idx, uint64_t x1, uint64_t x2, uint64_t ys ){
+		auto cur_idx = size.fetch_add(1, std::memory_order_relaxed);
+		points[cur_idx].ys = ys;
+		points[cur_idx].x1 = x1;
+		points[cur_idx].x1 = x2;
+		points[cur_idx].orig_idx = idx;
+	}
+};
+
+struct Table2MatchData{
+	std::mutex mut;
+	MatchVector left, right;
+	uint128_t matched_left = 0, matched_right = 0;
+	Table2MatchData() :left(5), right(kEntriesPerPark) {}
+
+	// add line point to matching data
+	// and returns if status of matched changed after this adding
+	bool Add( int16_t idx, uint64_t x1, uint64_t x2, LinePointMatcher &validator ){
+		if( matched_left != 0 ) return false; // may not so good for threads...
+		if( idx < 0 ) AddLeft( x1, x2, validator );
+		else AddRight( idx, x1, x2, validator );
+		return matched_left != 0;
+	}
+
+	bool AddLeft( uint128_t lp, LinePointMatcher &validator ){
+		if( lp == 0 ) return false;
+		auto x1x2 = Encoding::LinePointToSquare(lp);
+		AddLeft( x1x2.first, x1x2.second, validator );
+		return true;
+	}
+
+	void AddLeft( uint64_t x1, uint64_t x2, LinePointMatcher &validator ){
+		// std::lock_guard<std::mutex> lk(mut);
+		if( matched_left != 0 ) return; // do not add to mathed
+		left.Add( -1, x1, x2, validator.ResetLP1( x1, x2 ) );
+		// validate left to all exists right
+		for( uint32_t i = 0; i < right.size && matched_left == 0; i++ )
+			if( validator.isYsMatch( right.points[i].ys ) ){
+				matched_left = Encoding::SquareToLinePoint( x1, x2 );
+				matched_right = Encoding::SquareToLinePoint( right.points[i].x1, right.points[i].x2 );
+			}
+	}
+
+	bool AddRight( uint16_t idx, uint128_t lp, LinePointMatcher &validator ){
+		if( lp == 0 ) return false;
+		auto x1x2 = Encoding::LinePointToSquare(lp);
+		AddRight( idx, x1x2.first, x1x2.second, validator );
+		return true;
+	}
+	void AddRight( uint16_t idx, uint64_t x1, uint64_t x2, LinePointMatcher &validator ){
+		//std::lock_guard<std::mutex> lk(mut);
+		if( matched_left != 0 ) return;// do not add to mathed
+		right.Add( idx, x1, x2, validator.ResetLP1( x1, x2 ) );
+		for( uint32_t i = 0; i < left.size && matched_left == 0; i++ )
+			if( validator.isYsMatch( left.points[i].ys ) ){
+				matched_right = Encoding::SquareToLinePoint( x1, x2 );
+				matched_left = Encoding::SquareToLinePoint( left.points[i].x1, left.points[i].x2 );
+			}
+	}
+};
+
+
 
 // 1st get input and find all appropriate points.
 // 2nd collect all point to ranges includes ys[first] and min:max x[second]
