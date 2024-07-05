@@ -17,13 +17,13 @@ git clone https://github.com/vladimirttt123/chiaposht.git -b compression
 ```
 Build as described bellow for original project
 ```bash
-mkdir -p build && cd build; cmake ../ ; cmake --build . -- -j 6
+mkdir -p build && cd build; cmake .. ; cmake --build . -- -j 6
 ```
 If you are targetting to use on computer with big amount of threads it is possible to increase 
 default number of threads used per line point recomputing. For example to 6 threads (from default 4)
 ```bash
 mkdir -p build && cd build
-cmake -DTHREADS_PER_LINE_POINT:STRING=6 ../
+cmake -DTHREADS_PER_LINE_POINT=6 ..
 cmake --build . -- -j 6
 ```
 For knoladge: the number of threads with parallel reading is multiplied by 16 for proof restore.
