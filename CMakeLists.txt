@@ -13,6 +13,10 @@ endif()
 
 project(chiapos C CXX ASM)
 
+if (${THREADS_PER_LINE_POINT})
+	add_compile_definitions("-DTHREADS_PER_LINE_POINT=${THREADS_PER_LINE_POINT}")
+endif()
+
 # CMake 3.14+
 include(FetchContent)
 

@@ -17,12 +17,16 @@ git clone https://github.com/vladimirttt123/chiaposht.git -b compression
 ```
 Build as described bellow for original project
 ```bash
-# Requires cmake 3.14+
-
+mkdir -p build && cd build; cmake ../ ; cmake --build . -- -j 6
+```
+If you are targetting to use on computer with big amount of threads it is possible to increase 
+default number of threads used per line point recomputing. For example to 6 threads (from default 4)
+```bash
 mkdir -p build && cd build
-cmake ../
+cmake -DTHREADS_PER_LINE_POINT:STRING=6 ../
 cmake --build . -- -j 6
 ```
+For knoladge: the number of threads with parallel reading is multiplied by 16 for proof restore.
 
 Now you have executable ProofOfSpace that could be used to compress and library usually with name
 chiapos.cpython-312-x86_64-linux-gnu.so (the exact name depends on python version and architecture)
@@ -54,11 +58,7 @@ Than replace and run chia back as usual. The new library should support all exis
 ### Limitations
 * The maximum bits to cut by this method is k+8 (11 from table 2 and k-3 from table 1).
 * CPU only compression/decompression
-* The number of used threads for quality look up is up to 3.
-* The maximum number of threads used for proof restore is 93 
-in case of parralel read is enabled (that is default) or 
-up to 3 if no parallel read.
-
+* No computation on remote server (could be added in future)
 
 ### Analyze
 

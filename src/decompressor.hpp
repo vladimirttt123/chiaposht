@@ -21,8 +21,11 @@
 
 namespace TCompress {
 
-
-
+#ifdef THREADS_PER_LINE_POINT
+const uint32_t THREADS_PER_LP = THREADS_PER_LINE_POINT;
+#else
+const uint32_t THREADS_PER_LP = 4;
+#endif
 
 // this is a cache for restored line points
 LinePointsCache LPCache;
@@ -160,25 +163,7 @@ public:
 					}
 				}
 
-				// { // DEBUGGER
-				// 	const uint64_t more_bits = 6;
-				// 	uint64_t seconds[read_points.size()];
-				// 	for( uint64_t i = 0; i < read_points.size(); i++ )
-				// 		seconds[i] = Encoding::LinePointToSquare( (read_points[i]>>more_bits) << (bits_cut_no+more_bits) ).second;
-				// 	std::qsort( seconds, read_points.size(), 8, []( const void* p1, const void* p2 ){
-				// 		auto l = *static_cast<const uint64_t*>(p1);
-				// 		auto r = *static_cast<const uint64_t*>(p2);
-				// 		return l==r?0:(l<r?-1:1);} );
-				// 	uint64_t overhead = 0;
-				// 	for( uint64_t i = 1; i < read_points.size(); i++ )
-				// 		if( seconds[i-1]+(1<<(bits_cut_no+more_bits)) >= seconds[i] ){
-				// 			overhead +=  (seconds[i-1]+(1<<(bits_cut_no+more_bits))) - seconds[i];
-				// 			std::cout << seconds[i-1] << "~" << seconds[i] << std::endl;
-				// 		}
-				// 	std::cout << "over=" << overhead << std::endl;
-				// }
 				//run some thread to read points ahead
-				const uint32_t threads_number = 3; // equal to threads cound
 				std::vector<uint128_t> restored_points(read_points.size());
 				std::vector<std::thread> threads;
 				std::atomic_int32_t next_point_idx = 0, found_at_idx = -1;
@@ -207,7 +192,7 @@ public:
 				if( lp1_thread ) lp1_thread->join();
 				CheckRestored( valid_lp1, x1x2.first, position );
 
-				for( uint32_t i = 0; i < threads_number; i++ )
+				for( uint32_t i = 0; i < THREADS_PER_LP; i++ )
 					threads.emplace_back( thread_func );
 
 				for (auto& t : threads)  t.join(); // wait for threads to not fail...
