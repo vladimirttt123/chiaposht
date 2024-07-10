@@ -118,6 +118,9 @@ public:
 	{	}
 
 	void WriteNext( uint8_t * deltas, uint16_t deltas_size ){ // for c3 table
+		assert( line_point_size == 0 );
+		assert( stubs_size == 0 );
+
 		if( output_file != nullptr ){
 
 			deltas_size = fitDeltasToMin( deltas, deltas_size );
@@ -129,8 +132,9 @@ public:
 			stubs_writer.Write( end_buf, 2 );
 
 			if( deltas_size > min_deltas_size )
-				overdrafts_writer.Write( deltas + park_size-overdraftPointerSize, deltas_size - min_deltas_size );
+				overdrafts_writer.Write( deltas + min_deltas_size, deltas_size - min_deltas_size );
 
+			assert( overdrafts_writer.GetWirttenAmount() == deltas_sizes_storage->total_size );
 			park_idx++;
 		}
 	}

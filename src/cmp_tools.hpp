@@ -28,11 +28,6 @@ const char * program_header = "*** Chia plot compressing software made by Vladim
 			"***   xch1ch6s3q0enuj9wtemn473gkkvj0u8vlggypr375mk547e7aa48hmsql74e8\n";
 
 
-const uint32_t minDeltasSizeTable1 = 900, minDeltasSize = 770;
-// by my measures size for diffrerent plots varies in range 2300-2460.
-// Setting here 2420 means almost all parks will be readed from one read request.
-// It goues by expence of size... but original size for this is 3000 bytes... than it in any case much less than original
-const uint32_t minDelstasSizeTableC3 = 2420;
 const uint32_t overdraftPointerSize = 2;
 
 struct LinePointCacheEntry{
@@ -127,8 +122,8 @@ public:
 		total_size += (all_sizes[idx] = size);
 	}
 
-	void TotalEndToBuf( uint64_t idx, uint8_t *buf ){
-		if( true ){
+	void TotalEndToBuf( uint64_t idx, uint8_t *buf, uint8_t end_size = 2 ){
+		if( end_size == 2 ){
 			buf[0] = total_size >> ((idx&1)?16:8);
 			buf[1] = total_size;
 		}else {
@@ -356,11 +351,11 @@ public:
 			deltas = Encoding::ANSDecodeDeltas( deltas_buf , deltas_size, kEntriesPerPark - 1, kRValues[table_no-1] );
 	}
 
-	ParkReader( uint8_t *buf, uint8_t *deltas_buf, uint16_t deltas_size, uint64_t line_point_size_bits, uint64_t stub_size_bits, uint8_t table_no )
+	ParkReader( uint8_t *buf, uint16_t stubs_start_in_buf, uint8_t *deltas_buf, uint16_t deltas_size, uint64_t line_point_size_bits, uint64_t stub_size_bits, uint8_t table_no )
 			: is_compressed(true), line_point_size( (line_point_size_bits+7)/8 ), line_point_size_bits(line_point_size_bits)
 			, stubs_size( Util::ByteAlign(stub_size_bits*(kEntriesPerPark-1))/8)
 			, stub_size_bits(stub_size_bits), first_line_point( Util::SliceInt128FromBytes( buf + 3, 0, line_point_size_bits ) )
-			, deltas_size(deltas_size), buf(buf), cur_stub_buf( buf + line_point_size + 3 /*for previous deltas pos*/ )
+			, deltas_size(deltas_size), buf(buf), cur_stub_buf( buf + stubs_start_in_buf )
 
 	{
 		if( deltas_buf != nullptr && deltas_size > 0 )
@@ -473,32 +468,11 @@ struct LinePointMatcher{
 		return true;
 	}
 
-
 private:
 	uint64_t ys1;
 };
 
-struct Range{
-	uint64_t from, to;
-	Range( uint64_t from = 0, uint64_t to = 0 ) : from(from), to(to){};
 
-	inline bool IsIn( uint64_t min, uint64_t max ){
-		return ( from <= min && min < to ) || ( from <= max && max < to );
-	}
-
-	inline int compareTo( const Range &other ) const {
-		return from==other.from ? (to==other.to?0:(to<other.to?-1:1)) : (from<other.from?-1:1);
-	}
-};
-
-struct LinePointRange{
-	uint64_t first, first_y = 0, second_match = 0;
-	Range second;
-	uint8_t t2_idx;
-	int16_t right_idx = -1;
-	LinePointRange( uint8_t t2_idx, int16_t right_idx, uint64_t first, uint64_t second_min, uint64_t second_max )
-			: first(first), second( second_min, second_max), t2_idx(t2_idx), right_idx(right_idx) {}
-};
 struct LinePointInfo{
 public:
 	uint128_t orig_line_point = 0, full_line_point = 0;
@@ -513,26 +487,7 @@ public:
 		this->orig_line_point = orig_line_point;
 		this->skip_points = skip_points;
 	}
-
-	void ToRanges( std::vector<LinePointRange> &ranges, uint8_t t2_idx, uint16_t r_idx,  uint8_t bits_cut ){
-		if( full_line_point != 0 ) return ;
-		auto lp = orig_line_point << bits_cut;
-		for( int64_t range = 1ULL << bits_cut; range > 0; ){
-			auto x1x2 = Encoding::LinePointToSquare( lp );
-			ranges.emplace_back( t2_idx, r_idx, x1x2.first, x1x2.second, std::min( x1x2.first, x1x2.second + range ) );
-			uint64_t r = ranges[ranges.size()-1].second.to - ranges[ranges.size()-1].second.from;
-			range -= r;
-			lp += r;
-		}
-	}
 };
-
-struct LinePointTable2{
-	LinePointInfo left;
-	LinePointInfo right[kEntriesPerPark];
-	int16_t right_count = 0, matched_right = -1;
-};
-
 
 
 struct LinePointToMatch{
@@ -609,13 +564,6 @@ struct Table2MatchData{
 	}
 };
 
-
-
-// 1st get input and find all appropriate points.
-// 2nd collect all point to ranges includes ys[first] and min:max x[second]
-//		every point could create number of ranges.
-//	sort by x[second].min
-//	evaluate buckets and find matches.
 } // namespace tcompress
 
 

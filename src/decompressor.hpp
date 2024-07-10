@@ -38,13 +38,13 @@ public:
 		filename = other.filename;
 		k_size = other.k_size;
 		memcpy( plot_id, other.plot_id, 32 );
-		stubs_size = other.stubs_size;
 		bits_cut_no = other.bits_cut_no;
 		table2_cut = other.table2_cut;
 		improved_file_allign = other.improved_file_allign;
-		memcpy( table_pointers, other.table_pointers, 11*8 );
-		memcpy( avg_delta_sizes, other.avg_delta_sizes, 7*8 );
-		memcpy( parks_counts, other.parks_counts, 7*4 );
+		memcpy( table_pointers, other.table_pointers, 11*sizeof(uint64_t) );
+		memcpy( avg_delta_sizes, other.avg_delta_sizes, 7*sizeof(uint64_t) );
+		memcpy( parks_counts, other.parks_counts, 7*sizeof(uint32_t) );
+		memcpy( min_deltas_sizes, other.min_deltas_sizes, 7*sizeof(uint16_t) );
 	}
 
 	// Check if plot represented by this filename is compressed. It it is returnes decompressor for it.
@@ -74,7 +74,6 @@ public:
 	void init( ReadFileWrapper& disk_file, uint16_t memo_size, uint8_t k, const uint8_t *plot_id ){
 		k_size = k;
 		memcpy( this->plot_id, plot_id, 32 );
-		stubs_size = EntrySizes::CalculateStubsSize(k);
 
 		disk_file.Read( 60 + memo_size, (uint8_t*)table_pointers, 80 );
 		disk_file.Read( &bits_cut_no, 1 );
@@ -82,17 +81,22 @@ public:
 		improved_file_allign = (0x40 & bits_cut_no ) != 0;
 		bits_cut_no = 0x3f & bits_cut_no;
 
-		disk_file.Read( (uint8_t*)parks_counts, 28 );
+		disk_file.Read( (uint8_t*)parks_counts, 7*4 );
 		for( uint i = 0; i < 10; i++ )
 			table_pointers[i] = bswap_64(table_pointers[i]);
 		table_pointers[10] = disk_file.Size();
 
+		if(improved_file_allign)
+			disk_file.Read( (uint8_t*)min_deltas_sizes, 7*2 );
+
+		// now we now how to fill avg_delta_sizes
 		for( uint i = 0; i < 7; i++ ){
 			parks_counts[i] = bswap_32( parks_counts[i] );
 			uint64_t table_size = table_pointers[ i == 6 ? 10 : (i+1)] - table_pointers[ i == 6 ? 9 : i];
-			uint64_t static_size = GetStubsSize( i );
-			avg_delta_sizes[i] = (table_size - (static_size+3)*parks_counts[i])/parks_counts[i];
+			uint64_t static_size = GetMainParkSize( i );
+			avg_delta_sizes[i] = (table_size - (static_size+(improved_file_allign?overdraftPointerSize:3))*parks_counts[i])/parks_counts[i];
 		}
+
 	}
 
 	uint8_t GetNumberOfRemovedBits() { return bits_cut_no; }
@@ -106,18 +110,19 @@ public:
 		uint64_t pos;
 
 		if( improved_file_allign ){
-			const uint32_t main_park_size = minDelstasSizeTableC3+overdraftPointerSize;
+			const uint16_t min_ds = min_deltas_sizes[6];
+			const uint32_t main_park_size = min_ds+overdraftPointerSize;
 			uint8_t rbuf[main_park_size + overdraftPointerSize];
+
 			disk_file.Read( table_pointers[9] + idx*main_park_size - overdraftPointerSize, rbuf, main_park_size+overdraftPointerSize );
 			DeltasStorage::RestoreParkPositionAndSize( overdraftPointerSize, avg_delta_sizes[6], idx, rbuf, rbuf+main_park_size, pos, delta_size );
-			if( delta_size == 0 ){
+			if( delta_size == 0 ){ // No overdraft
 				// define real deltas size
-				for( delta_size = minDelstasSizeTableC3; delta_size > 0 && rbuf[delta_size+overdraftPointerSize-1] == 0; delta_size-- );
-				memcpy( buf, rbuf+overdraftPointerSize, delta_size );
-			} else { // Read overdrafter part
-				memcpy( buf, rbuf+overdraftPointerSize, minDelstasSizeTableC3 );
-				disk_file.Read( table_pointers[9] + pos, buf+minDelstasSizeTableC3, delta_size );
-				delta_size += minDelstasSizeTableC3;
+				memcpy( buf, rbuf+overdraftPointerSize, delta_size = getNonZerosSize( rbuf+overdraftPointerSize, min_ds ) );
+			} else { // Read overdrafted part
+				memcpy( buf, rbuf+overdraftPointerSize, min_ds );
+				disk_file.Read( table_pointers[9] + main_park_size*parks_counts[6] + pos, buf+min_ds, delta_size );
+				delta_size += min_ds;
 			}
 
 		}else {
@@ -172,7 +177,7 @@ public:
 				{ // time to read second parks
 					{
 						uint32_t pos_in_park = x1x2.second % kEntriesPerPark;
-						auto pReader = GetParkReader( file, 0, x1x2.second );
+						auto pReader = GetParkReader( file, 0, x1x2.second, kEntriesPerPark );
 						read_points.push_back( pReader.NextLinePoint( pos_in_park ) );
 						while( pReader.HasNext() ) read_points.push_back( pReader.NextLinePoint() );
 					}
@@ -311,11 +316,11 @@ public:
 
 private:
 	uint8_t k_size, plot_id[32];
-	uint32_t stubs_size;
 	uint8_t bits_cut_no;
 	bool table2_cut = false, improved_file_allign = false;
 	uint64_t table_pointers[11], avg_delta_sizes[7];
 	uint32_t parks_counts[7];
+	uint16_t min_deltas_sizes[7];
 	std::string filename;
 
 
@@ -380,18 +385,26 @@ private:
 		auto val = v[i]; 		v[i] = v[j]; 		v[j] = val;
 	}
 
-	inline uint32_t GetStubsSize( uint8_t table_no ){
-		if( table_no == 6 ) return 0;
-		if( table_no > (table2_cut?1:0) ) return stubs_size;
-		if( table_no == 1 ) return ((k_size - kStubMinusBits - 11)*(kEntriesPerPark-1)+7)/8;
-		return ((k_size - kStubMinusBits - bits_cut_no)*(kEntriesPerPark-1)+7)/8;
+	// this return size of park without end pointer
+	inline uint32_t GetMainParkSize( uint8_t table_no ){
+		if( table_no == 6 ) return improved_file_allign ? min_deltas_sizes[6] : 0;
+
+		uint16_t removed = table_no == 0 ? bits_cut_no : ((table_no==1&&table2_cut)?11:0);
+		uint16_t line_point_size = ( k_size*2 + 7 - removed)/8;
+		uint16_t single_stub_size_bits = k_size - kStubMinusBits - removed;
+		uint16_t stubs_size = (single_stub_size_bits*(kEntriesPerPark-1)+7)/8;
+
+		return line_point_size + stubs_size + (improved_file_allign?min_deltas_sizes[table_no]:0);
 	}
 
 	ParkReader GetParkReader( std::ifstream& file, // this need for parallel reading - will support it later
 														uint8_t table_no /*0 is a first table*/,
-														uint64_t position, bool for_single_point = false ){
+														uint64_t position, int16_t need_num_entries = -1 /* -1 is automatic by position */ ){
 		if( table_no >=6 )
 			throw std::invalid_argument( "table couldn't be bigger than 5 for reading line point: " + std::to_string(table_no) );
+
+		if( need_num_entries < 0 ) // need to fix number of entries to read
+			need_num_entries = (position%kEntriesPerPark)+1;
 
 		const uint64_t park_idx = position/kEntriesPerPark;
 		assert( park_idx < parks_counts[table_no] );
@@ -400,32 +413,66 @@ private:
 		const uint32_t cur_line_point_size_bits = k_size*2 - cur_bits_cut;
 		const uint32_t cur_stub_size_bits = k_size - kStubMinusBits - cur_bits_cut;
 		const uint32_t cur_line_point_size = (cur_line_point_size_bits+7)/8;
-		const uint32_t stubs_size = (cur_stub_size_bits*(kEntriesPerPark-1)+7)/8;
-		const uint64_t plps_size = 3 + cur_line_point_size + stubs_size;
-
+		const uint32_t cur_stubs_size = (cur_stub_size_bits*(kEntriesPerPark-1)+7)/8;
+		const uint32_t end_pointer_size = improved_file_allign ? overdraftPointerSize : 3;
+		const uint64_t main_park_size = cur_line_point_size + cur_stubs_size + end_pointer_size
+																		+ ( improved_file_allign ? min_deltas_sizes[table_no] : 0 );
 
 		ReadFileWrapper disk_file( &file );
 
-		if( for_single_point ){
+		if( need_num_entries == 1 ){
 			// Simplest case read first line point at the begining of park
 			uint8_t line_point_buf[cur_line_point_size + 7];
-			disk_file.Read( table_pointers[table_no] + plps_size*park_idx, line_point_buf, cur_line_point_size );
+			disk_file.Read( table_pointers[table_no] + main_park_size*park_idx, line_point_buf, cur_line_point_size );
 			return ParkReader( line_point_buf, cur_line_point_size_bits );
 		}
 
-		uint8_t * stubs_buf = new uint8_t[plps_size + 3 /*because we read 2 deltas pointers*/];
-		disk_file.Read( table_pointers[table_no] + plps_size*park_idx - 3 /* to read prev delta pointer */, stubs_buf, 3+plps_size );
-		uint64_t deltas_pos;
-		uint16_t deltas_size;
-		DeltasStorage::RestoreParkPositionAndSize( 2, avg_delta_sizes[table_no], park_idx, stubs_buf, stubs_buf+plps_size, deltas_pos, deltas_size );
+		std::unique_ptr<uint8_t[]> stubs_buf( new uint8_t[main_park_size + end_pointer_size /*because we read 2 deltas pointers*/] );
+		disk_file.Read( table_pointers[table_no] + main_park_size*park_idx - end_pointer_size /* to read prev delta pointer */,
+									 stubs_buf.get(), main_park_size + end_pointer_size );
 
-		if( deltas_size > EntrySizes::CalculateMaxDeltasSize( k_size, table_no + 1 ) )
-			throw std::runtime_error( "incorrect deltas size " + std::to_string( deltas_size ) );
+		uint64_t overdraft_pos;
+		uint16_t overdraft_size;
+		DeltasStorage::RestoreParkPositionAndSize( end_pointer_size, avg_delta_sizes[table_no], park_idx, stubs_buf.get(), stubs_buf.get()+main_park_size, overdraft_pos, overdraft_size );
 
-		uint8_t deltas_buf[deltas_size];
-		disk_file.Read( table_pointers[table_no] + plps_size*parks_counts[table_no] + deltas_pos, deltas_buf, deltas_size );
+		if( !improved_file_allign ) {
+			if( overdraft_size > EntrySizes::CalculateMaxDeltasSize( k_size, table_no + 1 ) ) // TODO correct for improved_io format
+				throw std::runtime_error( "incorrect deltas size " + std::to_string( overdraft_size ) );
 
-		return ParkReader( stubs_buf, deltas_buf, deltas_size, cur_line_point_size_bits, cur_stub_size_bits, table_no );
+			uint8_t deltas_buf[overdraft_size];
+			disk_file.Read( table_pointers[table_no] + main_park_size*parks_counts[table_no] + overdraft_pos, deltas_buf, overdraft_size );
+
+			return ParkReader( stubs_buf.release(), cur_line_point_size + end_pointer_size,
+												deltas_buf, overdraft_size, cur_line_point_size_bits,
+												cur_stub_size_bits, table_no /* used to unpack deltas */ );
+		}
+
+		// here for improved file format
+		if( overdraft_size == 0 )
+			return ParkReader( stubs_buf.release(), cur_line_point_size + end_pointer_size + min_deltas_sizes[table_no],
+												stubs_buf.get() + cur_line_point_size + end_pointer_size,
+												getNonZerosSize( stubs_buf.get() + cur_line_point_size + end_pointer_size, min_deltas_sizes[table_no] ),
+												cur_line_point_size_bits, cur_stub_size_bits, table_no /* used to unpack deltas */);
+
+		// time to define do we need to read overdraft or not
+		uint32_t real_stubs_size = cur_stubs_size - overdraft_size;
+		uint32_t number_of_entries_in_stubs = real_stubs_size*8/cur_stub_size_bits;
+		if( (number_of_entries_in_stubs+1/*fir first line point*/) >= (uint32_t)need_num_entries ) // no need to read overdraft
+			return ParkReader( stubs_buf.release(), cur_line_point_size + end_pointer_size + min_deltas_sizes[table_no],
+												stubs_buf.get() + cur_line_point_size + end_pointer_size, min_deltas_sizes[table_no] + overdraft_size,
+												cur_line_point_size_bits, cur_stub_size_bits, table_no /* used to unpack deltas */);
+
+		uint8_t * full_stubs_buf = new uint8_t[cur_stubs_size];
+		memcpy( full_stubs_buf, stubs_buf.get() + cur_line_point_size + end_pointer_size + min_deltas_sizes[table_no], cur_stubs_size - overdraft_size );
+		disk_file.Read( table_pointers[table_no] + main_park_size*parks_counts[table_no] + overdraft_pos,
+									 full_stubs_buf + cur_stubs_size - overdraft_size, overdraft_size );
+		return ParkReader( full_stubs_buf, 0, stubs_buf.get() + cur_line_point_size + end_pointer_size, min_deltas_sizes[table_no] + overdraft_size,
+											cur_line_point_size_bits, cur_stub_size_bits, table_no /* used to unpack deltas */);
+	}
+
+	static uint16_t getNonZerosSize( uint8_t* buf, uint16_t max_size ){
+		while( max_size > 0 && buf[max_size-1] == 0 ) max_size--;
+		return max_size;
 	}
 
 	uint128_t ReadRealLinePoint( std::ifstream& file, // this need for parallel reading - will support it later
