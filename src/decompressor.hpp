@@ -463,7 +463,7 @@ private:
 												cur_line_point_size_bits, cur_stub_size_bits, table_no /* used to unpack deltas */);
 
 		uint8_t * full_stubs_buf = new uint8_t[cur_stubs_size];
-		memcpy( full_stubs_buf, stubs_buf.get() + cur_line_point_size + end_pointer_size + min_deltas_sizes[table_no], cur_stubs_size - overdraft_size );
+		memcpy( full_stubs_buf, stubs_buf.get() + cur_line_point_size + end_pointer_size + min_deltas_sizes[table_no] + overdraft_size, cur_stubs_size - overdraft_size );
 		disk_file.Read( table_pointers[table_no] + main_park_size*parks_counts[table_no] + overdraft_pos,
 									 full_stubs_buf + cur_stubs_size - overdraft_size, overdraft_size );
 		return ParkReader( full_stubs_buf, end_pointer_size, 0, stubs_buf.get() + cur_line_point_size + end_pointer_size, min_deltas_sizes[table_no] + overdraft_size,
