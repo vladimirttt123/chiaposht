@@ -455,7 +455,6 @@ public:
         deserializer >> table_begin_pointers;
         deserializer >> C2;
 				decompressor = TCompress::Decompressor::CheckForCompressed( filename, memo.size(), k, id.data() );
-				// std::cout << "DEBUG TCompress SEIRAL "<< filename << " - " << (decompressor==nullptr?"compressed":"NO");
 
         if (version == 2) {
             deserializer >> compression_level;

@@ -309,6 +309,8 @@ public:
 	~ReadFileWrapper(){
 		if( !isExternal ) delete disk_file;
 	}
+
+	std::ifstream * getStream() const { return disk_file; }
 private:
 	std::ifstream *disk_file;
 	bool isExternal;
@@ -335,7 +337,7 @@ public:
 			, stubs_size( Util::ByteAlign(stub_size_bits*(kEntriesPerPark-1))/8), stub_size_bits(stub_size_bits)
 			, first_line_point( Util::SliceInt128FromBytes( buf, 0, line_point_size_bits ) )
 			, deltas_size( ((uint32_t)buf[line_point_size+stubs_size]) | (((uint32_t)buf[line_point_size+stubs_size+ 1])<<8) )
-			, buf(buf), cur_stub_buf( buf + line_point_size )
+			, buf(buf), cur_stub_buf( buf + line_point_size ), src_stubs_buf(cur_stub_buf)
 
 	{
 		if( deltas_size&0x8000 ){
@@ -351,12 +353,14 @@ public:
 			deltas = Encoding::ANSDecodeDeltas( deltas_buf , deltas_size, kEntriesPerPark - 1, kRValues[table_no-1] );
 	}
 
-	ParkReader( uint8_t *buf, uint16_t check_point_idx, uint16_t stubs_start_idx, uint8_t *deltas_buf, uint16_t deltas_size,
-						 uint64_t line_point_size_bits, uint64_t stub_size_bits, uint8_t table_no, uint8_t*check_point_buf = nullptr )
+	// WARNING variable buf is stored and deleted in destructor
+	ParkReader( uint8_t *buf, uint8_t*check_point_buf, uint8_t*stubs_buf, uint8_t *deltas_buf, uint16_t deltas_size,
+						 uint64_t line_point_size_bits, uint64_t stub_size_bits, uint8_t table_no )
 			: is_compressed(true), line_point_size( (line_point_size_bits+7)/8 ), line_point_size_bits(line_point_size_bits)
 			, stubs_size( Util::ByteAlign(stub_size_bits*(kEntriesPerPark-1))/8), stub_size_bits(stub_size_bits)
-			, first_line_point( Util::SliceInt128FromBytes( (check_point_buf?check_point_buf:buf )+ check_point_idx, 0, line_point_size_bits ) )
-			, deltas_size(deltas_size), buf(buf), cur_stub_buf( buf + stubs_start_idx )
+			, first_line_point( Util::SliceInt128FromBytes( check_point_buf, 0, line_point_size_bits ) )
+			, deltas_size(deltas_size), buf(buf), cur_stub_buf( stubs_buf )
+			, src_deltas_buf( deltas_buf ), src_stubs_buf(cur_stub_buf)
 
 	{
 		if( deltas_buf != nullptr && deltas_size > 0 )
@@ -364,9 +368,10 @@ public:
 	}
 
 	uint8_t * deltas_buf() const {
-		assert( !is_compressed ); // this works for uncompressed only
-		return buf + line_point_size + stubs_size + 2;
+		return is_compressed ? src_deltas_buf : (buf + line_point_size + stubs_size + 2);
 	}
+
+	const uint8_t* stubs_buf() const { return src_stubs_buf; }
 
 	inline uint32_t DeltasSize() const { return deltas.size(); }
 	inline uint32_t GetNextIdx() const { return next_idx; }
@@ -387,11 +392,11 @@ public:
 		return first_line_point + (((uint128_t)deltas_sum)<<stub_size_bits) + stubs_sum;
 	}
 
-	~ParkReader(){ if( is_compressed ) delete[]buf;	}
+	~ParkReader(){ if( is_compressed ) delete[]buf; }
 
 private:
 	uint64_t stubs_sum = 0, deltas_sum = 0, last_delta = 0;
-	uint8_t *cur_stub_buf;
+	uint8_t *cur_stub_buf, *src_deltas_buf = nullptr, *src_stubs_buf;
 	uint8_t stubs_start_bit = 0;
 	uint32_t next_idx = 0, same_deltas_count = 0;
 
