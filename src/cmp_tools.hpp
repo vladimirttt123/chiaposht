@@ -28,6 +28,13 @@ const char * program_header = "*** Chia plot compressing software made by Vladim
 			"***   xch1ch6s3q0enuj9wtemn473gkkvj0u8vlggypr375mk547e7aa48hmsql74e8\n";
 
 
+const uint32_t minDeltasSizeTable1 = 900, minDeltasSize = 770;
+// by my measures size for diffrerent plots varies in range 2300-2460.
+// Setting here 2420 means almost all parks will be readed from one read request.
+// It goues by expence of size... but original size for this is 3000 bytes... than it in any case much less than original
+const uint32_t minDelstasSizeTableC3 = 2420;
+const uint32_t overdraftPointerSize = 2;
+
 struct LinePointCacheEntry{
 public:
 	uint64_t partial_id = 0, position = 0;
@@ -121,13 +128,18 @@ public:
 	}
 
 	void TotalEndToBuf( uint64_t idx, uint8_t *buf ){
-		buf[0] = total_size >> ((idx&1)?24:16);
-		buf[1] = total_size>>8;
-		buf[2] = total_size;
+		if( true ){
+			buf[0] = total_size >> ((idx&1)?16:8);
+			buf[1] = total_size;
+		}else {
+			buf[0] = total_size >> ((idx&1)?24:16);
+			buf[1] = total_size>>8;
+			buf[2] = total_size;
+		}
 	}
 
 	// check all partially saved position could be restored
-	bool IsDeltasPositionRestorable(){
+	bool IsDeltasPositionRestorable( uint8_t end_size = 2 ){
 		uint64_t initial_total_size = total_size;
 		uint64_t park_avg_size = total_size/parks_count;
 		uint8_t buf[6];
@@ -140,7 +152,7 @@ public:
 		for( uint64_t i = 0; i < parks_count; i++ ){
 			total_size += all_sizes[i];
 			TotalEndToBuf( i, buf_cur );
-			RestoreParkPositionAndSize( park_avg_size, i, buf_prev, buf_cur, delta_pos, delta_size );
+			RestoreParkPositionAndSize( end_size, park_avg_size, i, buf_prev, buf_cur, delta_pos, delta_size );
 			if( delta_pos != (total_size-all_sizes[i]) || delta_size != all_sizes[i] ){
 				std::cout << "Couldn't restore parkd index " << i << " with position " << (total_size-all_sizes[i])
 									<< " and size " << all_sizes[i] << ". Predicted position " << delta_pos
@@ -157,37 +169,81 @@ public:
 		return true;
 	}
 
-	static void RestoreParkPositionAndSize( uint64_t park_avg_size, uint64_t park_idx, uint8_t *prev_buf, uint8_t *cur_buf,
+	void showStats(){
+		uint32_t min_park_size = (uint32_t)-1, max_park_size = 0, number_of_zeros = 0;
+		for( uint64_t i = 0; i < parks_count-1; i++ ){
+			if( min_park_size > all_sizes[i] ) min_park_size = all_sizes[i];
+			if( max_park_size < all_sizes[i] ) max_park_size = all_sizes[i];
+			if( all_sizes[i] == 0 ) number_of_zeros++;
+		}
+		std::cout<< " min_park_size: " << min_park_size << "; max_park_size: " << max_park_size
+							<< ", number of zeros: " << number_of_zeros << "(" << (((uint32_t)(number_of_zeros/(double) parks_count))*100) << "%)" << std::endl;
+	}
+
+	static void RestoreParkPositionAndSize( uint8_t end_size, uint64_t park_avg_size, uint64_t park_idx, uint8_t *prev_buf, uint8_t *cur_buf,
 																				 uint64_t &delta_position, uint16_t &encoded_delta_size ){
-		uint64_t cur_pos = (((uint16_t)cur_buf[1])<<8) | cur_buf[2];
+		if( end_size == 3 ){
+			uint64_t cur_pos = (((uint16_t)cur_buf[1])<<8) | cur_buf[2];
 
-		if( park_idx == 0 ){
-			delta_position = 0;
-			encoded_delta_size = cur_pos;
-			return;
-		}
+			if( park_idx == 0 ){
+				delta_position = 0;
+				encoded_delta_size = cur_pos;
+				return;
+			}
 
 
-		uint64_t prev_pos = (((uint16_t)prev_buf[1])<<8) | prev_buf[2];
-		encoded_delta_size = cur_pos - prev_pos;
+			uint64_t prev_pos = (((uint16_t)prev_buf[1])<<8) | prev_buf[2];
+			encoded_delta_size = cur_pos - prev_pos;
 
-		if( park_idx&1 ){
-			prev_pos |= ((uint64_t)prev_buf[0])<<16;
-			bool is_jump = (prev_pos+encoded_delta_size)>>24; // is adding current delta will lead to jump to next value in bits24+
-			prev_pos |= (((uint64_t)(cur_buf[0]-(is_jump?1:0)) )&0xffUL)<<24;
-		}else{
-			cur_pos = (cur_pos | 0x1000000 | (((uint64_t)cur_buf[0])<<16)) - encoded_delta_size;
-			prev_pos |= (cur_pos&0xff0000) | (((uint64_t)prev_buf[0])<<24);
-		}
+			if( park_idx&1 ){
+				prev_pos |= ((uint64_t)prev_buf[0])<<16;
+				bool is_jump = (prev_pos+encoded_delta_size)>>24; // is adding current delta will lead to jump to next value in bits24+
+				prev_pos |= (((uint64_t)(cur_buf[0]-(is_jump?1:0)) )&0xffUL)<<24;
+			}else{
+				cur_pos = (cur_pos | 0x1000000 | (((uint64_t)cur_buf[0])<<16)) - encoded_delta_size;
+				prev_pos |= (cur_pos&0xff0000) | (((uint64_t)prev_buf[0])<<24);
+			}
 
-		uint64_t expected_by_magic = park_avg_size*park_idx;
-		if( (expected_by_magic&0xffffffff) < 0x50000000	&& ( prev_pos&0xffffffff ) > 0xa0000000 )
-			expected_by_magic -= 0x100000000UL;
-		else if( (expected_by_magic&0xffffffff) > 0xa0000000	&& ( prev_pos&0xffffffff ) < 0x50000000 )
-			expected_by_magic += 0x100000000UL;
-		prev_pos |= expected_by_magic&~0xffffffffUL;
+			uint64_t expected_by_magic = park_avg_size*park_idx;
+			if( (expected_by_magic&0xffffffff) < 0x50000000	&& ( prev_pos&0xffffffff ) > 0xa0000000 )
+				expected_by_magic -= 0x100000000UL;
+			else if( (expected_by_magic&0xffffffff) > 0xa0000000	&& ( prev_pos&0xffffffff ) < 0x50000000 )
+				expected_by_magic += 0x100000000UL;
+			prev_pos |= expected_by_magic&~0xffffffffUL;
 
-		delta_position = prev_pos;
+			delta_position = prev_pos;
+		} else if( end_size == 2 ){
+			uint64_t cur_pos = cur_buf[1];
+
+			if( park_idx == 0 ){
+				delta_position = 0;
+				encoded_delta_size = cur_pos;
+				return;
+			}
+
+
+			uint64_t prev_pos = prev_buf[1];
+			encoded_delta_size = (uint8_t)(cur_pos - prev_pos);
+
+			if( park_idx&1 ){
+				prev_pos |= ((uint64_t)prev_buf[0])<<8;
+				bool is_jump = (prev_pos+encoded_delta_size)>>16; // is adding current delta will lead to jump to next value in bits16+
+				prev_pos |= (((uint64_t)(cur_buf[0]-(is_jump?1:0)) )&0xffUL)<<16;
+			}else{
+				cur_pos = (cur_pos | 0x10000 | (((uint64_t)cur_buf[0])<<8)) - encoded_delta_size;
+				prev_pos |= (cur_pos&0xff00) | (((uint64_t)prev_buf[0])<<16);
+			}
+
+			uint64_t expected_by_magic = park_avg_size*park_idx;
+			if( (expected_by_magic&0xffffff) < 0x500000	&& ( prev_pos&0xffffff ) > 0xa00000 )
+				expected_by_magic -= 0x1000000UL;
+			else if( (expected_by_magic&0xffffff) > 0xa00000	&& ( prev_pos&0xffffff ) < 0x500000 )
+				expected_by_magic += 0x1000000UL;
+			prev_pos |= expected_by_magic&~0xffffffUL;
+
+			delta_position = prev_pos;
+
+		} else throw std::runtime_error( "unsupported end size for deltas restore" );
 	}
 
 	~DeltasStorage(){

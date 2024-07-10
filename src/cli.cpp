@@ -102,6 +102,7 @@ int main(int argc, char *argv[]) try {
     bool parallel_read = true;
     uint32_t buffmegabytes = 0;
 		uint32_t initial_challenge = 0;
+		uint32_t compress_io_optimitzation = 0;
 
     options.allow_unrecognised_options().add_options()(
             "k, size", "Plot size", cxxopts::value<uint8_t>(k))(
@@ -124,6 +125,10 @@ int main(int argc, char *argv[]) try {
         cxxopts::value<bool>(parallel_read)->default_value("true"))(
 				"initial_challenge", "The challenge to start with for check operation",
 				cxxopts::value<uint32_t>(initial_challenge) )(
+				"compress_io_optimize", "Optimization compressed file to IO requests number. "
+																"The higher number the less IO request for proofs. "
+																"Valid values are 0 to 10.",
+				cxxopts::value<uint32_t>(compress_io_optimitzation)->default_value("0"))(
         "help", "Print help");
 
     auto result = options.parse(argc, argv);
@@ -335,7 +340,7 @@ int main(int argc, char *argv[]) try {
 				return -1;
 			}
 			TCompress::Compressor plot_compress( argv[3] );
-			plot_compress.CompressTo( filename , std::stoi(argv[2]) );
+			plot_compress.CompressTo( filename , std::stoi(argv[2]), compress_io_optimitzation );
     } else {
 				cout << "Invalid operation '" << operation << "'. Use create/prove/verify/check/compress" << endl;
     }

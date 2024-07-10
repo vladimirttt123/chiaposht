@@ -20,13 +20,20 @@
 
 namespace TCompress {
 
+struct TooSmallMinDeltasException : public std::exception {
+	const uint16_t used_min_value, found_value;
+	TooSmallMinDeltasException( uint16_t used_value,  uint16_t found_value )
+			: used_min_value(used_value), found_value(found_value) {}
+	~TooSmallMinDeltasException() throw() {}  // Updated
+	const char* what() const throw() {	return "used min deltas sizes value is too small"; }
+};
 
 struct OriginalTableInfo{
 public:
 	const uint64_t table_pointer, table_size;
 	const uint8_t k, line_point_size;
 	const uint64_t delta_size, single_stub_size_bits, stubs_size, park_size, parks_count;
-	const uint64_t new_single_stub_size_bits, new_stubs_size, new_line_point_size;
+	const uint64_t new_line_point_size, new_single_stub_size_bits, new_stubs_size;
 	const uint64_t single_stub_mask;
 
 	uint64_t new_table_size = 0;
@@ -40,9 +47,9 @@ public:
 			, stubs_size( EntrySizes::CalculateStubsSize( k ) )
 			, park_size( EntrySizes::CalculateParkSize( k, table_no ) )
 			, parks_count( table_size / park_size )
+			, new_line_point_size( (2*k-stubs_bits_to_remove+7)/8 )
 			, new_single_stub_size_bits( single_stub_size_bits - stubs_bits_to_remove )
 			, new_stubs_size( Util::ByteAlign((kEntriesPerPark - 1) * ( new_single_stub_size_bits )) / 8 )
-			, new_line_point_size( Util::ByteAlign( 2*k-stubs_bits_to_remove )/8 )
 			, single_stub_mask( ((uint64_t)-1)>>(64-single_stub_size_bits))
 			, new_deltas( new DeltasStorage( parks_count ) )
 	{
@@ -62,8 +69,9 @@ public:
 
 struct BufWriter{
 	static const uint32_t SIZE = 1024*1024; // 1Mb
+	const uint64_t start_write_pos;
 	BufWriter( FileDisk *output_file, uint64_t output_pos )
-			: output_file(output_file), write_pos( output_pos ){}
+			: start_write_pos(output_pos), output_file(output_file), write_pos( output_pos ){}
 
 	void Write( const uint8_t *next_buf, uint32_t length ){
 		assert( length < SIZE );
@@ -81,7 +89,8 @@ struct BufWriter{
 		return write_pos;
 	}
 
-	uint64_t GetPosition() const { return write_pos + buf_length; }
+	inline uint64_t GetPosition() const { return write_pos + buf_length; }
+	inline uint64_t GetWirttenAmount() const { return GetPosition() - start_write_pos; }
 
 	~BufWriter() {Flush();}
 private:
@@ -93,50 +102,85 @@ private:
 
 struct TableWriter {
 public:
-	const uint64_t output_position, stub_size, parks_count;
-	TableWriter( FileDisk * output_file, uint64_t output_position, uint64_t stub_size, uint64_t parks_count )
-			:output_position(output_position), stub_size(stub_size), parks_count(parks_count)
-			, output_file(output_file), stubs_writer( output_file, output_position )
-			, deltas_writer( output_file, output_position + parks_count*stub_size)
-			//, stubs_position( output_position ), deltas_position( output_position + parks_count*stub_size )
+	const uint32_t min_deltas_size, stubs_size, park_size, line_point_size;
+	const uint64_t output_position, parks_count;
+
+	// line_point_size is in bytes and it transfered as first part of stubs when writing
+	// stubs_size is a size of stubs excluding line point size.
+	TableWriter( FileDisk * output_file, uint64_t output_position, uint16_t min_deltas_size, uint64_t parks_count, uint32_t line_point_size,
+							uint32_t stubs_size, DeltasStorage *deltas_sizes_storage)
+			: min_deltas_size( min_deltas_size )
+			, stubs_size(stubs_size), park_size( line_point_size + stubs_size + min_deltas_size + overdraftPointerSize)
+			, line_point_size(line_point_size) // TODO move park size evaluation to better place
+			, output_position(output_position), parks_count(parks_count), output_file(output_file)
+			, deltas_sizes_storage(deltas_sizes_storage), stubs_writer( output_file, output_position )
+			, overdrafts_writer( output_file, output_position + parks_count*park_size )
 	{	}
 
+	void WriteNext( uint8_t * deltas, uint16_t deltas_size ){ // for c3 table
+		if( output_file != nullptr ){
+
+			deltas_size = fitDeltasToMin( deltas, deltas_size );
+
+			stubs_writer.Write( deltas, min_deltas_size );
+			uint8_t end_buf[2];
+			deltas_sizes_storage->Add( park_idx, deltas_size - min_deltas_size );
+			deltas_sizes_storage->TotalEndToBuf( park_idx, end_buf );
+			stubs_writer.Write( end_buf, 2 );
+
+			if( deltas_size > min_deltas_size )
+				overdrafts_writer.Write( deltas + park_size-overdraftPointerSize, deltas_size - min_deltas_size );
+
+			park_idx++;
+		}
+	}
+
 	void WriteNext( uint8_t *stubs, uint8_t * deltas, uint64_t deltas_size ){
-		assert( stubs_writer.GetPosition() < output_position + parks_count*stub_size ); // check for too many parks
-		if( output_file != nullptr ){
-			stubs_writer.Write( stubs, stub_size );
-			deltas_writer.Write( deltas, deltas_size );
-			// output_file->Write( stubs_position, stubs, stub_size );
-			// output_file->Write( deltas_position, deltas, deltas_size );
-		}
-		// stubs_position += stub_size;
-		// deltas_position += deltas_size;
-	}
+		assert( stubs_writer.GetPosition() < output_position + (uint64_t)parks_count*park_size ); // check for too many parks
+		assert( park_size >= deltas_size + line_point_size + overdraftPointerSize ); // is deltas fit to park
 
-	void WriteNext( uint8_t *stubs, uint8_t *stubs_end, uint8_t * deltas, uint64_t deltas_size ){
-		assert( stubs_writer.GetPosition() < output_position + parks_count*stub_size ); // check for too many parks
 		if( output_file != nullptr ){
-			stubs_writer.Write( stubs, stub_size - 3 );
-			stubs_writer.Write( stubs_end, 3 );
-			deltas_writer.Write( deltas, deltas_size );
 
-			// output_file->Write( deltas_position, deltas, deltas_size );
-			// memcpy( stubs + stub_size-3, stubs_end, 3 );
-			// output_file->Write( stubs_position, stubs, stub_size );
+			stubs_writer.Write( stubs, line_point_size ); // first part of stub is the check point line point
+			deltas_size = fitDeltasToMin( deltas, deltas_size );
+			stubs_writer.Write( deltas, deltas_size ); // write deltas
+			uint32_t left_in_park = park_size - line_point_size - deltas_size - overdraftPointerSize;
+			stubs_writer.Write( stubs + line_point_size, left_in_park ); // fill free space with stub
+			// define what to write to end
+			uint16_t overdraft_size  = deltas_size - min_deltas_size;
+			if( overdraft_size > 254 ) throw TooSmallMinDeltasException( min_deltas_size, overdraft_size );
+			deltas_sizes_storage->Add( park_idx, overdraft_size );
+			uint8_t end_buf[overdraftPointerSize];
+			deltas_sizes_storage->TotalEndToBuf( park_idx, end_buf );
+			stubs_writer.Write( end_buf, overdraftPointerSize );
+
+			if( overdraft_size > 0 )
+				overdrafts_writer.Write( stubs + line_point_size + left_in_park, overdraft_size );
+
+			park_idx++;
+
+			assert( park_idx * (uint64_t)park_size == stubs_writer.GetWirttenAmount() );
 		}
-		// stubs_position += stub_size;
-		// deltas_position += deltas_size;
 	}
-	uint64_t getWrittenSize() const { return deltas_writer.GetPosition() - output_position; }
+	uint64_t getWrittenSize() const { return overdrafts_writer.GetPosition() - output_position; }
 
 	void Flush(){
 		stubs_writer.Flush();
-		deltas_writer.Flush();
+		overdrafts_writer.Flush();
 	}
 private:
 	FileDisk *output_file;
-	BufWriter stubs_writer, deltas_writer;
-	//uint64_t stubs_position, deltas_position;
+	DeltasStorage *deltas_sizes_storage;
+	BufWriter stubs_writer, overdrafts_writer;
+	uint64_t park_idx = 0;
+
+	inline uint16_t fitDeltasToMin( uint8_t * deltas, uint16_t deltas_size ){
+		if( deltas_size >= min_deltas_size ) return deltas_size;
+
+		// WARNING supposed deltas buffer has at least  min_deltas_size bytes
+		memset( deltas + deltas_size, 0, min_deltas_size - deltas_size ); // fill deltas with 0 to recieve identical file each time
+		return min_deltas_size;  // fix delta size to be at least min_delta_size
+	}
 };
 
 struct ProgressCounter{
@@ -197,18 +241,21 @@ public:
 		table_pointers[10] = disk_file.Size();
 	}
 
-	void CompressTo( const std::string& filename, uint8_t level ){
+	void CompressTo( const std::string& filename, uint8_t level, uint8_t io_optimized = 0 ){
 		uint8_t bits_to_cut = cmp_level_to_bits_cut( level );
 		bool cut_table2 = bits_to_cut > 18;
 		if( cut_table2 ) bits_to_cut -= 11;
-		std::cout << "Start compressing with level " << (int)level << " (" << (cut_table2?"table2 + ":"") << (int)bits_to_cut << "bits) to " << filename
+		const int16_t io_p = std::min( 10, (int32_t) io_optimized );
+
+		std::cout << "Start compressing with level " << (int)level << " (" << (cut_table2?"table2 + ":"") << (int)bits_to_cut
+							<< "bits) and io_optimization " << io_p << std::endl << "Output file: " << filename
 							<< (filename == "plot.dat" ? "\n *** !!! SEEMS YOU MISSING OUTPUT FILE PARAMETER !!! *** " : "" ) << std::endl;
 
-		if( std::filesystem::exists(filename) )
-			throw std::invalid_argument( "output file exists please delete manually: " + filename );
+		// if( std::filesystem::exists(filename) )
+		// 	throw std::invalid_argument( "output file exists please delete manually: " + filename );
 
 		// writing header
-		const uint32_t header_size = 60 + memo_size + 10*8/*tables pointers*/ + 1 /*compression level*/ + 7*4 /*compressed tables parks count*/;
+		const uint32_t header_size = 60 + memo_size + 10*8/*tables pointers*/ + 1 /*compression level*/ + 7*4 /*compressed tables parks count*/ + 7*2 /*min deltas sizes*/;
 		uint8_t header[header_size];
 		memcpy( header, plotMagicFrase, 19 );
 		memcpy( header + 19, plotid, 32 );
@@ -220,14 +267,44 @@ public:
 		header[59] = memo_size;
 		memcpy( header + 60, memo, memo_size );
 		// next 80 bytes is new tables pointers
-		header[140+memo_size] = bits_to_cut | (cut_table2?0x80:0); // compression level
+		header[140+memo_size] = bits_to_cut | (cut_table2?0x80:0) | 0x40/*flag of new allign*/; // compression level
 
 		uint64_t *new_table_pointers = (uint64_t*)(header+60+memo_size);
 		new_table_pointers[0] = header_size;
-		uint32_t *parks_count = (uint32_t*)(header+60+memo_size + 10*8 + 1 );
+		uint32_t *parks_count = (uint32_t*)(header+60+memo_size + 10*8/*table_pointers*/ + 1 /*compression level*/ );
+		uint16_t *min_deltas_sizes = (uint16_t*)(header+60+memo_size + 10*8/*table_pointers*/ + 1 /*compression level*/ + 7*4 /*compressed tables parks count*/ );
+		// when compressing table2 than in most cases 1 table1 park read up to end that increases IO requests
+		min_deltas_sizes[0] = 900 + std::max( 0, io_p-2 )*12;
+		// the tables 2-6 usually reads for 1 line point than it has very little impact on IO reqeusts
+		min_deltas_sizes[1] = min_deltas_sizes[2] = min_deltas_sizes[3] = min_deltas_sizes[4] = min_deltas_sizes[5]
+				= 770 + std::max( 0, io_p-4 ) * 7;
+		// by my measures C3 sizes for diffrerent plots varies in range 2300-2460.
+		// but c3 park alway read fully than small values bring 2 io request instead of 1
+		// Original size for this is 3000 bytes...
+		min_deltas_sizes[6] = 2300 + std::min( 160, io_p*22 );
+
 		uint64_t total_saved = 0;
 		Timer total_timer;
 		std::vector<std::thread> delta_check_threads;
+
+
+		// { // DEBUG
+		// 	uint64_t saving = 0;
+		// 	for( uint32_t i = 1; i < 7; i++ ){
+		// 		uint16_t remove_bits = i==1 ? bits_to_cut : (i==2?11:0);
+		// 		OriginalTableInfo tinfo( k_size, i, table_pointers[i-1], table_pointers[i] - table_pointers[i-1], remove_bits );
+		// 		uint64_t save_bits = tinfo.new_line_point_size*8 - (k_size + k_size/2 - remove_bits);
+		// 		saving += tinfo.parks_count*save_bits;
+		// 		std::cout << "Table " << i << "  parks count: " << tinfo.parks_count
+		// 							<< ", save_bits: " << save_bits << std::endl;
+		// 	}
+		// 	// C3 table
+		// 	auto c3_park_size = EntrySizes::CalculateC3Size(k_size);
+		// 	uint64_t pcount = (table_pointers[10] - table_pointers[9]) / c3_park_size;
+		// 	std::cout << "Table C3 parks count: " << pcount << ", park size: " << c3_park_size << std::endl;
+
+		// 	std::cout << "Total: " << (saving>>23) << "MiB" << std::endl;
+		// }
 
 		FileDisk output_file( filename );
 		output_file.Write( 0, header, header_size ); // could be done at the end when everythins is full;
@@ -235,15 +312,17 @@ public:
 			std::cout << "Table " << i << ": " << std::flush;
 
 			auto tinfo = ((i == 1 && bits_to_cut > 0 ) || (i==2 && cut_table2) ) ?
-											CompressTable( i, &output_file, new_table_pointers[i-1], i==1 ? bits_to_cut : 11 )
-										: CompactTable( i, &output_file, new_table_pointers[i-1] );
+											CompressTable( i, &output_file, new_table_pointers[i-1], i==1 ? bits_to_cut : 11, min_deltas_sizes[i-1] )
+										: CompactTable( i, &output_file, new_table_pointers[i-1], min_deltas_sizes[i-1] );
 			new_table_pointers[i] = new_table_pointers[i-1] + tinfo.new_table_size;
 
 			if( tinfo.parks_count > 0xffffffffUL ) throw std::runtime_error("too many parks");
 			parks_count[i-1] = tinfo.parks_count;
 
+			tinfo.new_deltas->showStats(); // DEBUG
 			total_saved += ShowTableSaved( tinfo.table_size, tinfo.new_table_size );
 
+			tinfo.new_deltas->IsDeltasPositionRestorable();
 			delta_check_threads.push_back( tinfo.CheckNewDeltas() );
 		}
 
@@ -255,7 +334,7 @@ public:
 		new_table_pointers[9] = new_table_pointers[8] + (table_pointers[9]-table_pointers[8]);
 
 		std::cout << "Table C3: compacting       " << std::flush;
-		parks_count[6] = CompactC3Table( &output_file, new_table_pointers[9], total_saved );
+		parks_count[6] = CompactC3Table( &output_file, new_table_pointers[9], total_saved, min_deltas_sizes[6] );
 
 
 		for( uint32_t i = 0; i < delta_check_threads.size(); i++ ) delta_check_threads[i].join();
@@ -268,7 +347,7 @@ public:
 		}
 
 		// save final header
-		output_file.Write( 0, header, header_size ); // could be done at the end when everythins is full;
+		output_file.Write( 0, header, header_size ); // done at the end when everythins is full;
 		total_timer.PrintElapsed( "Total time: " );
 		std::cout << "Original file size: " << (table_pointers[10]>>20) << "MiB; compacted file size: "
 							<< ((table_pointers[10]-total_saved)>>20) << "MiB ("
@@ -325,14 +404,14 @@ private:
 	// 2. Stubs
 	// 3. 3 bottom bytes of pointer to deltas location after deltas of this part added.
 	//    it is supposed that first pointer is 0 and at length of deltas could be evaluated by substracting prev and next pointer.
-	OriginalTableInfo CompactTable( int table_no, FileDisk * output_file, uint64_t output_position ){
+	OriginalTableInfo CompactTable( int table_no, FileDisk * output_file, uint64_t output_position, uint16_t min_deltas_sizes ){
 		std::cout << " compacting       " << std::flush;
 
 		OriginalTableInfo tinfo( k_size, table_no, table_pointers[table_no-1], table_pointers[table_no] - table_pointers[table_no-1] );
 		const uint64_t lps_size =  tinfo.line_point_size + tinfo.stubs_size;
-		TableWriter writer( output_file, output_position, 3+lps_size, tinfo.parks_count );
+		TableWriter writer( output_file, output_position, min_deltas_sizes, tinfo.parks_count, tinfo.line_point_size, tinfo.stubs_size, tinfo.new_deltas.get() );
 
-		uint8_t buf[tinfo.park_size+7], small_buf[8];
+		uint8_t buf[tinfo.park_size+7];
 		ProgressCounter progress( tinfo.parks_count );
 
 		disk_file.Seek( table_pointers[table_no-1] ); // seek to start of the table
@@ -340,30 +419,29 @@ private:
 			progress.ShowNext( i );
 
 			disk_file.Read( buf, tinfo.park_size );
-
-			tinfo.new_deltas->Add( i, 0x7fff & ( ((uint32_t)buf[lps_size])
-															| (((uint32_t)buf[lps_size + 1])<<8) ) );
-			tinfo.new_deltas->TotalEndToBuf( i, small_buf ); // this is buf with pointer already to next postion it is OK
-
-			writer.WriteNext( buf, small_buf, buf+lps_size+2, tinfo.new_deltas->all_sizes[i] );
+			writer.WriteNext( buf/*line_point+stubs*/, buf+lps_size+2/*deltas_sizes*/, parseDeltasSize( buf+lps_size ) );
 		}
 
-		tinfo.new_table_size = (lps_size + 3)*tinfo.parks_count + tinfo.new_deltas->total_size;
+		tinfo.new_table_size = writer.getWrittenSize();
 
 		return tinfo;
 	}
 
+	inline uint16_t parseDeltasSize( uint8_t *buf ){
+		uint16_t deltas_size = ( ((uint16_t)buf[0]) | (((uint16_t)buf[1])<<8) );
+		if( deltas_size&0x8000 && deltas_size&0x7fff )
+			throw std::runtime_error( "Uncompressed deltas does not supported" );
+		return deltas_size & 0x7fff;
+	}
 
-	uint64_t CompactC3Table( FileDisk * output_file, uint64_t output_position, uint64_t &total_saved ){
-		auto park_size = EntrySizes::CalculateC3Size(k_size);
-		uint64_t parks_count = (table_pointers[10] - table_pointers[9]) / park_size;
-		const uint32_t POS_BUF_SIZE = 30000;
-		uint8_t buf[park_size], positions[POS_BUF_SIZE];
-		uint32_t cur_pos_buf = 0;
-		uint64_t next_buf_pos = output_position;
-		uint64_t deltas_position = output_position + parks_count*3;
-
+	uint64_t CompactC3Table( FileDisk * output_file, uint64_t output_position, uint64_t &total_saved, uint16_t min_deltas_sizes ){
+		const uint32_t park_size = EntrySizes::CalculateC3Size(k_size);
+		const uint64_t parks_count = (table_pointers[10] - table_pointers[9]) / park_size;
 		DeltasStorage deltas(parks_count);
+		TableWriter writer( output_file, output_position, min_deltas_sizes, parks_count, 0, 0, &deltas );
+
+		uint8_t buf[park_size];
+
 		{ // to show timing at the end of writing
 			ProgressCounter progress( parks_count );
 
@@ -372,29 +450,17 @@ private:
 				progress.ShowNext( i );
 
 				disk_file.Read( buf, park_size );
-				deltas.Add( i,  Bits(buf, 2, 16).GetValue() );
-
-				output_file->Write( deltas_position, buf + 2, deltas.all_sizes[i] );
-				deltas_position += deltas.all_sizes[i];
-
-				deltas.TotalEndToBuf( i, positions + cur_pos_buf );
-				cur_pos_buf += 3;
-				if( cur_pos_buf >= POS_BUF_SIZE ){
-					output_file->Write( next_buf_pos, positions, cur_pos_buf );
-					next_buf_pos += POS_BUF_SIZE;
-					cur_pos_buf = 0;
-				}
+				writer.WriteNext( buf + 2, bswap_16( ((uint16_t*)buf)[0] ) );
 			}
-
-			output_file->Write( next_buf_pos, positions, cur_pos_buf ); // write last positions
 		}
 
 		// check all partially saved position could be restored
 		if( !deltas.IsDeltasPositionRestorable() )
 			throw std::runtime_error( "couldn't restore position of deltas" );
 
-		uint64_t original_size = park_size * parks_count,
-				compacted_size = (3*parks_count + deltas.total_size);
+		deltas.showStats(); // DEBUG
+
+		uint64_t original_size = park_size * parks_count, compacted_size = writer.getWrittenSize();
 		total_saved += ShowTableSaved( original_size, compacted_size );
 
 		return parks_count;
@@ -403,7 +469,7 @@ private:
 	// The compress table is repacked.
 	// The small deltas still is deltas but stubs now is not a deltas but real low bits of line point.
 	// Than we need to restore all line points and pack them new way
-	OriginalTableInfo CompressTable( int table_no, FileDisk * output_file, uint64_t output_position, uint32_t bits_to_remove = 0 ){
+	OriginalTableInfo CompressTable( int table_no, FileDisk * output_file, uint64_t output_position, uint32_t bits_to_remove, uint16_t min_deltas_size ){
 		std::cout << " compressing (" << bits_to_remove << ") " << std::flush;
 
 		OriginalTableInfo tinfo( k_size, table_no, table_pointers[table_no-1],
@@ -412,13 +478,12 @@ private:
 			throw std::runtime_error( "Compression is too high Table 1 stub has " + std::to_string(tinfo.single_stub_size_bits)
 															 + " and compression need to remove " + std::to_string(bits_to_remove ) );
 
-		const uint64_t new_lps_size = tinfo.new_line_point_size + tinfo.new_stubs_size;
 		const double R = kRValues[table_no-1];
+		const auto max_deltas_size = EntrySizes::CalculateMaxDeltasSize( k_size, table_no );
+		TableWriter writer( output_file, output_position, min_deltas_size, tinfo.parks_count, tinfo.new_line_point_size, tinfo.new_stubs_size, tinfo.new_deltas.get() );
 
-		TableWriter writer( output_file, output_position, 3+new_lps_size, tinfo.parks_count );
-
-		uint8_t buf[tinfo.park_size+7],
-				new_stubs_buf[new_lps_size + 3 + 7/* safe distance*/],
+		uint8_t read_buf[tinfo.park_size+7],
+				new_stubs_buf[ tinfo.new_stubs_size + tinfo.line_point_size + 7/* safe distance*/],
 				new_compressed_deltas_buf[kEntriesPerPark];
 		ProgressCounter progress( tinfo.parks_count );
 
@@ -426,9 +491,10 @@ private:
 		for( uint64_t i = 0; i < tinfo.parks_count; i++ ){
 			progress.ShowNext( i );
 
-			disk_file.Read( buf, tinfo.park_size ); // read the original park
+			disk_file.Read( read_buf, tinfo.park_size ); // read the original park
 
-			ParkReader park( buf, k_size * 2, tinfo.single_stub_size_bits, EntrySizes::CalculateMaxDeltasSize( k_size, table_no ), table_no );
+			ParkReader park( read_buf, k_size*2, tinfo.single_stub_size_bits, max_deltas_size, table_no );
+
 
 			ParkBits park_stubs_bits;
 			std::vector<uint8_t> park_deltas;
@@ -472,19 +538,12 @@ private:
 			assert( park_stubs_bits.GetSize() ==  park.DeltasSize()*tinfo.new_single_stub_size_bits );
 
 			park_stubs_bits.ToBytes( new_stubs_buf + tinfo.new_line_point_size );
-			if( park.DeltasSize() < (kEntriesPerPark-1) ){ // need to fill end of stabus by zeros to create same file each time
-				uint32_t new_stubs_size_bytes = (park.DeltasSize()*tinfo.new_single_stub_size_bits + 7)/8;
-				memset( new_stubs_buf + tinfo.new_line_point_size + new_stubs_size_bytes, 0, tinfo.new_stubs_size-new_stubs_size_bytes );
-			}
-
-			tinfo.new_deltas->Add( i, deltas_size );
-			tinfo.new_deltas->TotalEndToBuf( i, new_stubs_buf + new_lps_size );
-
 			writer.WriteNext( new_stubs_buf, deltas_buf, deltas_size );
 		}
 
-		tinfo.new_table_size = (new_lps_size + 3)*tinfo.parks_count + tinfo.new_deltas->total_size;
-		assert( tinfo.new_table_size == writer.getWrittenSize() );
+		tinfo.new_table_size = writer.getWrittenSize();
+
+		// assert( tinfo.new_table_size == tinfo.parks_count*(tinfo.new_line_point_size+tinfo.new_stubs_size+2)+tinfo.new_deltas->total_size );
 
 		return tinfo;
 	}
