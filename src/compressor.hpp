@@ -448,7 +448,8 @@ private:
 		return tinfo;
 	}
 
-
+	// This used instead of CompactTable when "compacting" already compressed or compacted table.
+	// but seems it could be joined to one function with CompactTable.
 	OriginalTableInfo ReallingTable( int table_no, FileDisk * output_file, uint64_t output_position, uint16_t min_deltas_sizes ){
 		assert( decompressor );
 		std::cout << " realling " << std::flush;

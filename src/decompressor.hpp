@@ -74,8 +74,6 @@ public:
 			}
 			std::cout <<std::endl;
 		}
-
-
 	}
 
 	void init( std::ifstream& file, uint16_t memo_size, uint8_t k, const uint8_t *plot_id ){
@@ -119,7 +117,7 @@ public:
 
 	uint16_t ReadC3Park( std::ifstream& file, uint64_t idx, uint8_t *buf, uint16_t max_to_read ){
 		ReadFileWrapper disk_file( &file );
-		ReadC3Park( disk_file, idx, buf, max_to_read );
+		return ReadC3Park( disk_file, idx, buf, max_to_read );
 	}
 
 	uint16_t ReadC3Park( ReadFileWrapper& disk_file, uint64_t idx, uint8_t *buf, uint16_t max_to_read ){
