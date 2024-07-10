@@ -62,7 +62,7 @@ public:
 			, single_stub_size_bits( k - kStubMinusBits - RemovedBitsNumber(table_no, decompressor) )
 			, stubs_size( (single_stub_size_bits*(kEntriesPerPark-1)+7)/8 )
 			, park_size( EntrySizes::CalculateParkSize( k, table_no ) )
-			, parks_count( decompressor->getParksCount( table_no ) )
+			, parks_count( decompressor->getParksCount( table_no - 1 ) )
 			, new_line_point_size( line_point_size )
 			, new_single_stub_size_bits( single_stub_size_bits )
 			, new_stubs_size( stubs_size )
@@ -273,7 +273,7 @@ public:
 		if( decompressor ){
 			decompressor->init( disk_file, memo_size, k_size, plotid );
 			std::cout << "Input file is a compressed file." << std::endl;
-			decompressor->ShowInfo();
+			decompressor->ShowInfo( false );
 		}
 	}
 
@@ -329,9 +329,10 @@ public:
 		for( uint32_t i = 1; i < 7; i++ ){
 			std::cout << "Table " << i << ": " << std::flush;
 
-			auto tinfo = ((i == 1 && bits_to_cut > 0 ) || (i==2 && cut_table2) ) ?
-											CompressTable( i, &output_file, new_table_pointers[i-1], i==1 ? bits_to_cut : 11, min_deltas_sizes[i-1] )
-										: CompactTable( i, &output_file, new_table_pointers[i-1], min_deltas_sizes[i-1] );
+			auto tinfo = decompressor ? ReallingTable( i, &output_file, new_table_pointers[i-1], min_deltas_sizes[i-1] ) :
+											 ( ((i == 1 && bits_to_cut > 0 ) || (i==2 && cut_table2) ) ?
+															CompressTable( i, &output_file, new_table_pointers[i-1], i==1 ? bits_to_cut : 11, min_deltas_sizes[i-1] )
+														: CompactTable( i, &output_file, new_table_pointers[i-1], min_deltas_sizes[i-1] ) );
 			new_table_pointers[i] = new_table_pointers[i-1] + tinfo.new_table_size;
 
 			if( tinfo.parks_count > 0xffffffffUL ) throw std::runtime_error("too many parks");
@@ -351,7 +352,8 @@ public:
 		new_table_pointers[8] = new_table_pointers[7] + (table_pointers[8]-table_pointers[7]);
 		new_table_pointers[9] = new_table_pointers[8] + (table_pointers[9]-table_pointers[8]);
 
-		std::cout << "Table C3: compacting       " << std::flush;
+
+		std::cout << "Table C3: " << (decompressor? "reallign  " : "compacting" ) << "       " << std::flush;
 		parks_count[6] = CompactC3Table( &output_file, new_table_pointers[9], total_saved, min_deltas_sizes[6] );
 
 
@@ -456,11 +458,10 @@ private:
 
 		ProgressCounter progress( tinfo.parks_count );
 
-		disk_file.Seek( table_pointers[table_no-1] ); // seek to start of the table
 		for( uint64_t i = 0; i < tinfo.parks_count; i++ ){
 			progress.ShowNext( i );
 
-			auto park = decompressor->GetParkReader( *disk_file.getStream(), table_no, i*kEntriesPerPark, kEntriesPerPark );
+			auto park = decompressor->GetParkReader( disk_file, table_no-1, i*kEntriesPerPark, kEntriesPerPark );
 			writer.WriteNext( park.stubs_buf(), park.deltas_buf(), park.deltas_size );
 		}
 
@@ -478,7 +479,7 @@ private:
 
 	uint64_t CompactC3Table( FileDisk * output_file, uint64_t output_position, uint64_t &total_saved, uint16_t min_deltas_sizes ){
 		const uint32_t park_size = EntrySizes::CalculateC3Size(k_size);
-		const uint64_t parks_count = (table_pointers[10] - table_pointers[9]) / park_size;
+		const uint64_t parks_count = decompressor ? decompressor->getParksCount(10) : (table_pointers[10] - table_pointers[9]) / park_size;
 		DeltasStorage deltas(parks_count);
 		TableWriter writer( output_file, output_position, min_deltas_sizes, parks_count, 0, 0, &deltas );
 
@@ -491,8 +492,12 @@ private:
 			for( uint64_t i = 0; i < parks_count; i++ ){
 				progress.ShowNext( i );
 
-				disk_file.Read( buf, park_size );
-				writer.WriteNext( buf + 2, bswap_16( ((uint16_t*)buf)[0] ) );
+				if( decompressor )
+					writer.WriteNext( buf, decompressor->ReadC3Park( disk_file, i, buf, park_size ) );
+				else{
+					disk_file.Read( buf, park_size );
+					writer.WriteNext( buf + 2, bswap_16( ((uint16_t*)buf)[0] ) );
+				}
 			}
 		}
 
@@ -502,7 +507,7 @@ private:
 
 		deltas.showStats(); // DEBUG
 
-		uint64_t original_size = park_size * parks_count, compacted_size = writer.getWrittenSize();
+		uint64_t original_size = table_pointers[10] - table_pointers[9], compacted_size = writer.getWrittenSize();
 		total_saved += ShowTableSaved( original_size, compacted_size );
 
 		return parks_count;

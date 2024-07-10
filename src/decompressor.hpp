@@ -60,10 +60,22 @@ public:
 		return nullptr;
 	}
 
-	void ShowInfo(){
-		std::cout << program_header << std::endl
-							<< "Compression: " << (table2_cut?"table2 + " : "" )
-							<< (int)bits_cut_no << " bits " << (improved_file_allign?" old " : " new ") << " file alingnment" << std::endl << std::endl;
+	void ShowInfo( bool is_short = true ){
+		if( is_short ) std::cout << program_header << std::endl;
+
+		std::cout << "Compression: " << (table2_cut?"table2 + " : "" ) << (int)bits_cut_no << " bits "
+							<< (improved_file_allign? "improved" : "old") << " file alingnment" << std::endl << std::endl;
+		if( !is_short ){
+			std::cout << "Tables pointers: ";
+			for( uint i = 0; i < 10; i++ ) std::cout << table_pointers[i] << (i<9?", ":"");
+			if( improved_file_allign ){
+				std::cout << std::endl << "Tables io_parameters: ";
+				for( uint i = 0; i < 7; i++ ) std::cout << min_deltas_sizes[i] << (i<6?", ":"");
+			}
+			std::cout <<std::endl;
+		}
+
+
 	}
 
 	void init( std::ifstream& file, uint16_t memo_size, uint8_t k, const uint8_t *plot_id ){
@@ -102,13 +114,18 @@ public:
 	uint8_t GetNumberOfRemovedBits() const { return bits_cut_no; }
 	bool isImprovedFileFormat() const { return improved_file_allign; }
 	bool isTable2Cutted() const { return table2_cut; }
-	uint64_t getParksCount( uint8_t table_no ) const { return parks_counts[table_no]; }
+	uint64_t getParksCount( uint8_t table_no ) const { return parks_counts[table_no<6?table_no:6]; }
+
 
 	uint16_t ReadC3Park( std::ifstream& file, uint64_t idx, uint8_t *buf, uint16_t max_to_read ){
+		ReadFileWrapper disk_file( &file );
+		ReadC3Park( disk_file, idx, buf, max_to_read );
+	}
+
+	uint16_t ReadC3Park( ReadFileWrapper& disk_file, uint64_t idx, uint8_t *buf, uint16_t max_to_read ){
 		if( idx >= parks_counts[6] )
 			throw std::runtime_error( "too big C3 park index " + std::to_string(idx)
 															 + " when max is " + std::to_string( parks_counts[6] ) );
-		ReadFileWrapper disk_file( &file );
 		uint16_t delta_size = 0;
 		uint64_t pos;
 
@@ -315,8 +332,14 @@ public:
 			return LPCache.AddLinePoint( k_size, plot_id, table_no, position, ReadRealLinePoint( file, table_no, position ) );
 		}
 	}
-
 	ParkReader GetParkReader( std::ifstream& file, // this need for parallel reading - will support it later
+													 uint8_t table_no /*0 is a first table*/,
+													 uint64_t position, int16_t need_num_entries = -1 /* -1 is automatic by position */ ){
+		ReadFileWrapper disk_file( &file );
+		return GetParkReader( disk_file, table_no, position, need_num_entries );
+	}
+
+	ParkReader GetParkReader( ReadFileWrapper& disk_file, // this need for parallel reading - will support it later
 													 uint8_t table_no /*0 is a first table*/,
 													 uint64_t position, int16_t need_num_entries = -1 /* -1 is automatic by position */ ){
 		if( table_no >=6 )
@@ -338,7 +361,6 @@ public:
 																		+ ( improved_file_allign ? min_deltas_sizes[table_no] : 0 );
 		const uint32_t max_deltas_size = EntrySizes::CalculateMaxDeltasSize( k_size, table_no + 1 );
 
-		ReadFileWrapper disk_file( &file );
 
 		if( need_num_entries == 1 ){
 			// Simplest case read first line point at the begining of park
