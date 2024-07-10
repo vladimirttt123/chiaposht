@@ -144,22 +144,20 @@ public:
 		assert( park_size >= deltas_size + line_point_size + overdraftPointerSize ); // is deltas fit to park
 
 		if( output_file != nullptr ){
-
 			stubs_writer.Write( stubs, line_point_size ); // first part of stub is the check point line point
 			deltas_size = fitDeltasToMin( deltas, deltas_size );
 			stubs_writer.Write( deltas, deltas_size ); // write deltas
-			uint32_t left_in_park = park_size - line_point_size - deltas_size - overdraftPointerSize;
-			stubs_writer.Write( stubs + line_point_size, left_in_park ); // fill free space with stub
-			// define what to write to end
-			uint16_t overdraft_size  = deltas_size - min_deltas_size;
+			uint32_t overdraft_size = deltas_size - min_deltas_size;
 			if( overdraft_size > 254 ) throw TooSmallMinDeltasException( min_deltas_size, overdraft_size );
+			stubs_writer.Write( stubs + line_point_size, stubs_size - overdraft_size ); // fill free space with stub
+			// define what to write to end
 			deltas_sizes_storage->Add( park_idx, overdraft_size );
 			uint8_t end_buf[overdraftPointerSize];
 			deltas_sizes_storage->TotalEndToBuf( park_idx, end_buf );
 			stubs_writer.Write( end_buf, overdraftPointerSize );
 
 			if( overdraft_size > 0 )
-				overdrafts_writer.Write( stubs + line_point_size + left_in_park, overdraft_size );
+				overdrafts_writer.Write( stubs + line_point_size + stubs_size - overdraft_size, overdraft_size );
 
 			park_idx++;
 
@@ -312,6 +310,7 @@ public:
 
 		FileDisk output_file( filename );
 		output_file.Write( 0, header, header_size ); // could be done at the end when everythins is full;
+
 		for( uint32_t i = 1; i < 7; i++ ){
 			std::cout << "Table " << i << ": " << std::flush;
 

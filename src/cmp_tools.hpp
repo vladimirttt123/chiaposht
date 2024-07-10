@@ -351,11 +351,12 @@ public:
 			deltas = Encoding::ANSDecodeDeltas( deltas_buf , deltas_size, kEntriesPerPark - 1, kRValues[table_no-1] );
 	}
 
-	ParkReader( uint8_t *buf, uint16_t stubs_start_in_buf, uint8_t *deltas_buf, uint16_t deltas_size, uint64_t line_point_size_bits, uint64_t stub_size_bits, uint8_t table_no )
+	ParkReader( uint8_t *buf, uint16_t check_point_idx, uint16_t stubs_start_idx, uint8_t *deltas_buf, uint16_t deltas_size,
+						 uint64_t line_point_size_bits, uint64_t stub_size_bits, uint8_t table_no, uint8_t*check_point_buf = nullptr )
 			: is_compressed(true), line_point_size( (line_point_size_bits+7)/8 ), line_point_size_bits(line_point_size_bits)
-			, stubs_size( Util::ByteAlign(stub_size_bits*(kEntriesPerPark-1))/8)
-			, stub_size_bits(stub_size_bits), first_line_point( Util::SliceInt128FromBytes( buf + 3, 0, line_point_size_bits ) )
-			, deltas_size(deltas_size), buf(buf), cur_stub_buf( buf + stubs_start_in_buf )
+			, stubs_size( Util::ByteAlign(stub_size_bits*(kEntriesPerPark-1))/8), stub_size_bits(stub_size_bits)
+			, first_line_point( Util::SliceInt128FromBytes( (check_point_buf?check_point_buf:buf )+ check_point_idx, 0, line_point_size_bits ) )
+			, deltas_size(deltas_size), buf(buf), cur_stub_buf( buf + stubs_start_idx )
 
 	{
 		if( deltas_buf != nullptr && deltas_size > 0 )

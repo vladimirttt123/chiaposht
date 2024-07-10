@@ -442,14 +442,14 @@ private:
 			uint8_t deltas_buf[overdraft_size];
 			disk_file.Read( table_pointers[table_no] + main_park_size*parks_counts[table_no] + overdraft_pos, deltas_buf, overdraft_size );
 
-			return ParkReader( stubs_buf.release(), cur_line_point_size + end_pointer_size,
+			return ParkReader( stubs_buf.release(), end_pointer_size, cur_line_point_size + end_pointer_size,
 												deltas_buf, overdraft_size, cur_line_point_size_bits,
 												cur_stub_size_bits, table_no /* used to unpack deltas */ );
 		}
 
 		// here for improved file format
 		if( overdraft_size == 0 )
-			return ParkReader( stubs_buf.release(), cur_line_point_size + end_pointer_size + min_deltas_sizes[table_no],
+			return ParkReader( stubs_buf.release(), end_pointer_size, cur_line_point_size + end_pointer_size + min_deltas_sizes[table_no],
 												stubs_buf.get() + cur_line_point_size + end_pointer_size,
 												getNonZerosSize( stubs_buf.get() + cur_line_point_size + end_pointer_size, min_deltas_sizes[table_no] ),
 												cur_line_point_size_bits, cur_stub_size_bits, table_no /* used to unpack deltas */);
@@ -458,7 +458,7 @@ private:
 		uint32_t real_stubs_size = cur_stubs_size - overdraft_size;
 		uint32_t number_of_entries_in_stubs = real_stubs_size*8/cur_stub_size_bits;
 		if( (number_of_entries_in_stubs+1/*fir first line point*/) >= (uint32_t)need_num_entries ) // no need to read overdraft
-			return ParkReader( stubs_buf.release(), cur_line_point_size + end_pointer_size + min_deltas_sizes[table_no],
+			return ParkReader( stubs_buf.release(), end_pointer_size, cur_line_point_size + end_pointer_size + min_deltas_sizes[table_no] + overdraft_size,
 												stubs_buf.get() + cur_line_point_size + end_pointer_size, min_deltas_sizes[table_no] + overdraft_size,
 												cur_line_point_size_bits, cur_stub_size_bits, table_no /* used to unpack deltas */);
 
@@ -466,8 +466,8 @@ private:
 		memcpy( full_stubs_buf, stubs_buf.get() + cur_line_point_size + end_pointer_size + min_deltas_sizes[table_no], cur_stubs_size - overdraft_size );
 		disk_file.Read( table_pointers[table_no] + main_park_size*parks_counts[table_no] + overdraft_pos,
 									 full_stubs_buf + cur_stubs_size - overdraft_size, overdraft_size );
-		return ParkReader( full_stubs_buf, 0, stubs_buf.get() + cur_line_point_size + end_pointer_size, min_deltas_sizes[table_no] + overdraft_size,
-											cur_line_point_size_bits, cur_stub_size_bits, table_no /* used to unpack deltas */);
+		return ParkReader( full_stubs_buf, end_pointer_size, 0, stubs_buf.get() + cur_line_point_size + end_pointer_size, min_deltas_sizes[table_no] + overdraft_size,
+											cur_line_point_size_bits, cur_stub_size_bits, table_no /* used to unpack deltas */, stubs_buf.get() );
 	}
 
 	static uint16_t getNonZerosSize( uint8_t* buf, uint16_t max_size ){
