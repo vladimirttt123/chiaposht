@@ -134,7 +134,7 @@ public:
 			uint8_t rbuf[main_park_size + overdraftPointerSize];
 
 			disk_file.Read( table_pointers[9] + idx*main_park_size - overdraftPointerSize, rbuf, main_park_size+overdraftPointerSize );
-			DeltasStorage::RestoreParkPositionAndSize( overdraftPointerSize, avg_delta_sizes[6], idx, rbuf, rbuf+main_park_size, pos, delta_size );
+			DeltasStorage::RestoreParkPositionAndSize( true, avg_delta_sizes[6], idx, rbuf, rbuf+main_park_size, pos, delta_size );
 			if( delta_size == 0 ){ // No overdraft
 				// define real deltas size
 				memcpy( buf, rbuf+overdraftPointerSize, delta_size = getNonZerosSize( rbuf+overdraftPointerSize, min_ds ) );
@@ -147,7 +147,7 @@ public:
 		}else {
 			uint8_t ibuf[6];
 			disk_file.Read( table_pointers[9] + (idx-1)*3, ibuf, 6 );
-			DeltasStorage::RestoreParkPositionAndSize( 3, avg_delta_sizes[6], idx, ibuf, ibuf+3, pos, delta_size );
+			DeltasStorage::RestoreParkPositionAndSize( false, avg_delta_sizes[6], idx, ibuf, ibuf+3, pos, delta_size );
 
 			if( delta_size > EntrySizes::CalculateC3Size(k_size) )
 				throw std::runtime_error( "too big delta " + std::to_string( delta_size ) + ". possibly corrupted file ");
@@ -379,7 +379,7 @@ public:
 
 		uint64_t overdraft_pos;
 		uint16_t overdraft_size, deltas_size;
-		DeltasStorage::RestoreParkPositionAndSize( end_pointer_size, avg_delta_sizes[table_no], park_idx,
+		DeltasStorage::RestoreParkPositionAndSize( improved_file_allign, avg_delta_sizes[table_no], park_idx,
 																							full_buf, full_buf+main_park_size, overdraft_pos, overdraft_size );
 
 		if( !improved_file_allign ) {

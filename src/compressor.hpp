@@ -149,10 +149,10 @@ public:
 			deltas_size = fitDeltasToMin( deltas, deltas_size );
 
 			stubs_writer.Write( deltas, min_deltas_size );
-			uint8_t end_buf[2];
+			uint8_t end_buf[overdraftPointerSize];
 			deltas_sizes_storage->Add( park_idx, deltas_size - min_deltas_size );
 			deltas_sizes_storage->TotalEndToBuf( park_idx, end_buf );
-			stubs_writer.Write( end_buf, 2 );
+			stubs_writer.Write( end_buf, overdraftPointerSize );
 
 			if( deltas_size > min_deltas_size )
 				overdrafts_writer.Write( deltas + min_deltas_size, deltas_size - min_deltas_size );
@@ -307,7 +307,7 @@ public:
 		header[59] = memo_size;
 		memcpy( header + 60, memo, memo_size );
 		// next 80 bytes is new tables pointers
-		header[140+memo_size] = bits_to_cut | (cut_table2?0x80:0) | 0x40/*flag of new allign*/; // compression level
+		header[140+memo_size] = bits_to_cut | (cut_table2?0x80:0) | 0x40/*flag of improved align*/; // compression level
 
 		uint64_t *new_table_pointers = (uint64_t*)(header+60+memo_size);
 		new_table_pointers[0] = header_size;
@@ -334,7 +334,7 @@ public:
 		for( uint32_t i = 1; i < 7; i++ ){
 			std::cout << "Table " << i << ": " << std::flush;
 
-			auto tinfo = decompressor ? ReallingTable( i, &output_file, new_table_pointers[i-1], min_deltas_sizes[i-1] ) :
+			auto tinfo = decompressor ? RealignTable( i, &output_file, new_table_pointers[i-1], min_deltas_sizes[i-1] ) :
 											 ( ((i == 1 && bits_to_cut > 0 ) || (i==2 && cut_table2) ) ?
 															CompressTable( i, &output_file, new_table_pointers[i-1], i==1 ? bits_to_cut : 11, min_deltas_sizes[i-1] )
 														: CompactTable( i, &output_file, new_table_pointers[i-1], min_deltas_sizes[i-1] ) );
@@ -358,7 +358,7 @@ public:
 		new_table_pointers[9] = new_table_pointers[8] + (table_pointers[9]-table_pointers[8]);
 
 
-		std::cout << "Table C3: " << (decompressor? "reallign  " : "compacting" ) << "       " << std::flush;
+		std::cout << "Table C3: " << (decompressor? "realign  " : "compacting" ) << "       " << std::flush;
 		parks_count[6] = CompactC3Table( &output_file, new_table_pointers[9], total_saved, min_deltas_sizes[6] );
 
 
@@ -455,9 +455,9 @@ private:
 
 	// This used instead of CompactTable when "compacting" already compressed or compacted table.
 	// but seems it could be joined to one function with CompactTable.
-	OriginalTableInfo ReallingTable( int table_no, FileDisk * output_file, uint64_t output_position, uint16_t min_deltas_sizes ){
+	OriginalTableInfo RealignTable( int table_no, FileDisk * output_file, uint64_t output_position, uint16_t min_deltas_sizes ){
 		assert( decompressor );
-		std::cout << " realling " << std::flush;
+		std::cout << " realign " << std::flush;
 
 		OriginalTableInfo tinfo( k_size, table_no, table_pointers[table_no-1], table_pointers[table_no] - table_pointers[table_no-1], decompressor.get() );
 		TableWriter writer( output_file, output_position, min_deltas_sizes, tinfo.parks_count, tinfo.line_point_size, tinfo.stubs_size, tinfo.new_deltas.get() );
