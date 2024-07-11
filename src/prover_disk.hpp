@@ -1088,12 +1088,14 @@ private:
             curr_f7 = c1_entry_bits.Slice(0, k).GetValue();
 
 						if( decompressor != nullptr )
-							encoded_size = decompressor->ReadC3Park( disk_file, c1_index, bit_mask, c3_entry_size );
+							encoded_size = decompressor->ReadC3Park( disk_file, c1_index, bit_mask, c3_entry_size - 2 );
 						else {
 							SafeSeek(disk_file, table_begin_pointers[10] + c1_index * c3_entry_size);
 
 							SafeRead(disk_file, encoded_size_buf, 2);
 							encoded_size = Bits(encoded_size_buf, 2, 16).GetValue();
+
+							SafeRead(disk_file, bit_mask, c3_entry_size - 2);
 						}
 
             // Avoid telling GetP7Positions and functions it uses that we have more
@@ -1102,13 +1104,18 @@ private:
                 return std::vector<uint64_t>();
             }
 
-            SafeRead(disk_file, bit_mask, c3_entry_size - 2);
 
             p7_positions =
                 GetP7Positions(curr_f7, f7, curr_p7_pos, bit_mask, encoded_size, c1_index);
 
-            SafeRead(disk_file, encoded_size_buf, 2);
-            encoded_size = Bits(encoded_size_buf, 2, 16).GetValue();
+						if( decompressor != nullptr )
+							encoded_size = decompressor->ReadC3Park( disk_file, c1_index + 1, bit_mask, c3_entry_size - 2 );
+						else {
+							SafeRead(disk_file, encoded_size_buf, 2);
+							encoded_size = Bits(encoded_size_buf, 2, 16).GetValue();
+
+							SafeRead(disk_file, bit_mask, c3_entry_size - 2);
+						}
 
             // Avoid telling GetP7Positions and functions it uses that we have more
             // bytes than we allocated for bit_mask above.
@@ -1116,7 +1123,6 @@ private:
                 return std::vector<uint64_t>();
             }
 
-            SafeRead(disk_file, bit_mask, c3_entry_size - 2);
 
             c1_index++;
             curr_p7_pos = c1_index * kCheckpoint1Interval;
@@ -1131,9 +1137,9 @@ private:
 							encoded_size = decompressor->ReadC3Park( disk_file, c1_index, bit_mask, c3_entry_size );
 						} else {
 							SafeSeek(disk_file, table_begin_pointers[10] + c1_index * c3_entry_size);
+
 							SafeRead(disk_file, encoded_size_buf, 2);
 							encoded_size = Bits(encoded_size_buf, 2, 16).GetValue();
-
 
 							SafeRead(disk_file, bit_mask, c3_entry_size - 2);
 						}

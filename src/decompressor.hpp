@@ -64,7 +64,7 @@ public:
 		if( is_short ) std::cout << program_header << std::endl;
 
 		std::cout << "Compression: " << (table2_cut?"table2 + " : "" ) << (int)bits_cut_no << " bits, "
-							<< (improved_file_allign? "improved" : "old") << " file alingnment" << std::endl << std::endl;
+							<< (improved_file_allign? "improved" : "old") << " file alingnment" << std::endl ;
 		if( !is_short ){
 			std::cout << "Tables pointers: ";
 			for( uint i = 0; i < 10; i++ ) std::cout << table_pointers[i] << (i<9?", ":"");
@@ -74,6 +74,7 @@ public:
 			}
 			std::cout <<std::endl;
 		}
+		std::cout <<std::endl;
 	}
 
 	void init( std::ifstream& file, uint16_t memo_size, uint8_t k, const uint8_t *plot_id ){

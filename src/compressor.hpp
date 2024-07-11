@@ -291,8 +291,8 @@ public:
 							<< "bits) and io_optimization " << io_p << std::endl << "Output file: " << filename
 							<< (filename == "plot.dat" ? "\n *** !!! SEEMS YOU MISSING OUTPUT FILE PARAMETER !!! *** " : "" ) << std::endl;
 
-		// if( std::filesystem::exists(filename) )
-		// 	throw std::invalid_argument( "output file exists please delete manually: " + filename );
+		if( std::filesystem::exists(filename) )
+			throw std::invalid_argument( "output file exists please delete manually: " + filename );
 
 		// writing header
 		const uint32_t header_size = 60 + memo_size + 10*8/*tables pointers*/ + 1 /*compression level*/ + 7*4 /*compressed tables parks count*/ + 7*2 /*min deltas sizes*/;
@@ -316,8 +316,9 @@ public:
 		// when compressing table2 than in most cases 1 table1 park read up to end that increases IO requests
 		min_deltas_sizes[0] = 900 + std::max( 0, io_p-2 )*12;
 		// the tables 2-6 usually reads for 1 line point than it has very little impact on IO reqeusts
-		min_deltas_sizes[1] = min_deltas_sizes[2] = min_deltas_sizes[3] = min_deltas_sizes[4] = min_deltas_sizes[5]
+		min_deltas_sizes[1] = min_deltas_sizes[2] = min_deltas_sizes[3] = min_deltas_sizes[4]
 				= 770 + std::max( 0, io_p-4 ) * 7;
+		min_deltas_sizes[5] = min_deltas_sizes[1] - 20;
 		// by my measures C3 sizes for diffrerent plots varies in range 2300-2460.
 		// but c3 park alway read fully than small values bring 2 io request instead of 1
 		// Original size for this is 3000 bytes...

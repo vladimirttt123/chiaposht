@@ -172,7 +172,7 @@ public:
 			if( all_sizes[i] == 0 ) number_of_zeros++;
 		}
 		std::cout<< " min_park_size: " << min_park_size << "; max_park_size: " << max_park_size
-							<< ", number of zeros: " << number_of_zeros << "(" << (((uint32_t)(number_of_zeros/(double) parks_count))*100) << "%)" << std::endl;
+							<< ", number of zeros: " << number_of_zeros << "(" << ((number_of_zeros/(double) parks_count)*100) << "%)" << std::endl;
 	}
 
 	static void RestoreParkPositionAndSize( uint8_t end_size, uint64_t park_avg_size, uint64_t park_idx, uint8_t *prev_buf, uint8_t *cur_buf,

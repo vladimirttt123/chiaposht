@@ -10,7 +10,7 @@
 This branch was build to provide some level of compression to exists plots of any size. 
 This achived by realligning data inside plot and/or removing some data from tables 1 and 2.
 
-### Usage
+### Building
 Get the branch from git
 ```bash
 git clone https://github.com/vladimirttt123/chiaposht.git -b compression
@@ -27,9 +27,13 @@ cmake -DTHREADS_PER_LINE_POINT=6 ..
 cmake --build . -- -j 6
 ```
 For knoladge: the number of threads with parallel reading is multiplied by 16 for proof restore.
+Building process creates 2 usefull files executable *ProofOfSpace* that could be used to compress 
+and library usually with name *chiapos.cpython-312-x86_64-linux-gnu.so*
+(the exact name depends on python version and architecture)
 
-Now you have executable ProofOfSpace that could be used to compress and library usually with name
-chiapos.cpython-312-x86_64-linux-gnu.so (the exact name depends on python version and architecture)
+
+### Compression
+
 In order to compress use
 ```bash
 ./ProofOfSpace compress <level> <original.plot> -f <output.plot>
@@ -43,6 +47,14 @@ Now you can check timing of proof generation for plot with current compression o
 ```bash
 ./ProofOfSpace check 10 -f <plot.file>
 ```
+The compressed file format is not the same as original and can use more IO for proof look ups. 
+By default it is not much than the original plot format but if you need to do it even less
+it is possible to use *compress_io_optimize* command line parameter. 
+Increasing this parameter will creates slighlty bigger files but with less IO requests
+for proof look ups. The default value 0 is good and I do not think it need to be changed.
+
+### Farming
+
 To use compressed plots for farming you need replace the mentioned before 
 library (chiapos.cpython-312-x86_64-linux-gnu.so) in original chia instalation.
 The usual place for it 
