@@ -163,16 +163,20 @@ public:
 	}
 
 	void WriteNext( const uint8_t *stubs, uint8_t * deltas, uint64_t deltas_size ){
+		WriteNext( stubs, stubs + line_point_size, deltas, deltas_size );
+	}
+
+	void WriteNext( const uint8_t * line_point, const uint8_t *stubs, uint8_t * deltas, uint64_t deltas_size ){
 		assert( stubs_writer.GetPosition() < output_position + (uint64_t)parks_count*park_size ); // check for too many parks
 		assert( park_size >= deltas_size + line_point_size + overdraftPointerSize ); // is deltas fit to park
 
 		if( output_file != nullptr ){
-			stubs_writer.Write( stubs, line_point_size ); // first part of stub is the check point line point
+			stubs_writer.Write( line_point, line_point_size ); // first part of stub is the check point line point
 			deltas_size = fitDeltasToMin( deltas, deltas_size );
 			stubs_writer.Write( deltas, deltas_size ); // write deltas
 			uint32_t overdraft_size = deltas_size - min_deltas_size;
 			if( overdraft_size > 254 ) throw TooSmallMinDeltasException( min_deltas_size, overdraft_size );
-			stubs_writer.Write( stubs + line_point_size, stubs_size - overdraft_size ); // fill free space with stub
+			stubs_writer.Write( stubs, stubs_size - overdraft_size ); // fill free space with stub
 			// define what to write to end
 			deltas_sizes_storage->Add( park_idx, overdraft_size );
 			uint8_t end_buf[overdraftPointerSize];
@@ -180,7 +184,7 @@ public:
 			stubs_writer.Write( end_buf, overdraftPointerSize );
 
 			if( overdraft_size > 0 )
-				overdrafts_writer.Write( stubs + line_point_size + stubs_size - overdraft_size, overdraft_size );
+				overdrafts_writer.Write( stubs + stubs_size - overdraft_size, overdraft_size );
 
 			park_idx++;
 
@@ -463,7 +467,7 @@ private:
 			progress.ShowNext( i );
 
 			auto park = decompressor->GetParkReader( disk_file, table_no-1, i*kEntriesPerPark, kEntriesPerPark );
-			writer.WriteNext( park.stubs_buf(), park.deltas_buf(), park.deltas_size );
+			writer.WriteNext( park.check_point_buf(), park.stubs_buf(), park.deltas_buf(), park.deltas_size );
 		}
 
 		tinfo.new_table_size = writer.getWrittenSize();

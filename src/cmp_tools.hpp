@@ -337,7 +337,7 @@ public:
 			, stubs_size( Util::ByteAlign(stub_size_bits*(kEntriesPerPark-1))/8), stub_size_bits(stub_size_bits)
 			, first_line_point( Util::SliceInt128FromBytes( buf, 0, line_point_size_bits ) )
 			, deltas_size( ((uint32_t)buf[line_point_size+stubs_size]) | (((uint32_t)buf[line_point_size+stubs_size+ 1])<<8) )
-			, buf(buf), cur_stub_buf( buf + line_point_size ), src_stubs_buf(cur_stub_buf)
+			, buf(buf), cur_stub_buf( buf + line_point_size ), src_stubs_buf(cur_stub_buf), src_check_point_buf(buf)
 
 	{
 		if( deltas_size&0x8000 ){
@@ -360,7 +360,7 @@ public:
 			, stubs_size( Util::ByteAlign(stub_size_bits*(kEntriesPerPark-1))/8), stub_size_bits(stub_size_bits)
 			, first_line_point( Util::SliceInt128FromBytes( check_point_buf, 0, line_point_size_bits ) )
 			, deltas_size(deltas_size), buf(buf), cur_stub_buf( stubs_buf )
-			, src_deltas_buf( deltas_buf ), src_stubs_buf(cur_stub_buf)
+			, src_deltas_buf( deltas_buf ), src_stubs_buf(cur_stub_buf), src_check_point_buf( check_point_buf )
 
 	{
 		if( deltas_buf != nullptr && deltas_size > 0 )
@@ -372,6 +372,7 @@ public:
 	}
 
 	const uint8_t* stubs_buf() const { return src_stubs_buf; }
+	const uint8_t* check_point_buf() const { return src_check_point_buf; }
 
 	inline uint32_t DeltasSize() const { return deltas.size(); }
 	inline uint32_t GetNextIdx() const { return next_idx; }
@@ -396,7 +397,7 @@ public:
 
 private:
 	uint64_t stubs_sum = 0, deltas_sum = 0, last_delta = 0;
-	uint8_t *cur_stub_buf, *src_deltas_buf = nullptr, *src_stubs_buf;
+	uint8_t *cur_stub_buf, *src_deltas_buf = nullptr, *src_stubs_buf, *src_check_point_buf;
 	uint8_t stubs_start_bit = 0;
 	uint32_t next_idx = 0, same_deltas_count = 0;
 
