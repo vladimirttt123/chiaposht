@@ -327,8 +327,6 @@ public:
 		uint64_t total_saved = 0;
 		Timer total_timer;
 		std::vector<std::thread> delta_check_threads;
-
-
 		FileDisk output_file( filename );
 
 		for( uint32_t i = 1; i < 7; i++ ){
@@ -485,7 +483,7 @@ private:
 
 	uint64_t CompactC3Table( FileDisk * output_file, uint64_t output_position, uint64_t &total_saved, uint16_t min_deltas_sizes ){
 		const uint32_t park_size = EntrySizes::CalculateC3Size(k_size);
-		const uint64_t parks_count = decompressor ? decompressor->getParksCount(10) : (table_pointers[10] - table_pointers[9]) / park_size;
+		const uint64_t parks_count = decompressor ? decompressor->getParksCount(10) : ((table_pointers[10] - table_pointers[9]) / park_size);
 		DeltasStorage deltas(parks_count);
 		TableWriter writer( output_file, output_position, min_deltas_sizes, parks_count, 0, 0, &deltas );
 

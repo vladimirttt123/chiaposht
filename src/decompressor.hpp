@@ -140,7 +140,7 @@ public:
 				memcpy( buf, rbuf+overdraftPointerSize, delta_size = getNonZerosSize( rbuf+overdraftPointerSize, min_ds ) );
 			} else { // Read overdrafted part
 				memcpy( buf, rbuf+overdraftPointerSize, min_ds );
-				disk_file.Read( table_pointers[9] + main_park_size*parks_counts[6] + pos, buf+min_ds, delta_size );
+				disk_file.Read( table_pointers[9] + main_park_size*(uint64_t)parks_counts[6] + pos, buf+min_ds, delta_size );
 				delta_size += min_ds;
 			}
 
