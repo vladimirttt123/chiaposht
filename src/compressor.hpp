@@ -282,17 +282,23 @@ public:
 	}
 
 	void CompressTo( const std::string& filename, uint8_t level, uint8_t io_optimized = 0 ){
-		uint8_t bits_to_cut = cmp_level_to_bits_cut( level );
-		bool cut_table2 = bits_to_cut > 18;
-		if( cut_table2 ) bits_to_cut -= 11;
-		const int16_t io_p = std::min( 10, (int32_t) io_optimized );
-
-		std::cout << "Start compressing with level " << (int)level << " (" << (cut_table2?"table2 + ":"") << (int)bits_to_cut
-							<< "bits) and io_optimization " << io_p << std::endl << "Output file: " << filename
-							<< (filename == "plot.dat" ? "\n *** !!! SEEMS YOU MISSING OUTPUT FILE PARAMETER !!! *** " : "" ) << std::endl;
-
 		if( std::filesystem::exists(filename) )
 			throw std::invalid_argument( "output file exists please delete manually: " + filename );
+
+		uint8_t bits_to_cut = cmp_level_to_bits_cut( level );
+		bool cut_table2 = bits_to_cut > 18;
+		const int16_t io_p = std::min( 10, (int32_t) io_optimized );
+
+		if( decompressor ){
+			bits_to_cut = decompressor->GetNumberOfRemovedBits();
+			cut_table2 = decompressor->isTable2Cutted();
+		} else {
+			if( cut_table2 ) bits_to_cut -= 11;
+		}
+		std::cout << "Start to " << ( decompressor?"realign" : ( "compress with level " + std::to_string( (int)level ) ) )
+							<< " (" << (cut_table2?"table2 + ":"") << (int)bits_to_cut
+							<< "bits), io_optimization " << io_p << std::endl << "Output file: " << filename
+							<< (filename == "plot.dat" ? "\n *** !!! SEEMS YOU MISSING OUTPUT FILE PARAMETER !!! *** " : "" ) << std::endl;
 
 		// writing header
 		const uint32_t header_size = 60 + memo_size + 10*8/*tables pointers*/ + 1 /*compression level*/ + 7*4 /*compressed tables parks count*/ + 7*2 /*min deltas sizes*/;

@@ -152,7 +152,7 @@ public:
 			if( delta_size > EntrySizes::CalculateC3Size(k_size) )
 				throw std::runtime_error( "too big delta " + std::to_string( delta_size ) + ". possibly corrupted file ");
 			if( delta_size <= max_to_read )
-				disk_file.Read( table_pointers[9] + parks_counts[6]*3 + pos, buf, delta_size );
+				disk_file.Read( table_pointers[9] + parks_counts[6]*3ULL + pos, buf, delta_size );
 		}
 
 		return delta_size;
