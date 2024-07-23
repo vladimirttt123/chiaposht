@@ -70,16 +70,6 @@ public:
 			, new_deltas( new DeltasStorage( parks_count ) )
 	{}
 
-	// check all partially saved position could be restored
-	std::thread CheckNewDeltas(){
-		return std::thread( []( DeltasStorage * deltas){
-			if( !deltas->IsDeltasPositionRestorable() ){
-				delete deltas;
-				throw std::runtime_error( "couldn't restore position of deltas" );
-			}
-			delete deltas;
-		}, new_deltas.release() );
-	}
 private:
 	static uint8_t RemovedBitsNumber( uint8_t table_no, const Decompressor * decompressor ){
 		switch(table_no){
@@ -332,7 +322,6 @@ public:
 
 		uint64_t total_saved = 0;
 		Timer total_timer;
-		std::vector<std::thread> delta_check_threads;
 		FileDisk output_file( filename );
 
 		for( uint32_t i = 1; i < 7; i++ ){
@@ -350,8 +339,8 @@ public:
 			tinfo.new_deltas->showStats(); // DEBUG
 			total_saved += ShowTableSaved( tinfo.table_size, tinfo.new_table_size );
 
-			tinfo.new_deltas->IsDeltasPositionRestorable();
-			delta_check_threads.push_back( tinfo.CheckNewDeltas() );
+			if( !tinfo.new_deltas->IsDeltasPositionRestorable() )
+				throw std::runtime_error( "couldn't restore position of deltas" );
 		}
 
 		std::cout << "Tables 7, C1, C2: copy     " << std::flush;
@@ -364,9 +353,6 @@ public:
 
 		std::cout << "Table C3: " << (decompressor? "realign  " : "compacting" ) << "       " << std::flush;
 		parks_count[6] = CompactC3Table( &output_file, new_table_pointers[9], total_saved, min_deltas_sizes[6] );
-
-
-		for( uint32_t i = 0; i < delta_check_threads.size(); i++ ) delta_check_threads[i].join();
 
 		// invert table pointers - TODO check endians and skip if not needed
 		for( uint32_t i = 0; i < 10; i++ ){
