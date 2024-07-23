@@ -312,46 +312,64 @@ private:
 struct ParkReader{
 public:
 	const bool is_compressed;
-	const uint64_t line_point_size, line_point_size_bits, stubs_size, stub_size_bits;
+	const uint64_t line_point_size, line_point_size_bits, stubs_size, stub_size_bits, overdraft_pos = 0;
 	const uint128_t first_line_point;
-	uint16_t deltas_size;
+	uint16_t overdraft_size = 0, deltas_size;
 	uint8_t *buf;
 	std::vector<uint8_t> deltas;
 
+	// used to create park reader with single point
 	ParkReader( uint8_t *buf, uint64_t line_point_size_bits )
 			: is_compressed(false), line_point_size(0), line_point_size_bits(line_point_size_bits)
 			, stubs_size(0),  stub_size_bits(0)
 			, first_line_point( Util::SliceInt128FromBytes( buf, 0, line_point_size_bits ) )
 	{	}
 
+	// used for uncompressed plots
 	ParkReader( uint8_t *buf, uint64_t line_point_size_bits, uint64_t stub_size_bits, uint32_t max_deltas_size, uint8_t table_no )
 			: is_compressed(false), line_point_size( (line_point_size_bits+7)/8 ), line_point_size_bits(line_point_size_bits)
 			, stubs_size( Util::ByteAlign(stub_size_bits*(kEntriesPerPark-1))/8), stub_size_bits(stub_size_bits)
 			, first_line_point( Util::SliceInt128FromBytes( buf, 0, line_point_size_bits ) )
 			, deltas_size( ((uint32_t)buf[line_point_size+stubs_size]) | (((uint32_t)buf[line_point_size+stubs_size+ 1])<<8) )
 			, buf(buf), cur_stub_buf( buf + line_point_size ), src_stubs_buf(cur_stub_buf), src_check_point_buf(buf)
-
 	{
-		if( deltas_size&0x8000 ){
-			if( deltas_size & 0x7fff )
-				throw std::runtime_error( "Unsupported case of uncompressed deltas" );
-			deltas_size = 0;
-		}
-		if( deltas_size > max_deltas_size )
-			throw std::runtime_error( "incorrect deltas size " + std::to_string( deltas_size ) );
+		uint8_t *deltas_buf = buf + line_point_size + stubs_size + 2/* uint16 of deltas sizes */;
 
-		uint8_t *deltas_buf = buf + line_point_size + stubs_size + 2;
-		if( deltas_size > 0 )
-			deltas = Encoding::ANSDecodeDeltas( deltas_buf , deltas_size, kEntriesPerPark - 1, kRValues[table_no-1] );
+		if( deltas_size&0x8000 ){ // this is uncompressed deltas
+			deltas_size &= 0x7fff; // this is real size of uncompressed deltas
+			if( deltas_size > 0 ) {
+				if( deltas_size > 2 )
+					throw std::runtime_error( "Unsupported case of uncompressed deltas" );
+
+				// this could be only on last park
+				// the ANS does not encode such lengthes than we add artifitially one or 2 entries just to compress them
+				// this additional entries would never be mentioned from higer table and than shouldn't do any harm.
+				deltas.push_back( deltas_buf[0] );
+				deltas.push_back( deltas_buf[1] );
+				deltas.push_back( 0 );
+				uint32_t new_size = Encoding::ANSEncodeDeltas( deltas, kRValues[table_no-1], deltas_buf );
+				if( new_size == 0 || new_size > max_deltas_size )
+					throw std::runtime_error( "Unsupported case of uncompressed deltas with short length" );
+				deltas_size = new_size;
+			}
+		} else {
+			if( deltas_size > max_deltas_size )
+				throw std::runtime_error( "incorrect deltas size " + std::to_string( deltas_size ) );
+
+			if( deltas_size > 0 )
+				deltas = Encoding::ANSDecodeDeltas( deltas_buf , deltas_size, kEntriesPerPark - 1, kRValues[table_no-1] );
+		}
 	}
 
+	// used for compressed plots
 	// WARNING variable buf is stored and deleted in destructor
 	ParkReader( uint8_t *buf, uint8_t*check_point_buf, uint8_t*stubs_buf, uint8_t *deltas_buf, uint16_t deltas_size,
-						 uint64_t line_point_size_bits, uint64_t stub_size_bits, uint8_t table_no )
+						 uint64_t line_point_size_bits, uint64_t stub_size_bits, uint8_t table_no,
+						 uint64_t overdraft_pos, uint16_t overdraf_size )
 			: is_compressed(true), line_point_size( (line_point_size_bits+7)/8 ), line_point_size_bits(line_point_size_bits)
 			, stubs_size( Util::ByteAlign(stub_size_bits*(kEntriesPerPark-1))/8), stub_size_bits(stub_size_bits)
-			, first_line_point( Util::SliceInt128FromBytes( check_point_buf, 0, line_point_size_bits ) )
-			, deltas_size(deltas_size), buf(buf), cur_stub_buf( stubs_buf )
+			, overdraft_pos(overdraft_pos), first_line_point( Util::SliceInt128FromBytes( check_point_buf, 0, line_point_size_bits ) )
+			, overdraft_size(overdraf_size), deltas_size(deltas_size), buf(buf), cur_stub_buf( stubs_buf )
 			, src_deltas_buf( deltas_buf ), src_stubs_buf(cur_stub_buf), src_check_point_buf( check_point_buf )
 
 	{
@@ -359,16 +377,17 @@ public:
 			deltas = Encoding::ANSDecodeDeltas( deltas_buf , deltas_size, kEntriesPerPark - 1, kRValues[table_no] );
 	}
 
-	uint8_t * deltas_buf() const {
-		return is_compressed ? src_deltas_buf : (buf + line_point_size + stubs_size + 2);
-	}
+	inline uint8_t * deltas_buf() const { return is_compressed ? src_deltas_buf : (buf + line_point_size + stubs_size + 2);}
+	inline const uint8_t* stubs_buf() const { return src_stubs_buf; }
+	inline uint8_t * stubs_overdraft_buf() {return src_stubs_buf + stubs_size - overdraft_size; }
 
-	const uint8_t* stubs_buf() const { return src_stubs_buf; }
 	const uint8_t* check_point_buf() const { return src_check_point_buf; }
 
+	inline uint16_t StubsLinePointsCount() const { return (stubs_size-overdraft_size)*8/stub_size_bits; }
 	inline uint32_t DeltasSize() const { return deltas.size(); }
 	inline uint32_t GetNextIdx() const { return next_idx; }
-	inline uint32_t HasNext() const { return next_idx <= deltas.size(); }
+	inline bool HasNext() const { return next_idx <= deltas.size(); }
+	inline bool HasNextInStub() const { return HasNext() && next_idx <= StubsLinePointsCount(); }
 	inline uint32_t GetSameDeltasCount() const { return same_deltas_count; }
 
 	uint128_t NextLinePoint( uint32_t skip = 0 ){
@@ -416,6 +435,7 @@ private:
 };
 
 
+// Checks matches at table 2 level
 struct LinePointMatcher{
 	const uint8_t k_size;
 	F1Calculator f1;
@@ -515,6 +535,7 @@ struct Table2MatchData{
 	std::mutex mut;
 	MatchVector left, right;
 	uint128_t matched_left = 0, matched_right = 0;
+	uint16_t matchied_right_idx;
 	Table2MatchData() :left(5), right(kEntriesPerPark) {}
 
 	// add line point to matching data
@@ -542,6 +563,7 @@ struct Table2MatchData{
 			if( validator.isYsMatch( right.points[i].ys ) ){
 				matched_left = Encoding::SquareToLinePoint( x1, x2 );
 				matched_right = Encoding::SquareToLinePoint( right.points[i].x1, right.points[i].x2 );
+				matchied_right_idx = right.points[i].orig_idx;
 			}
 	}
 
