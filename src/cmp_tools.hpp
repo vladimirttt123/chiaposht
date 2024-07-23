@@ -365,7 +365,7 @@ public:
 	// WARNING variable buf is stored and deleted in destructor
 	ParkReader( uint8_t *buf, uint8_t*check_point_buf, uint8_t*stubs_buf, uint8_t *deltas_buf, uint16_t deltas_size,
 						 uint64_t line_point_size_bits, uint64_t stub_size_bits, uint8_t table_no,
-						 uint64_t overdraft_pos, uint16_t overdraf_size )
+						 uint64_t overdraft_pos = 0, uint16_t overdraf_size = 0 )
 			: is_compressed(true), line_point_size( (line_point_size_bits+7)/8 ), line_point_size_bits(line_point_size_bits)
 			, stubs_size( Util::ByteAlign(stub_size_bits*(kEntriesPerPark-1))/8), stub_size_bits(stub_size_bits)
 			, overdraft_pos(overdraft_pos), first_line_point( Util::SliceInt128FromBytes( check_point_buf, 0, line_point_size_bits ) )
