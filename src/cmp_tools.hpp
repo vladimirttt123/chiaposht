@@ -511,8 +511,9 @@ public:
 
 
 struct LinePointToMatch{
-	uint16_t orig_idx;
-	uint64_t x1, x2, ys;
+	uint16_t orig_idx = 0;
+	uint64_t x1 = 0, x2 = 0, ys = 0;
+	inline uint128_t LinePoint() const { return  Encoding::SquareToLinePoint( x1, x2 );}
 };
 
 struct MatchVector{
@@ -552,13 +553,14 @@ struct Table2MatchData{
 
 	void AddLeft( uint64_t x1, uint64_t x2, LinePointMatcher &validator ){
 		// std::lock_guard<std::mutex> lk(mut);
-		if( matched_left != 0 ) return; // do not add to mathed
+		if( matched_left != 0 ) return; // match done than do not add to matched
 		left.Add( -1, x1, x2, validator.ResetLP1( x1, x2 ) );
 		// validate left to all exists right
+		// some points could be validated twice but this is the price for not perform sync
 		for( uint32_t i = 0; i < right.size && matched_left == 0; i++ )
 			if( validator.isYsMatch( right.points[i].ys ) ){
 				matched_left = Encoding::SquareToLinePoint( x1, x2 );
-				matched_right = Encoding::SquareToLinePoint( right.points[i].x1, right.points[i].x2 );
+				matched_right = right.points[i].LinePoint();
 				matched_right_idx = right.points[i].orig_idx;
 			}
 	}
@@ -576,7 +578,7 @@ struct Table2MatchData{
 		for( uint32_t i = 0; i < left.size && matched_left == 0; i++ )
 			if( validator.isYsMatch( left.points[i].ys ) ){
 				matched_right = Encoding::SquareToLinePoint( x1, x2 );
-				matched_left = Encoding::SquareToLinePoint( left.points[i].x1, left.points[i].x2 );
+				matched_left = left.points[i].LinePoint();
 				matched_right_idx = idx;
 			}
 	}
