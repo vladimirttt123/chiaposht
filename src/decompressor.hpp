@@ -47,7 +47,7 @@ public:
 		memcpy( min_deltas_sizes, other.min_deltas_sizes, 7*sizeof(uint16_t) );
 	}
 
-	// Check if plot represented by this filename is compressed. It it is returnes decompressor for it.
+	// Check if plot represented by this filename is compressed. If it is the case than returnes decompressor for it.
 	static Decompressor* CheckForCompressed( const std::string& filename, uint16_t memo_size, uint8_t k, const uint8_t *plot_id ){
 		ReadFileWrapper disk_file( filename );
 		uint8_t buf[4];
@@ -60,6 +60,7 @@ public:
 		return nullptr;
 	}
 
+	// Show info about the current plot
 	void ShowInfo( bool is_short = true ){
 		if( is_short ) std::cout << program_header << std::endl;
 
@@ -82,6 +83,7 @@ public:
 		init( disk_file, memo_size, k, plot_id );
 	}
 
+	// read the static data from header of compressed plot
 	void init( ReadFileWrapper& disk_file, uint16_t memo_size, uint8_t k, const uint8_t *plot_id ){
 		k_size = k;
 		memcpy( this->plot_id, plot_id, 32 );
@@ -165,7 +167,8 @@ public:
 		if( line_point != 0 ) return line_point;
 
 		switch( table_no ){
-		case 0:
+		case 0: // The points from first table in case of compression should be taken from cache.
+						// beenig in this case means exception that could lead to incorrect proof
 			line_point = ReadRealLinePoint( file, table_no, position );
 			if( bits_cut_no > 0 ){
 				std::cout << "tcompress: Missing line point cache. plot: ( k: " << (int)k_size
@@ -183,9 +186,91 @@ public:
 			if( table2_cut ){
 				auto x1x2 = Encoding::LinePointToSquare( line_point << 11 );
 
-				if( x1x2.second + kEntriesPerPark < x1x2.second )
-					throw std::runtime_error( "unsupported case of moving first" );
+				if( x1x2.second + kEntriesPerPark >= x1x2.first )
+					throw std::runtime_error( "unsupported case of moving first" ); // this case could be supported too... hope it is rare enough
 
+#define NEW_LOOKUP
+#ifdef NEW_LOOKUP
+				Table2MatchData match_data;
+				LinePointMatcher validator( k_size, plot_id );
+
+				// Read left line point
+				uint128_t valid_lp1 = LPCache.GetLinePoint( k_size, plot_id, 0, x1x2.first );
+				std::unique_ptr<std::thread,ThreadDeleter> lp1_thread;
+				if( valid_lp1 == 0 )
+					lp1_thread.reset( new std::thread( [this, &match_data, &validator](uint128_t lp ){
+								match_data.AddLeft( RestoreLinePoint(lp), validator );},
+																					 ReadRealLinePoint( file, 0, x1x2.first )  ) );
+				else match_data.AddLeft( valid_lp1, validator );
+
+
+				// Read right line points
+				auto return_found = [&match_data, this, &x1x2, &line_point, &position](){
+					x1x2.second += match_data.matched_right_idx;
+					line_point =  Encoding::SquareToLinePoint( x1x2.first, x1x2.second + match_data.matched_right_idx );
+					LPCache.AddLinePoint( k_size, plot_id, 0, x1x2.first, match_data.matched_left );
+					LPCache.AddLinePoint( k_size, plot_id, 0, x1x2.second + match_data.matched_right_idx, match_data.matched_right );
+					return LPCache.AddLinePoint( k_size, plot_id, 1, position, line_point );
+				};
+				auto run_threads = [this, &match_data, &position, &x1x2]( uint128_t line_points[], uint16_t from_idx, uint16_t line_points_count ){
+					if( line_points_count == from_idx ) return; // nothing to do
+					std::atomic_uint_fast16_t next_point_idx = from_idx;
+					auto thread_func = [this, &next_point_idx, &match_data, &line_points_count, &line_points, &position, &x1x2](){
+						LinePointMatcher validator( k_size, plot_id );
+						for( uint16_t i = next_point_idx.fetch_add(1, std::memory_order_relaxed);
+								 match_data.matched_left == 0/*not found yet*/ && i < line_points_count;
+								 i = next_point_idx.fetch_add(1, std::memory_order_relaxed) ){
+							if( (i+1) < line_points_count && line_points[i] == line_points[i+1] ) continue; // equally cut points evaluated in the same thread
+							auto restored_lp = RestoreLinePoint( line_points[i] );
+							if( restored_lp == 0 )
+								std::cout<<"";
+							if( CheckRestored( restored_lp, x1x2.second + i, position, false ) ){
+								match_data.AddRight( i, restored_lp, validator );
+								if( i > 0 && line_points[i-1] == line_points[i] )
+									while(  match_data.matched_left == 0/*not found yet*/ && (restored_lp = FindNextLinePoint(restored_lp+1, bits_cut_no) ) )
+										match_data.AddRight( --i, restored_lp, validator );
+							}
+						};
+					};
+
+					std::vector<std::thread> threads;
+
+					for( uint32_t i = 0; i < THREADS_PER_LP; i++ )
+						threads.emplace_back( thread_func );
+					for (auto& t : threads)  t.join(); // wait for threads to not fail...
+				};
+
+				uint128_t line_points[kEntriesPerPark];
+				for( uint16_t count_lps = 0; count_lps < kEntriesPerPark; ){
+					uint16_t first_lp = count_lps;
+					uint16_t pos_in_park = (x1x2.second + count_lps)% kEntriesPerPark;
+					auto pReader = GetParkReader( file, 0, x1x2.second + count_lps, std::max( (uint16_t)2, pos_in_park ) );
+
+					for( line_points[count_lps++] = pReader.NextLinePoint( pos_in_park );
+							 count_lps < kEntriesPerPark && pReader.HasNextInStub(); )
+						line_points[count_lps++] = pReader.NextLinePoint();
+
+					run_threads( line_points, first_lp, count_lps ); // find in first part
+					if( match_data.matched_left != 0 ) return return_found();// return if match found
+
+					first_lp = count_lps;
+
+					if( pReader.overdraft_size > 0 && count_lps < kEntriesPerPark ){
+						// read overdraft and check its points
+						ReadFileWrapper disk_file( &file );
+						disk_file.Read( pReader.overdraft_pos, pReader.stubs_overdraft_buf(), pReader.overdraft_size );
+
+						line_points[count_lps++] = pReader.NextLinePoint( );
+						while( count_lps < kEntriesPerPark && pReader.HasNext() )
+							line_points[count_lps++] = pReader.NextLinePoint();
+
+						run_threads( line_points, first_lp, count_lps );
+						if( match_data.matched_left != 0 ) return return_found();// return if match found
+					}
+				}
+				// IF we are here than we can't restore this line point
+				throw std::runtime_error( "Cannot restore line point of table 2" );
+#else // NEW_LOOKUP
 				uint128_t valid_lp1 = LPCache.GetLinePoint( k_size, plot_id, 0, x1x2.first );
 				std::unique_ptr<std::thread> lp1_thread;
 				if( valid_lp1 == 0 )
@@ -212,26 +297,26 @@ public:
 				std::vector<std::thread> threads;
 				std::atomic_int32_t next_point_idx = 0, found_at_idx = -1;
 				auto thread_func = [this, &restored_points, &next_point_idx, &read_points, &position, &x1x2, &valid_lp1, &found_at_idx](){
-						LinePointMatcher validator( k_size, plot_id, valid_lp1 );
+					LinePointMatcher validator( k_size, plot_id, valid_lp1 );
 
-						for( int32_t i = next_point_idx.fetch_add(1, std::memory_order_relaxed);
-								 found_at_idx.load(std::memory_order_relaxed) == -1 && i < (int32_t)read_points.size();
-								 i = next_point_idx.fetch_add(1, std::memory_order_relaxed) ){
-							if( i > 0 && read_points[i] == read_points[i-1] ) continue; // same point evaluated in same threads
-							restored_points[i] = RestoreLinePoint( read_points[i] );
-							if( CheckRestored( restored_points[i], x1x2.second + i, position, false ) && validator.CheckMatch( restored_points[i] ) )
-								found_at_idx.store( i, std::memory_order_relaxed );
-							else {
-								while( ++i < (int32_t)read_points.size() && read_points[i-1] == read_points[i] && found_at_idx.load(std::memory_order_relaxed ) == -1 ){
-									restored_points[i] = restored_points[i-1] == 0 ? 0 : FindNextLinePoint( restored_points[i-1]+1, bits_cut_no );
-									if( CheckRestored( restored_points[i], x1x2.second + i, position, false ) && validator.CheckMatch( restored_points[i] ) ){
-										found_at_idx.store(i ,std::memory_order_relaxed );
-										return;
-									}
+					for( int32_t i = next_point_idx.fetch_add(1, std::memory_order_relaxed);
+							 found_at_idx.load(std::memory_order_relaxed) == -1 && i < (int32_t)read_points.size();
+							 i = next_point_idx.fetch_add(1, std::memory_order_relaxed) ){
+						if( i > 0 && read_points[i] == read_points[i-1] ) continue; // same point evaluated in same threads
+						restored_points[i] = RestoreLinePoint( read_points[i] );
+						if( CheckRestored( restored_points[i], x1x2.second + i, position, false ) && validator.CheckMatch( restored_points[i] ) )
+							found_at_idx.store( i, std::memory_order_relaxed );
+						else {
+							while( ++i < (int32_t)read_points.size() && read_points[i-1] == read_points[i] && found_at_idx.load(std::memory_order_relaxed ) == -1 ){
+								restored_points[i] = restored_points[i-1] == 0 ? 0 : FindNextLinePoint( restored_points[i-1]+1, bits_cut_no );
+								if( CheckRestored( restored_points[i], x1x2.second + i, position, false ) && validator.CheckMatch( restored_points[i] ) ){
+									found_at_idx.store(i ,std::memory_order_relaxed );
+									return;
 								}
 							}
 						}
-					};
+					}
+				};
 
 				if( lp1_thread ) lp1_thread->join();
 				CheckRestored( valid_lp1, x1x2.first, position );
@@ -285,6 +370,7 @@ public:
 
 				LPCache.AddLinePoint( k_size, plot_id, 0, x1x2.first, valid_lp1, restored_points_first.size() > 0 );
 				LPCache.AddLinePoint( k_size, plot_id, 0, x1x2.second, valid_lp2, restored_points_first.size() > 0 );
+#endif // NEW_LOOKUP
 
 			}	else if( bits_cut_no > 0 )
 			{ // Now we need to fine line_point from table 1 to cache them
@@ -331,6 +417,8 @@ public:
 			return LPCache.AddLinePoint( k_size, plot_id, table_no, position, ReadRealLinePoint( file, table_no, position ) );
 		}
 	}
+
+
 	ParkReader GetParkReader( std::ifstream& file, // this need for parallel reading - will support it later
 													 uint8_t table_no /*0 is a first table*/,
 													 uint64_t position, int16_t need_num_entries = -1 /* -1 is automatic by position */ ){
@@ -361,8 +449,7 @@ public:
 		const uint32_t max_deltas_size = EntrySizes::CalculateMaxDeltasSize( k_size, table_no + 1 );
 
 
-		if( need_num_entries == 1 ){
-			// Simplest case read first line point at the begining of park
+		if( need_num_entries == 1 ){ // Simplest case read first line point at the begining of park
 			uint8_t line_point_buf[cur_line_point_size + 7];
 			disk_file.Read( table_pointers[table_no] + main_park_size*park_idx, line_point_buf, cur_line_point_size );
 			return ParkReader( line_point_buf, cur_line_point_size_bits );
@@ -389,6 +476,7 @@ public:
 			// all deltas in overdraft in original file format than read them
 			disk_file.Read( table_pointers[table_no] + main_park_size*parks_counts[table_no] + overdraft_pos, deltas_buf, overdraft_size );
 			deltas_size = overdraft_size;
+			overdraft_size = 0; // clear to say parker all read.
 		} else {
 			stubs_buf += min_deltas_sizes[table_no] + overdraft_size; // now fix start of stubs buf
 			// here for improved file format
@@ -396,19 +484,21 @@ public:
 				deltas_size = getNonZerosSize( deltas_buf, min_deltas_sizes[table_no] );
 			else {
 				deltas_size = min_deltas_sizes[table_no] + overdraft_size;
+				overdraft_pos += table_pointers[table_no] + main_park_size*parks_counts[table_no];// fix overdraft position to real in file.
 
 				// time to define do we need to read overdraft or not
 				uint32_t real_stubs_size = cur_stubs_size - overdraft_size;
 				uint32_t number_of_entries_in_stubs = real_stubs_size*8/cur_stub_size_bits;
-				if( (number_of_entries_in_stubs+1/*fir first line point*/) < (uint32_t)need_num_entries ) {
-					disk_file.Read( table_pointers[table_no] + main_park_size*parks_counts[table_no] + overdraft_pos,
-												 stubs_buf + cur_stubs_size - overdraft_size, overdraft_size );
+				if( (number_of_entries_in_stubs+1/*include first line point*/) < (uint32_t)need_num_entries ) {
+					disk_file.Read( overdraft_pos, stubs_buf + cur_stubs_size - overdraft_size, overdraft_size );
+					overdraft_size = 0; // clear to say parker all read
 				}
 			}
 		}
 
-		return ParkReader( full_buf, line_point_buf, stubs_buf, deltas_buf,
-											deltas_size, cur_line_point_size_bits, cur_stub_size_bits, table_no /* used to unpack deltas */ );
+		return ParkReader( full_buf, line_point_buf, stubs_buf, deltas_buf, deltas_size,
+											cur_line_point_size_bits, cur_stub_size_bits, table_no /* used to unpack deltas */,
+											overdraft_pos, overdraft_size );
 
 	}
 

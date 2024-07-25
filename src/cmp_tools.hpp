@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <thread>
 #ifndef _WIN32
 #include <unistd.h>
 #endif
@@ -512,8 +513,6 @@ public:
 struct LinePointToMatch{
 	uint16_t orig_idx;
 	uint64_t x1, x2, ys;
-	LinePointToMatch( uint16_t idx = 0, uint64_t x1 = 0, uint64_t x2 = 0, uint64_t ys = 0 )
-			:orig_idx(idx), x1(x1),x2(x2), ys(ys) {}
 };
 
 struct MatchVector{
@@ -524,10 +523,7 @@ struct MatchVector{
 
 	void Add( uint16_t idx, uint64_t x1, uint64_t x2, uint64_t ys ){
 		auto cur_idx = size.fetch_add(1, std::memory_order_relaxed);
-		points[cur_idx].ys = ys;
-		points[cur_idx].x1 = x1;
-		points[cur_idx].x1 = x2;
-		points[cur_idx].orig_idx = idx;
+		points[cur_idx] = { idx, x1, x2, ys };
 	}
 };
 
@@ -535,8 +531,8 @@ struct Table2MatchData{
 	std::mutex mut;
 	MatchVector left, right;
 	uint128_t matched_left = 0, matched_right = 0;
-	uint16_t matchied_right_idx;
-	Table2MatchData() :left(5), right(kEntriesPerPark) {}
+	uint16_t matched_right_idx = 0;
+	Table2MatchData() :left(5), right(kEntriesPerPark+10) {}
 
 	// add line point to matching data
 	// and returns if status of matched changed after this adding
@@ -563,7 +559,7 @@ struct Table2MatchData{
 			if( validator.isYsMatch( right.points[i].ys ) ){
 				matched_left = Encoding::SquareToLinePoint( x1, x2 );
 				matched_right = Encoding::SquareToLinePoint( right.points[i].x1, right.points[i].x2 );
-				matchied_right_idx = right.points[i].orig_idx;
+				matched_right_idx = right.points[i].orig_idx;
 			}
 	}
 
@@ -581,8 +577,17 @@ struct Table2MatchData{
 			if( validator.isYsMatch( left.points[i].ys ) ){
 				matched_right = Encoding::SquareToLinePoint( x1, x2 );
 				matched_left = Encoding::SquareToLinePoint( left.points[i].x1, left.points[i].x2 );
+				matched_right_idx = idx;
 			}
 	}
+};
+
+struct ThreadDeleter{
+	void operator()(std::thread * p) const
+	{
+		p->join();
+		delete p;
+	};
 };
 
 } // namespace tcompress
