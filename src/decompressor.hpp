@@ -228,8 +228,6 @@ public:
 								 i = next_point_idx.fetch_add(1, std::memory_order_relaxed) ){
 							if( (i+1) < line_points_count && line_points[i] == line_points[i+1] ) continue; // equally cut points evaluated in the same thread
 							auto restored_lp = RestoreLinePoint( line_points[i] );
-							if( restored_lp == 0 )
-								std::cout<<"";
 							if( CheckRestored( restored_lp, x1x2.second + i, position, false ) ){
 								match_data.AddRight( i, restored_lp, validator );
 								if( i > 0 && line_points[i-1] == line_points[i] )
@@ -249,7 +247,7 @@ public:
 				for( uint16_t count_lps = 0; count_lps < kEntriesPerPark; ){
 					uint16_t first_lp = count_lps;
 					uint16_t pos_in_park = (x1x2.second + count_lps)% kEntriesPerPark;
-					auto pReader = GetParkReader( file, 0, x1x2.second + count_lps, std::max( (uint16_t)2, pos_in_park ) );
+					auto pReader = GetParkReader( file, 0, x1x2.second + count_lps, std::max( 2, pos_in_park + 1 ) );
 
 					for( line_points[count_lps++] = pReader.NextLinePoint( pos_in_park );
 							 count_lps < kEntriesPerPark && pReader.HasNextInStub(); )
@@ -518,7 +516,6 @@ public:
 		return ParkReader( full_buf, line_point_buf, stubs_buf, deltas_buf, deltas_size,
 											cur_line_point_size_bits, cur_stub_size_bits, table_no /* used to unpack deltas */,
 											overdraft_pos, overdraft_size );
-
 	}
 
 private:
