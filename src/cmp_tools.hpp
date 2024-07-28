@@ -450,7 +450,7 @@ struct LinePointMatcher{
 	F1Calculator f1;
 	FxCalculator f_d2, f_d3;
 
-	LinePointMatcher( uint8_t k_size, uint8_t * plot_id, uint128_t lp1 = 0 )
+	LinePointMatcher( uint8_t k_size, const uint8_t * plot_id, uint128_t lp1 = 0 )
 			: k_size(k_size), f1(k_size,plot_id), f_d2( k_size, 2 ), f_d3( k_size, 3 ), ys1(CalculateYs( lp1) )
 	{	}
 

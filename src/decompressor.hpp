@@ -17,6 +17,7 @@
 #include "entry_sizes.hpp"
 #include "encoding.hpp"
 #include "cmp_tools.hpp"
+#include "cmp_reconstrutor.hpp"
 
 namespace TCompress {
 
@@ -185,6 +186,52 @@ public:
 				uint128_t valid_lp1 = LPCache.GetLinePoint( k_size, plot_id, 0, x1x2.first );
 				// if it is possible that left point in cache may be we need to look for right point in cache too?
 
+#define NEW_METHOD
+#ifdef NEW_METHOD_
+				Reconstructor rec( k_size, plot_id, bits_cut_no, valid_lp1 );
+				if( valid_lp1 == 0 )
+					rec.setLeftLinePoint( ReadLinePointFull( file, 0, x1x2.first ) );
+
+				auto return_found = [this, &x1x2, &line_point, &position, &rec](){
+					x1x2.second += rec.right_LP_idx();
+					line_point =  Encoding::SquareToLinePoint( x1x2.first, x1x2.second + match_data.matched_right_idx );
+					LPCache.AddLinePoint( k_size, plot_id, 0, x1x2.first, match_data.matched_left );
+					LPCache.AddLinePoint( k_size, plot_id, 0, x1x2.second + match_data.matched_right_idx, match_data.matched_right );
+					return LPCache.AddLinePoint( k_size, plot_id, 1, position, line_point );
+				};
+
+
+				for( uint16_t count_lps = 0; count_lps < kEntriesPerPark; ){
+					uint16_t first_lp = count_lps;
+					uint16_t pos_in_park = (x1x2.second + count_lps)% kEntriesPerPark;
+					auto pReader = GetParkReader( file, 0, x1x2.second + count_lps, std::max( 2, pos_in_park + 1 ) );
+
+					for( rec.addRightLinePoint( pReader.NextLinePoint( pos_in_park ) );
+							 rec.get_processed_count() < kEntriesPerPark && pReader.HasNextInStub(); )
+						rec.addRightLinePoint( pReader.NextLinePoint() );
+
+					if( rec.Run() )
+					run_threads( line_points, first_lp, count_lps ); // find in first part
+					if( match_data.matched_left != 0 ) return return_found();// return if match found
+
+					first_lp = count_lps;
+
+					if( pReader.overdraft_size > 0 && count_lps < kEntriesPerPark ){
+						// read overdraft and check its points
+						ReadFileWrapper disk_file( &file );
+						disk_file.Read( pReader.overdraft_pos, pReader.stubs_overdraft_buf(), pReader.overdraft_size );
+
+						line_points[count_lps++] = pReader.NextLinePoint( );
+						while( count_lps < kEntriesPerPark && pReader.HasNext() )
+							line_points[count_lps++] = pReader.NextLinePoint();
+
+						run_threads( line_points, first_lp, count_lps );
+						if( match_data.matched_left != 0 ) return return_found();// return if match found
+					}
+				}
+#else
+
+
 				Table2MatchData match_data;
 				LinePointMatcher validator( k_size, plot_id );
 
@@ -204,9 +251,9 @@ public:
 				// Read right line points
 				auto return_found = [&match_data, this, &x1x2, &line_point, &position](){
 					x1x2.second += match_data.matched_right_idx;
-					line_point =  Encoding::SquareToLinePoint( x1x2.first, x1x2.second + match_data.matched_right_idx );
+					line_point =  Encoding::SquareToLinePoint( x1x2.first, x1x2.second );
 					LPCache.AddLinePoint( k_size, plot_id, 0, x1x2.first, match_data.matched_left );
-					LPCache.AddLinePoint( k_size, plot_id, 0, x1x2.second + match_data.matched_right_idx, match_data.matched_right );
+					LPCache.AddLinePoint( k_size, plot_id, 0, x1x2.second, match_data.matched_right );
 					return LPCache.AddLinePoint( k_size, plot_id, 1, position, line_point );
 				};
 				auto run_threads = [this, &match_data, &position, &x1x2]( uint128_t line_points[], uint16_t from_idx, uint16_t line_points_count ){
@@ -279,7 +326,7 @@ public:
 
 				// IF we are here than we can't restore this line point
 				throw std::runtime_error( "Cannot restore line point of table 2 at position " + std::to_string(position) );
-
+#endif // NEW_METHOD_
 
 			}	else if( bits_cut_no > 0 )
 			{ // Now we need to fine line_point from table 1 to cache them
