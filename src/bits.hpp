@@ -101,11 +101,11 @@ public:
     template <class>
     friend class BitsGeneric;
 
-    BitsGeneric<T>() noexcept { this->last_size_ = 0; }
+		BitsGeneric() noexcept { this->last_size_ = 0; }
 
     // Converts from unit64_t to Bits. If the number of bits of value is smaller than size, adds 0
     // bits at the beginning. i.e. Bits(5, 10) = 0000000101
-    BitsGeneric<T>(uint128_t value, uint32_t size)
+		BitsGeneric(uint128_t value, uint32_t size)
     {
         if (size > 64) {
             // std::cout << "SPLITTING BitsGeneric" << std::endl;
@@ -142,7 +142,7 @@ public:
 
     // Copy the content of another Bits object. If the size of the other Bits object is smaller
     // than 'size', adds 0 bits at the beginning.
-    BitsGeneric<T>(const BitsGeneric<T>& other, uint32_t size)
+		BitsGeneric(const BitsGeneric<T>& other, uint32_t size)
     {
         uint32_t total_size = other.GetSize();
         this->last_size_ = 0;
@@ -164,7 +164,7 @@ public:
     }
 
     // Converts bytes to bits.
-    BitsGeneric<T>(const uint8_t* big_endian_bytes, uint32_t num_bytes, uint32_t size_bits)
+		BitsGeneric(const uint8_t* big_endian_bytes, uint32_t num_bytes, uint32_t size_bits)
     {
         this->last_size_ = 0;
         uint32_t extra_space = size_bits - num_bytes * 8;
@@ -188,7 +188,7 @@ public:
         }
     }
 
-    BitsGeneric<T>(const BitsGeneric<T>& other) noexcept
+		BitsGeneric(const BitsGeneric<T>& other) noexcept
         : values_(other.values_), last_size_(other.last_size_)
     {
     }
