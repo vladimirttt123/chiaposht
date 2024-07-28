@@ -4,7 +4,6 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
-#include <future>
 #include <thread>
 #ifndef _WIN32
 #include <unistd.h>
@@ -20,12 +19,6 @@
 #include "cmp_tools.hpp"
 
 namespace TCompress {
-
-#ifdef THREADS_PER_LINE_POINT
-const uint32_t THREADS_PER_LP = THREADS_PER_LINE_POINT;
-#else
-const uint32_t THREADS_PER_LP = 4;
-#endif
 
 // this is a cache for restored line points
 LinePointsCache LPCache;
@@ -192,8 +185,6 @@ public:
 				uint128_t valid_lp1 = LPCache.GetLinePoint( k_size, plot_id, 0, x1x2.first );
 				// if it is possible that left point in cache may be we need to look for right point in cache too?
 
-#define NEW_LOOKUP
-#ifdef NEW_LOOKUP
 				Table2MatchData match_data;
 				LinePointMatcher validator( k_size, plot_id );
 
@@ -203,7 +194,7 @@ public:
 					lp1_thread.reset( new std::thread( [this, &match_data, &validator, &x1x2]( LinePointInfo lpi ){
 									uint128_t lp = RestoreLinePoint( lpi.orig_line_point );
 									for( uint i = 0; i < lpi.skip_points; i++ )
-										lp = FindNextLinePoint( lp, bits_cut_no );
+										lp = FindNextLinePoint( lp + 1, bits_cut_no );
 									CheckRestored( lp, x1x2.first );
 									match_data.AddLeft( lp, validator );
 						}, ReadLinePointFull( file, 0, x1x2.first )  ) );
@@ -288,106 +279,7 @@ public:
 
 				// IF we are here than we can't restore this line point
 				throw std::runtime_error( "Cannot restore line point of table 2 at position " + std::to_string(position) );
-#else // NEW_LOOKUP
-				std::unique_ptr<std::thread> lp1_thread;
-				if( valid_lp1 == 0 )
-					lp1_thread.reset( new std::thread( [this, &valid_lp1](uint128_t lp ){ valid_lp1 = RestoreLinePoint(lp);}, ReadRealLinePoint( file, 0, x1x2.first )  ) );
 
-				uint128_t valid_lp2 = 0;
-				std::vector<uint128_t> read_points;
-				{ // time to read second parks
-					{
-						uint32_t pos_in_park = x1x2.second % kEntriesPerPark;
-						auto pReader = GetParkReader( file, 0, x1x2.second, kEntriesPerPark );
-						read_points.push_back( pReader.NextLinePoint( pos_in_park ) );
-						while( pReader.HasNext() ) read_points.push_back( pReader.NextLinePoint() );
-					}
-					if( read_points.size() < kEntriesPerPark ){
-						auto pReader = GetParkReader( file, 0, x1x2.second + kEntriesPerPark );
-						while( read_points.size() < kEntriesPerPark && pReader.HasNext() )
-							read_points.push_back( pReader.NextLinePoint() );
-					}
-				}
-
-				//run some thread to read points ahead
-				std::vector<uint128_t> restored_points(read_points.size());
-				std::vector<std::thread> threads;
-				std::atomic_int32_t next_point_idx = 0, found_at_idx = -1;
-				auto thread_func = [this, &restored_points, &next_point_idx, &read_points, &position, &x1x2, &valid_lp1, &found_at_idx](){
-					LinePointMatcher validator( k_size, plot_id, valid_lp1 );
-
-					for( int32_t i = next_point_idx.fetch_add(1, std::memory_order_relaxed);
-							 found_at_idx.load(std::memory_order_relaxed) == -1 && i < (int32_t)read_points.size();
-							 i = next_point_idx.fetch_add(1, std::memory_order_relaxed) ){
-						if( i > 0 && read_points[i] == read_points[i-1] ) continue; // same point evaluated in same threads
-						restored_points[i] = RestoreLinePoint( read_points[i] );
-						if( CheckRestored( restored_points[i], x1x2.second + i, position, false ) && validator.CheckMatch( restored_points[i] ) )
-							found_at_idx.store( i, std::memory_order_relaxed );
-						else {
-							while( ++i < (int32_t)read_points.size() && read_points[i-1] == read_points[i] && found_at_idx.load(std::memory_order_relaxed ) == -1 ){
-								restored_points[i] = restored_points[i-1] == 0 ? 0 : FindNextLinePoint( restored_points[i-1]+1, bits_cut_no );
-								if( CheckRestored( restored_points[i], x1x2.second + i, position, false ) && validator.CheckMatch( restored_points[i] ) ){
-									found_at_idx.store(i ,std::memory_order_relaxed );
-									return;
-								}
-							}
-						}
-					}
-				};
-
-				if( lp1_thread ) lp1_thread->join();
-				CheckRestored( valid_lp1, x1x2.first, position );
-
-				for( uint32_t i = 0; i < THREADS_PER_LP; i++ )
-					threads.emplace_back( thread_func );
-
-				for (auto& t : threads)  t.join(); // wait for threads to not fail...
-				if( found_at_idx >= 0 ){
-					valid_lp2 = restored_points[found_at_idx];
-					line_point =  Encoding::SquareToLinePoint( x1x2.first, x1x2.second += found_at_idx );
-				}
-
-				LinePointMatcher validator( k_size, plot_id, valid_lp1 );
-				std::vector<uint128_t> restored_points_first;
-
-				if( valid_lp2 == 0 ){ // match didn't succeed
-					restored_points_first.push_back( valid_lp1 );
-					while( valid_lp2 == 0 && (valid_lp1 = FindNextLinePoint( valid_lp1+1, bits_cut_no ) ) != 0 ){
-						validator.ResetLP1( valid_lp1 );
-						for( uint32_t i = 0; valid_lp2 == 0 && i < restored_points.size(); i++ ){
-							if( restored_points[i] != 0 && validator.CheckMatch( restored_points[i] ) ) {
-								valid_lp2 = restored_points[i];
-								line_point = Encoding::SquareToLinePoint( x1x2.first, x1x2.second += i );
-							}
-						}
-						if( valid_lp1 == 0 || valid_lp2 == 0 )
-							restored_points_first.push_back( valid_lp1 );
-					}
-				}
-
-				// if no match than valid_lp2 == 0 and this loop will proceed.
-				for( uint32_t i = 0; valid_lp2 == 0 && i < restored_points.size(); i++ ){
-					for( uint128_t itmp = FindNextLinePoint( restored_points[i] + 1, bits_cut_no );
-							 itmp != 0 && valid_lp2 == 0;
-							 itmp = FindNextLinePoint( itmp + 1, bits_cut_no) ){
-
-						// process new found point with any found from other side
-						for( uint32_t f = 0; valid_lp2 == 0 && f < restored_points_first.size(); f++ ){
-							validator.ResetLP1( valid_lp1 = restored_points_first[f] );
-							if( validator.CheckMatch( itmp ) ){
-								valid_lp2 = itmp;
-								line_point = Encoding::SquareToLinePoint( x1x2.first, x1x2.second += i );
-							}
-						}
-					}
-				}
-
-				CheckRestored( valid_lp1, x1x2.first, position );
-				CheckRestored( valid_lp2, x1x2.second, position );
-
-				LPCache.AddLinePoint( k_size, plot_id, 0, x1x2.first, valid_lp1, restored_points_first.size() > 0 );
-				LPCache.AddLinePoint( k_size, plot_id, 0, x1x2.second, valid_lp2, restored_points_first.size() > 0 );
-#endif // NEW_LOOKUP
 
 			}	else if( bits_cut_no > 0 )
 			{ // Now we need to fine line_point from table 1 to cache them

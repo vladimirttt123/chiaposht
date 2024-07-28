@@ -18,7 +18,15 @@
 #include "util.hpp"
 #include "pos_constants.hpp"
 
+
+
 namespace TCompress {
+
+#ifdef THREADS_PER_LINE_POINT
+const uint32_t THREADS_PER_LP = THREADS_PER_LINE_POINT;
+#else
+const uint32_t THREADS_PER_LP = 4;
+#endif
 
 // This is replacement made for kFormatDescription in compress plots
 const std::string tFormatDescription = "t0.1";
