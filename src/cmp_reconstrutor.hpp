@@ -25,7 +25,7 @@ struct SourceDataLocker {
 	const bool isLocal;
 	SourceDataLocker( std::atomic_int32_t &src ) : isLocal(true), release_to(src){}
 
-	~SourceDataLocker() { if( isLocal ) release_to.fetch_add(1, std::memory_order_relaxed ); }
+	~SourceDataLocker() { if( isLocal ) release_to.fetch_add(1, std::memory_order_relaxed ); release_to.notify_all(); }
 
 private:
 	std::atomic_int32_t &release_to;
@@ -43,8 +43,10 @@ public:
 		while( true ){
 			if( free_locals_count.fetch_sub( 1, std::memory_order_relaxed ) > 0 )
 				return SourceDataLocker( free_locals_count );
-			free_locals_count.fetch_add( 1, std::memory_order_relaxed );
-			std::this_thread::sleep_for( 10ns ); // TODO implement by atomic wait with exists resources amount but than need to upgrade C++ version
+			auto old = free_locals_count.fetch_add( 1, std::memory_order_relaxed );
+			if( old < 0 )
+				free_locals_count.wait( old + 1, std::memory_order::relaxed );
+			//std::this_thread::sleep_for( 10ns ); // TODO implement by atomic wait with exists resources amount but than need to upgrade C++ version
 		}
 	}
 };
