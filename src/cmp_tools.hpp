@@ -532,7 +532,11 @@ struct MatchVector{
 
 	void Add( uint16_t idx, uint64_t x1, uint64_t x2, uint64_t ys ){
 		auto cur_idx = size.fetch_add(1, std::memory_order_relaxed);
-		points[cur_idx] = { idx, x1, x2, ys };
+		if( cur_idx < max_size )
+			points[cur_idx] = { idx, x1, x2, ys };
+		else
+			std::cout << "WARNING!!! MatchVector overflow. skipping insert of value" << std::endl;
+			// throw std::overflow_error( "The vector cannot hold more than " + std::to_string(max_size) + " values " );
 	}
 };
 
@@ -541,7 +545,7 @@ struct Table2MatchData{
 	MatchVector left, right;
 	uint128_t matched_left = 0, matched_right = 0;
 	uint16_t matched_right_idx = 0;
-	Table2MatchData() :left(5), right(kEntriesPerPark+10) {}
+	Table2MatchData() :left(5), right(kEntriesPerPark+100) {}
 
 	// add line point to matching data
 	// and returns if status of matched changed after this adding

@@ -186,7 +186,7 @@ public:
 				uint128_t valid_lp1 = LPCache.GetLinePoint( k_size, plot_id, 0, x1x2.first );
 				// if it is possible that left point in cache may be we need to look for right point in cache too?
 
-#define NEW_METHOD_
+#define NEW_METHOD
 #ifdef NEW_METHOD_
 				Reconstructor rec( k_size, plot_id, bits_cut_no, valid_lp1 );
 				if( valid_lp1 == 0 )
@@ -319,7 +319,7 @@ public:
 						if( match_data.matched_left != 0 ) return return_found();// return if match found
 					}
 
-#endif // NEW_METHOD_ \
+#endif // NEW_METHOD_
 				// IF we are here than we can't restore this line point
 				throw std::runtime_error( "Cannot restore line point of table 2 at position " + std::to_string(position) );
 
