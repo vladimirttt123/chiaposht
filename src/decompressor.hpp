@@ -188,42 +188,91 @@ public:
 
 #define NEW_METHOD_
 #ifdef NEW_METHOD_
-				Reconstructor rec( k_size, plot_id, bits_cut_no, valid_lp1 );
-				if( valid_lp1 == 0 )
-					rec.setLeftLinePoint( ReadLinePointFull( file, 0, x1x2.first ) );
 
-				auto get_found = [this, &x1x2, &line_point, &position, &rec](){
-					x1x2.second += rec.right_LP_idx();
+				Table2MatchData mdata;
+				LinePointMatcher validator( k_size, plot_id );
+				LinePointInfo left_lp;
+				if( valid_lp1 != 0 )
+					mdata.left.Add( -1, valid_lp1, validator.CalculateYs(valid_lp1 ) );
+				else left_lp = ReadLinePointFull( file, 0, x1x2.first );
+				uint16_t added_count = 0;
+
+				auto get_found = [this, &x1x2, &line_point, &position, &mdata](){
+					x1x2.second += mdata.matched_right_idx;
 					line_point =  Encoding::SquareToLinePoint( x1x2.first, x1x2.second );
-					LPCache.AddLinePoint( k_size, plot_id, 0, x1x2.first, rec.left_LP() );
-					LPCache.AddLinePoint( k_size, plot_id, 0, x1x2.second, rec.right_LP() );
+					LPCache.AddLinePoint( k_size, plot_id, 0, x1x2.first, mdata.matched_left );
+					LPCache.AddLinePoint( k_size, plot_id, 0, x1x2.second, mdata.matched_right );
 					return LPCache.AddLinePoint( k_size, plot_id, 1, position, line_point );
 				};
 
+				while( added_count < kEntriesPerPark ){
+					uint16_t pos_in_park = (x1x2.second + added_count)% kEntriesPerPark;
+					auto pReader = GetParkReader( file, 0, x1x2.second + added_count, std::max( 2, pos_in_park + 1 ) );
+					std::vector<uint128_t> line_points;
 
-				while( rec.get_processed_count() < kEntriesPerPark ){
-					uint16_t pos_in_park = (x1x2.second + rec.get_processed_count())% kEntriesPerPark;
-					auto pReader = GetParkReader( file, 0, x1x2.second + rec.get_processed_count(), std::max( 2, pos_in_park + 1 ) );
+					for( line_points.push_back( pReader.NextLinePoint( pos_in_park ) );
+							 (line_points.size()+added_count) < kEntriesPerPark && pReader.HasNextInStub(); )
+						line_points.push_back( pReader.NextLinePoint() );
 
-					for( rec.addRightLinePoint( pReader.NextLinePoint( pos_in_park ) );
-							 rec.get_processed_count() < kEntriesPerPark && pReader.HasNextInStub(); )
-						rec.addRightLinePoint( pReader.NextLinePoint() );
+					if( mdata.AddBulk( left_lp, added_count, line_points, bits_cut_no, position, x1x2.second, validator ) )
+						return get_found();
+					added_count += line_points.size();
 
-					if( rec.Run( position, x1x2.second ) )  return get_found();
-
-					if( pReader.overdraft_size > 0 && rec.get_processed_count() < kEntriesPerPark ){
+					if( pReader.overdraft_size > 0 && added_count < kEntriesPerPark ){
 						// read overdraft and check its points
 						ReadFileWrapper disk_file( &file );
 						disk_file.Read( pReader.overdraft_pos, pReader.stubs_overdraft_buf(), pReader.overdraft_size );
 
-						while( rec.get_processed_count() < kEntriesPerPark && pReader.HasNext() )
-							rec.addRightLinePoint( pReader.NextLinePoint() );
+						line_points.clear();
+						while( (added_count+line_points.size() ) < kEntriesPerPark && pReader.HasNext() )
+							line_points.push_back( pReader.NextLinePoint() );
 
-						if( rec.Run( position, x1x2.second ) )  return get_found();
+						if( mdata.AddBulk( left_lp, added_count, line_points, bits_cut_no, position, x1x2.second, validator ) )
+							return get_found();
+						added_count += line_points.size();
 					}
 				}
+				if( mdata.RunSecondRound( bits_cut_no, position, x1x2.second, validator ) )
+					return get_found();
 
-				if( rec.RunSecondRound( position, x1x2.second ) ) return get_found();
+				// ============================
+
+				// Reconstructor rec( k_size, plot_id, bits_cut_no, valid_lp1 );
+				// if( valid_lp1 == 0 )
+				// 	rec.setLeftLinePoint( ReadLinePointFull( file, 0, x1x2.first ) );
+
+				// auto get_found = [this, &x1x2, &line_point, &position, &rec](){
+				// 	x1x2.second += rec.right_LP_idx();
+				// 	line_point =  Encoding::SquareToLinePoint( x1x2.first, x1x2.second );
+				// 	LPCache.AddLinePoint( k_size, plot_id, 0, x1x2.first, rec.left_LP() );
+				// 	LPCache.AddLinePoint( k_size, plot_id, 0, x1x2.second, rec.right_LP() );
+				// 	return LPCache.AddLinePoint( k_size, plot_id, 1, position, line_point );
+				// };
+
+
+				// while( rec.get_processed_count() < kEntriesPerPark ){
+				// 	uint16_t pos_in_park = (x1x2.second + rec.get_processed_count())% kEntriesPerPark;
+				// 	auto pReader = GetParkReader( file, 0, x1x2.second + rec.get_processed_count(), std::max( 2, pos_in_park + 1 ) );
+
+				// 	for( rec.addRightLinePoint( pReader.NextLinePoint( pos_in_park ) );
+				// 			 rec.get_processed_count() < kEntriesPerPark && pReader.HasNextInStub(); )
+				// 		rec.addRightLinePoint( pReader.NextLinePoint() );
+
+				// 	if( rec.Run( position, x1x2.second ) )  return get_found();
+
+				// 	if( pReader.overdraft_size > 0 && rec.get_processed_count() < kEntriesPerPark ){
+				// 		// read overdraft and check its points
+				// 		ReadFileWrapper disk_file( &file );
+				// 		disk_file.Read( pReader.overdraft_pos, pReader.stubs_overdraft_buf(), pReader.overdraft_size );
+
+				// 		while( rec.get_processed_count() < kEntriesPerPark && pReader.HasNext() )
+				// 			rec.addRightLinePoint( pReader.NextLinePoint() );
+
+				// 		if( rec.Run( position, x1x2.second ) )  return get_found();
+				// 	}
+				// }
+
+				// if( rec.RunSecondRound( position, x1x2.second ) ) return get_found();
 #else
 
 
@@ -234,9 +283,9 @@ public:
 				std::unique_ptr<std::thread,ThreadDeleter> lp1_thread;
 				if( valid_lp1 == 0 )
 					lp1_thread.reset( new std::thread( [this, &match_data, &validator, &x1x2]( LinePointInfo lpi ){
-									uint128_t lp = RestoreLinePoint( lpi.orig_line_point );
+									uint128_t lp = RestoreLinePoint( lpi.orig_line_point, validator );
 									for( uint i = 0; i < lpi.skip_points; i++ )
-										lp = FindNextLinePoint( lp + 1, bits_cut_no );
+										lp = FindNextLinePoint( lp + 1, bits_cut_no, validator );
 									CheckRestored( lp, x1x2.first );
 									match_data.AddLeft( lp, validator );
 						}, ReadLinePointFull( file, 0, x1x2.first )  ) );
@@ -260,11 +309,12 @@ public:
 								 match_data.matched_left == 0/*not found yet*/ && i < line_points_count;
 								 i = next_point_idx.fetch_add(1, std::memory_order_relaxed) ){
 							if( (i+1) < line_points_count && line_points[i] == line_points[i+1] ) continue; // equally cut points evaluated in the same thread
-							auto restored_lp = RestoreLinePoint( line_points[i] );
+							auto restored_lp = RestoreLinePoint( line_points[i], validator );
 							if( CheckRestored( restored_lp, x1x2.second + i, position, false ) ){
 								match_data.AddRight( i, restored_lp, validator );
 								if( i > 0 && line_points[i-1] == line_points[i] )
-									while(  match_data.matched_left == 0/*not found yet*/ && (restored_lp = FindNextLinePoint(restored_lp+1, bits_cut_no) ) )
+									while(  match_data.matched_left == 0/*not found yet*/
+												 && (restored_lp = FindNextLinePoint(restored_lp+1, bits_cut_no, validator) ) )
 										match_data.AddRight( --i, restored_lp, validator );
 							}
 						};
@@ -306,15 +356,15 @@ public:
 				}
 
 				// check more left points
-				for( uint128_t lp = FindNextLinePoint( match_data.left.points[0].LinePoint() + 1, bits_cut_no);
-						 lp != 0; lp = FindNextLinePoint( lp + 1, bits_cut_no ) ){
+				for( uint128_t lp = FindNextLinePoint( match_data.left.points[0].LinePoint() + 1, bits_cut_no, validator );
+						 lp != 0; lp = FindNextLinePoint( lp + 1, bits_cut_no, validator ) ){
 					match_data.AddLeft( lp, validator );
 					if( match_data.matched_left != 0 ) return return_found();// return if match found
 				}
 				// check more right points - it could be long process and seems need threads!!!
 				for( uint32_t size = match_data.right.size, i = 0; i < size; i++ )
-					for( uint128_t lp = FindNextLinePoint( match_data.left.points[i].LinePoint() + 1, bits_cut_no);
-							 lp != 0; lp = FindNextLinePoint( lp + 1, bits_cut_no ) ){
+					for( uint128_t lp = FindNextLinePoint( match_data.left.points[i].LinePoint() + 1, bits_cut_no, validator );
+							 lp != 0; lp = FindNextLinePoint( lp + 1, bits_cut_no, validator ) ){
 						match_data.AddRight( match_data.right.points[i].orig_idx, lp, validator );
 						if( match_data.matched_left != 0 ) return return_found();// return if match found
 					}
@@ -343,12 +393,12 @@ public:
 					bool match = CheckMatch( valid_lp1, valid_lp2 );
 					while( !match && valid_lp1 ){
 						lps1.push_back( valid_lp1 );
-						valid_lp1 = FindNextLinePoint( valid_lp1 + 1, bits_cut_no );
+						valid_lp1 = FindNextLinePoint( valid_lp1 + 1, bits_cut_no, k_size, plot_id );
 						match = valid_lp1 != 0 && CheckMatch( valid_lp1, valid_lp2 );
 					}
 					while( !match && valid_lp2 != 0 ){
 						lps2.push_back( valid_lp2 );
-						valid_lp2 = FindNextLinePoint( valid_lp2 + 1, bits_cut_no );
+						valid_lp2 = FindNextLinePoint( valid_lp2 + 1, bits_cut_no, k_size, plot_id );
 						if( valid_lp2 != 0)
 							for( uint i = 0; !match && i < lps1.size(); i++ )
 								match = CheckMatch( valid_lp1 = lps1[i], valid_lp2 );
@@ -559,53 +609,10 @@ private:
 	}
 
 	inline uint128_t RestoreLinePoint( uint128_t cutted_line_point ){
-		return FindNextLinePoint( cutted_line_point<<bits_cut_no, bits_cut_no );
+		return FindNextLinePoint( cutted_line_point<<bits_cut_no, bits_cut_no, k_size, plot_id );
 	}
-
-	uint128_t FindNextLinePoint( uint128_t line_point, uint8_t removed_bits_no ) const {
-		assert( removed_bits_no >= kBatchSizes );
-
-		auto x1x2 = Encoding::LinePointToSquare( line_point );
-
-		F1Calculator f1( k_size, plot_id );
-		FxCalculator f( k_size, 2 );
-
-		uint64_t firstY = f1.CalculateF( Bits( x1x2.first, k_size ) ).GetValue();
-		uint64_t firstYkBC = firstY / kBC;
-
-		const uint64_t BATCH_SIZE = 1U << kBatchSizes; //256
-		uint64_t batch[BATCH_SIZE];
-
-		std::vector<PlotEntry> bucket_L(1);
-		std::vector<PlotEntry> bucket_R(1);
-
-		uint64_t b = x1x2.second, left_to_do = (1ULL << removed_bits_no) - (line_point&((1ULL << removed_bits_no)-1));
-		while( left_to_do > 0 ){
-			f1.CalculateBuckets( b, BATCH_SIZE, batch );
-			uint64_t cur_batch_size = std::min( left_to_do, std::min( BATCH_SIZE, x1x2.first - b ) ); // possible to minimize with left_to_do
-			for( uint32_t i = 0; i < cur_batch_size; i++ ){
-				uint64_t cdiff = firstYkBC - batch[i] / kBC;
-				if( cdiff == 1 ){
-					bucket_L[0].y = batch[i];
-					bucket_R[0].y = firstY;
-				}else if( cdiff == (uint64_t)-1 ){
-					bucket_L[0].y = firstY;
-					bucket_R[0].y = batch[i];
-				}else continue;
-
-				if( f.FindMatches( bucket_L, bucket_R, nullptr, nullptr ) == 1)
-					return Encoding::SquareToLinePoint( x1x2.first, b+i );
-			}
-			left_to_do -= cur_batch_size;
-			b += cur_batch_size;
-			if( b == x1x2.first ){
-				firstY = f1.CalculateF( Bits( ++(x1x2.first), k_size ) ).GetValue();
-				firstYkBC = firstY / kBC;
-				b = 0;
-			}
-		}
-
-		return 0; // NOT FOUND
+	inline uint128_t RestoreLinePoint( uint128_t cutted_line_point, LinePointMatcher &validator ){
+		return FindNextLinePoint( cutted_line_point<<bits_cut_no, bits_cut_no, validator );
 	}
 
 };

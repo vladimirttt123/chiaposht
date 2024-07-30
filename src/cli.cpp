@@ -17,6 +17,9 @@
 #include <chrono>
 using namespace std::chrono;
 
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #include "cxxopts.hpp"
 #include "../lib/include/picosha2.hpp"
@@ -103,6 +106,8 @@ int main(int argc, char *argv[]) try {
     uint32_t buffmegabytes = 0;
 		uint32_t initial_challenge = 0;
 		uint32_t compress_io_optimitzation = 0;
+		uint32_t wait_connections = 0;
+		uint16_t port;
 
     options.allow_unrecognised_options().add_options()(
             "k, size", "Plot size", cxxopts::value<uint8_t>(k))(
@@ -125,6 +130,10 @@ int main(int argc, char *argv[]) try {
         cxxopts::value<bool>(parallel_read)->default_value("true"))(
 				"initial_challenge", "The challenge to start with for check operation",
 				cxxopts::value<uint32_t>(initial_challenge) )(
+				"wait_connections", "Open server and wait for connections before start to check. Used for debug.",
+				cxxopts::value<uint32_t>(wait_connections)->default_value("0") )(
+				"port", "Port to use for network communications.",
+				cxxopts::value<uint16_t>(port)->default_value("60001") )(
 				"compress_io_optimize", "Optimization compressed file to IO requests number. "
 																"The higher number the less IO request for proofs. "
 																"Valid values are 0 to 10.",
@@ -264,6 +273,15 @@ int main(int argc, char *argv[]) try {
         }
         delete[] proof_bytes;
     } else if (operation == "check") {
+			// if( wait_connections ){
+			// 	std::cout << "Wait for connections" << std::endl;
+			// 	TCompress::Server srv(60001);
+			// 	while( TCompress::RManager.getClientsCount() < wait_connections )
+			// 		std::this_thread::sleep_for( 1s );
+
+			// 	std::cout << "Clients connected " << TCompress::RManager.getClientsCount() << std::endl;
+			// }
+
         InitDecompressorQueueDefault();
 
         uint32_t iterations = 1000;
@@ -341,7 +359,14 @@ int main(int argc, char *argv[]) try {
 			}
 			TCompress::Compressor plot_compress( argv[3] );
 			plot_compress.CompressTo( filename , std::stoi(argv[2]), compress_io_optimitzation );
-    } else {
+		// } else if( operation == "connect" ){
+		// 	if( argc < 3 ) {
+		// 		std::cout << "not enough parameters. use\n\tconnect ip port" << std::endl;
+		// 		return -1;
+		// 	}
+		// 	auto ip = inet_addr( argv[2] );
+		// 	TCompress::StartClient( ip, port );
+		}	else {
 				cout << "Invalid operation '" << operation << "'. Use create/prove/verify/check/compress" << endl;
     }
     return 0;

@@ -39,6 +39,14 @@ const char * program_header = "*** Chia plot compressing software made by Vladim
 
 const uint32_t overdraftPointerSize = 3;
 
+struct ThreadDeleter{
+	void operator()(std::thread * p) const
+	{
+		p->join();
+		delete p;
+	};
+};
+
 struct LinePointCacheEntry{
 public:
 	uint64_t partial_id = 0, position = 0;
@@ -444,14 +452,67 @@ private:
 };
 
 
+
+
+uint128_t FindNextLinePoint( uint128_t line_point, uint8_t removed_bits_no, uint8_t k_size, F1Calculator &f1, FxCalculator &f ) {
+	assert( removed_bits_no >= kBatchSizes );
+
+	auto x1x2 = Encoding::LinePointToSquare( line_point );
+	uint64_t firstY = f1.CalculateF( Bits( x1x2.first, k_size ) ).GetValue();
+	uint64_t firstYkBC = firstY / kBC;
+
+	const uint64_t BATCH_SIZE = 1U << kBatchSizes; //256
+	uint64_t batch[BATCH_SIZE];
+
+	std::vector<PlotEntry> bucket_L(1);
+	std::vector<PlotEntry> bucket_R(1);
+
+	uint64_t b = x1x2.second, left_to_do = (1ULL << removed_bits_no) - (line_point&((1ULL << removed_bits_no)-1));
+	while( left_to_do > 0 ){
+		f1.CalculateBuckets( b, BATCH_SIZE, batch );
+		uint64_t cur_batch_size = std::min( left_to_do, std::min( BATCH_SIZE, x1x2.first - b ) ); // possible to minimize with left_to_do
+		for( uint32_t i = 0; i < cur_batch_size; i++ ){
+			uint64_t cdiff = firstYkBC - batch[i] / kBC;
+			if( cdiff == 1 ){
+				bucket_L[0].y = batch[i];
+				bucket_R[0].y = firstY;
+			}else if( cdiff == (uint64_t)-1 ){
+				bucket_L[0].y = firstY;
+				bucket_R[0].y = batch[i];
+			}else continue;
+
+			if( f.FindMatches( bucket_L, bucket_R, nullptr, nullptr ) == 1)
+				return Encoding::SquareToLinePoint( x1x2.first, b+i );
+		}
+		left_to_do -= cur_batch_size;
+		b += cur_batch_size;
+		if( b == x1x2.first ){
+			firstY = f1.CalculateF( Bits( ++(x1x2.first), k_size ) ).GetValue();
+			firstYkBC = firstY / kBC;
+			b = 0;
+		}
+	}
+
+	return 0; // NOT FOUND
+}
+
+
+inline uint128_t FindNextLinePoint( uint128_t line_point, uint8_t removed_bits_no, uint8_t k_size, const uint8_t * plot_id ) {
+	assert( removed_bits_no >= kBatchSizes );
+
+	F1Calculator f1( k_size, plot_id );
+	FxCalculator f( k_size, 2 );
+	return FindNextLinePoint( line_point, removed_bits_no, k_size, f1, f );
+}
+
 // Checks matches at table 2 level
 struct LinePointMatcher{
-	const uint8_t k_size;
+	const uint8_t k_size, *plot_id;
 	F1Calculator f1;
 	FxCalculator f_d2, f_d3;
 
 	LinePointMatcher( uint8_t k_size, const uint8_t * plot_id, uint128_t lp1 = 0 )
-			: k_size(k_size), f1(k_size,plot_id), f_d2( k_size, 2 ), f_d3( k_size, 3 ), ys1(CalculateYs( lp1) )
+			: k_size(k_size), plot_id(plot_id), f1(k_size,plot_id), f_d2( k_size, 2 ), f_d3( k_size, 3 ), ys1(CalculateYs( lp1) )
 	{	}
 
 	uint64_t ResetLP1( uint128_t lp1 ) { return ys1 = CalculateYs(lp1); }
@@ -480,7 +541,7 @@ struct LinePointMatcher{
 	inline bool CheckMatch( uint64_t x1, uint64_t x2 ){
 		return isYsMatch( ys1, CalculateYs( x1, x2 ) );
 	}
-	bool isYsMatch( uint64_t ys2 ){ return isYsMatch( ys1, ys2 );	}
+	inline bool isYsMatch( uint64_t ys2 ){ return isYsMatch( ys1, ys2 );	}
 
 	bool isYsMatch( uint64_t ys1, uint64_t ys2 ){
 		uint64_t cdiff = ys1/kBC - ys2/kBC;
@@ -500,6 +561,13 @@ private:
 	uint64_t ys1;
 };
 
+inline uint128_t FindNextLinePoint( uint128_t line_point, uint8_t removed_bits_no, LinePointMatcher &validator ) {
+	assert( removed_bits_no >= kBatchSizes );
+	return FindNextLinePoint( line_point, removed_bits_no, validator.k_size, validator.f1, validator.f_d2 );
+}
+inline uint128_t RestoreLinePoint( uint128_t cutted_line_point, uint8_t removed_bits_no, LinePointMatcher &validator ) {
+	return FindNextLinePoint( cutted_line_point<<removed_bits_no, removed_bits_no, validator );
+}
 
 struct LinePointInfo{
 public:
@@ -538,13 +606,18 @@ struct MatchVector{
 			std::cout << "WARNING!!! MatchVector overflow. skipping insert of value" << std::endl;
 			// throw std::overflow_error( "The vector cannot hold more than " + std::to_string(max_size) + " values " );
 	}
+
+	void Add( uint16_t idx, uint128_t lp, uint64_t ys ){
+		auto x1x2 = Encoding::LinePointToSquare( lp );
+		Add( idx, x1x2.first, x1x2.second, ys );
+	}
 };
 
 struct Table2MatchData{
-	std::mutex mut;
 	MatchVector left, right;
 	uint128_t matched_left = 0, matched_right = 0;
 	uint16_t matched_right_idx = 0;
+
 	Table2MatchData() :left(5), right(kEntriesPerPark+100) {}
 
 	// add line point to matching data
@@ -564,7 +637,6 @@ struct Table2MatchData{
 	}
 
 	void AddLeft( uint64_t x1, uint64_t x2, LinePointMatcher &validator ){
-		// std::lock_guard<std::mutex> lk(mut);
 		if( matched_left != 0 ) return; // match done than do not add to matched
 		left.Add( -1, x1, x2, validator.ResetLP1( x1, x2 ) );
 		// validate left to all exists right
@@ -584,7 +656,6 @@ struct Table2MatchData{
 		return true;
 	}
 	void AddRight( uint16_t idx, uint64_t x1, uint64_t x2, LinePointMatcher &validator ){
-		//std::lock_guard<std::mutex> lk(mut);
 		if( matched_left != 0 ) return;// do not add to mathed
 		right.Add( idx, x1, x2, validator.ResetLP1( x1, x2 ) );
 		for( uint32_t i = 0; i < left.size && matched_left == 0; i++ )
@@ -594,14 +665,77 @@ struct Table2MatchData{
 				matched_right_idx = idx;
 			}
 	}
-};
 
-struct ThreadDeleter{
-	void operator()(std::thread * p) const
-	{
-		p->join();
-		delete p;
-	};
+
+	bool AddBulk( LinePointInfo &left_LP, uint16_t first_idx, std::vector<uint128_t> src_line_points,
+								uint8_t removed_bits_no, uint64_t table2_pos, uint64_t table1_start_pos,
+								LinePointMatcher &pvalidator, uint32_t threads_no = THREADS_PER_LP ){
+		std::atomic_uint_fast16_t next_point_idx = 0;
+
+		auto thread_func = [this, &next_point_idx, &table1_start_pos, &table2_pos, &pvalidator, &src_line_points, &removed_bits_no, &first_idx](){
+			LinePointMatcher validator( pvalidator.k_size, pvalidator.plot_id );
+
+			for( uint16_t i = next_point_idx.fetch_add(1, std::memory_order_relaxed);
+					 matched_left == 0/*not found yet*/ && i < src_line_points.size();
+					 i = next_point_idx.fetch_add(1, std::memory_order_relaxed) ){
+				if( (i+1) < src_line_points.size() && src_line_points[i] == src_line_points[i+1] ) continue; // equally cut points evaluated in the same thread
+				auto restored_lp = RestoreLinePoint( src_line_points[i], removed_bits_no, validator );
+				//if( CheckRestored( restored_lp, x1x2.second + i, position, false ) ){
+				if( restored_lp == 0 ){
+					std::cout << "WARNING!!! Cannot restore line point at pos " << (table1_start_pos+i) << " from table2 pos " << table2_pos << " - SKIPPING" << std::endl;
+				}else {
+					AddRight( i + first_idx, restored_lp, validator );
+					if( i > 0 && src_line_points[i-1] == src_line_points[i] )
+						while(  matched_left == 0/*not found yet*/ && (restored_lp = FindNextLinePoint( restored_lp+1, removed_bits_no, validator) ) )
+							AddRight( --i, restored_lp, validator );
+				}
+			};
+		};
+
+		// check if we need to restore left line point
+		std::unique_ptr<std::thread,ThreadDeleter> lp1_thread;
+		if( left.size == 0 && left_LP.orig_line_point != 0 ) {
+			lp1_thread.reset( new std::thread( [ this, &table2_pos, &left_LP, &pvalidator, &removed_bits_no ](){
+				uint128_t lp = RestoreLinePoint( left_LP.orig_line_point, removed_bits_no, pvalidator );
+				for( uint i = 0; i < left_LP.skip_points; i++ )
+					lp = FindNextLinePoint( lp + 1, removed_bits_no, pvalidator );
+				if( lp == 0 ) {
+					std::cout << "WARNING!!! Cannot restore left line point at pos " << left_LP.position << " from table2 pos "
+										<< table2_pos << " - SKIPPING" << std::endl;
+				}
+				AddLeft( lp, pvalidator );
+			} ) );
+		}
+		{
+			std::unique_ptr<std::thread, ThreadDeleter> threads[THREADS_PER_LP];
+
+			for( uint32_t i = 0; i < THREADS_PER_LP; i++ )
+				threads[i].reset( new std::thread( thread_func ) );
+		}
+
+		return matched_left != 0;
+	}
+
+	bool RunSecondRound( uint8_t removed_bits_no, uint64_t table2_pos, uint64_t table1_start_pos,
+											LinePointMatcher &validator, uint32_t threads_no = THREADS_PER_LP ){
+
+		// check more left points
+		for( uint128_t lp = FindNextLinePoint( left.points[0].LinePoint() + 1, removed_bits_no, validator );
+				 lp != 0; lp = FindNextLinePoint( lp + 1, removed_bits_no, validator ) ){
+			AddLeft( lp, validator );
+			if( matched_left != 0 ) return true;// return if match found
+		}
+		// TODO make by threads
+		// check more right points - it could be long process and seems need threads!!!
+		for( uint32_t size = right.size, i = 0; i < size; i++ )
+			for( uint128_t lp = FindNextLinePoint( left.points[i].LinePoint() + 1, removed_bits_no, validator );
+					 lp != 0; lp = FindNextLinePoint( lp + 1, removed_bits_no, validator ) ){
+				AddRight( right.points[i].orig_idx, lp, validator );
+				if( matched_left != 0 ) return true;// return if match found
+			}
+
+		return matched_left != 0;
+	}
 };
 
 } // namespace tcompress
