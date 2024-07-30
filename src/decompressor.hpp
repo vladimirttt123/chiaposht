@@ -216,6 +216,7 @@ public:
 
 					if( mdata.AddBulk( left_lp, added_count, line_points, bits_cut_no, position, x1x2.second, validator ) )
 						return get_found();
+					left_lp.orig_line_point = 0; // clear to not add any more
 					added_count += line_points.size();
 
 					if( pReader.overdraft_size > 0 && added_count < kEntriesPerPark ){
