@@ -189,91 +189,101 @@ public:
 #define NEW_METHOD_
 #ifdef NEW_METHOD_
 
-				Table2MatchData mdata;
-				LinePointMatcher validator( k_size, plot_id );
-				LinePointInfo left_lp;
-				if( valid_lp1 != 0 )
-					mdata.left.Add( -1, valid_lp1, validator.CalculateYs(valid_lp1 ) );
-				else left_lp = ReadLinePointFull( file, 0, x1x2.first );
-				uint16_t added_count = 0;
+				// Table2MatchData mdata;
+				// LinePointMatcher validator( k_size, plot_id );
+				// LinePointInfo left_lp;
+				// if( valid_lp1 != 0 )
+				// 	mdata.left.Add( -1, valid_lp1, validator.CalculateYs(valid_lp1 ) );
+				// else left_lp = ReadLinePointFull( file, 0, x1x2.first );
+				// uint16_t added_count = 0;
+				// std::vector<uint16_t> rejects;
 
-				auto get_found = [this, &x1x2, &line_point, &position, &mdata](){
-					x1x2.second += mdata.matched_right_idx;
-					line_point =  Encoding::SquareToLinePoint( x1x2.first, x1x2.second );
-					LPCache.AddLinePoint( k_size, plot_id, 0, x1x2.first, mdata.matched_left );
-					LPCache.AddLinePoint( k_size, plot_id, 0, x1x2.second, mdata.matched_right );
-					return LPCache.AddLinePoint( k_size, plot_id, 1, position, line_point );
-				};
-
-				while( added_count < kEntriesPerPark ){
-					uint16_t pos_in_park = (x1x2.second + added_count)% kEntriesPerPark;
-					auto pReader = GetParkReader( file, 0, x1x2.second + added_count, std::max( 2, pos_in_park + 1 ) );
-					std::vector<uint128_t> line_points;
-
-					for( line_points.push_back( pReader.NextLinePoint( pos_in_park ) );
-							 (line_points.size()+added_count) < kEntriesPerPark && pReader.HasNextInStub(); )
-						line_points.push_back( pReader.NextLinePoint() );
-
-					if( mdata.AddBulk( left_lp, added_count, line_points, bits_cut_no, position, x1x2.second, validator ) )
-						return get_found();
-					left_lp.orig_line_point = 0; // clear to not add any more
-					added_count += line_points.size();
-
-					if( pReader.overdraft_size > 0 && added_count < kEntriesPerPark ){
-						// read overdraft and check its points
-						ReadFileWrapper disk_file( &file );
-						disk_file.Read( pReader.overdraft_pos, pReader.stubs_overdraft_buf(), pReader.overdraft_size );
-
-						line_points.clear();
-						while( (added_count+line_points.size() ) < kEntriesPerPark && pReader.HasNext() )
-							line_points.push_back( pReader.NextLinePoint() );
-
-						if( mdata.AddBulk( left_lp, added_count, line_points, bits_cut_no, position, x1x2.second, validator ) )
-							return get_found();
-						added_count += line_points.size();
-					}
-				}
-				if( mdata.RunSecondRound( bits_cut_no, position, x1x2.second, validator ) )
-					return get_found();
-
-				// ============================
-
-				// Reconstructor rec( k_size, plot_id, bits_cut_no, valid_lp1 );
-				// if( valid_lp1 == 0 )
-				// 	rec.setLeftLinePoint( ReadLinePointFull( file, 0, x1x2.first ) );
-
-				// auto get_found = [this, &x1x2, &line_point, &position, &rec](){
-				// 	x1x2.second += rec.right_LP_idx();
+				// auto show_rejects = [&rejects, &position](){
+				// 	if( rejects.size() > 0 ){
+				// 		std::cout << "WARNING!!! couldn't restore points on table2 posistion " << position << ": ";
+				// 		for( auto v : rejects ) std::cout << v << " ";
+				// 		std::cout << std::endl;
+				// 	}
+				// };
+				// auto get_found = [this, &x1x2, &line_point, &position, &mdata, &show_rejects](){
+				// 	show_rejects();
+				// 	x1x2.second += mdata.matched_right_idx;
 				// 	line_point =  Encoding::SquareToLinePoint( x1x2.first, x1x2.second );
-				// 	LPCache.AddLinePoint( k_size, plot_id, 0, x1x2.first, rec.left_LP() );
-				// 	LPCache.AddLinePoint( k_size, plot_id, 0, x1x2.second, rec.right_LP() );
+				// 	LPCache.AddLinePoint( k_size, plot_id, 0, x1x2.first, mdata.matched_left );
+				// 	LPCache.AddLinePoint( k_size, plot_id, 0, x1x2.second, mdata.matched_right );
 				// 	return LPCache.AddLinePoint( k_size, plot_id, 1, position, line_point );
 				// };
 
+				// while( added_count < kEntriesPerPark ){
+				// 	uint16_t pos_in_park = (x1x2.second + added_count)% kEntriesPerPark;
+				// 	auto pReader = GetParkReader( file, 0, x1x2.second + added_count, std::max( 2, pos_in_park + 1 ) );
+				// 	std::vector<uint128_t> line_points;
 
-				// while( rec.get_processed_count() < kEntriesPerPark ){
-				// 	uint16_t pos_in_park = (x1x2.second + rec.get_processed_count())% kEntriesPerPark;
-				// 	auto pReader = GetParkReader( file, 0, x1x2.second + rec.get_processed_count(), std::max( 2, pos_in_park + 1 ) );
+				// 	for( line_points.push_back( pReader.NextLinePoint( pos_in_park ) );
+				// 			 (line_points.size()+added_count) < kEntriesPerPark && pReader.HasNextInStub(); )
+				// 		line_points.push_back( pReader.NextLinePoint() );
 
-				// 	for( rec.addRightLinePoint( pReader.NextLinePoint( pos_in_park ) );
-				// 			 rec.get_processed_count() < kEntriesPerPark && pReader.HasNextInStub(); )
-				// 		rec.addRightLinePoint( pReader.NextLinePoint() );
+				// 	if( mdata.AddBulk( left_lp, added_count, line_points, bits_cut_no, rejects, validator ) )
+				// 		return get_found();
+				// 	left_lp.orig_line_point = 0; // clear to not add any more
+				// 	added_count += line_points.size();
 
-				// 	if( rec.Run( position, x1x2.second ) )  return get_found();
-
-				// 	if( pReader.overdraft_size > 0 && rec.get_processed_count() < kEntriesPerPark ){
+				// 	if( pReader.overdraft_size > 0 && added_count < kEntriesPerPark ){
 				// 		// read overdraft and check its points
 				// 		ReadFileWrapper disk_file( &file );
 				// 		disk_file.Read( pReader.overdraft_pos, pReader.stubs_overdraft_buf(), pReader.overdraft_size );
 
-				// 		while( rec.get_processed_count() < kEntriesPerPark && pReader.HasNext() )
-				// 			rec.addRightLinePoint( pReader.NextLinePoint() );
+				// 		line_points.clear();
+				// 		while( (added_count+line_points.size() ) < kEntriesPerPark && pReader.HasNext() )
+				// 			line_points.push_back( pReader.NextLinePoint() );
 
-				// 		if( rec.Run( position, x1x2.second ) )  return get_found();
+				// 		if( mdata.AddBulk( left_lp, added_count, line_points, bits_cut_no, rejects, validator ) )
+				// 			return get_found();
+				// 		added_count += line_points.size();
 				// 	}
 				// }
+				// if( mdata.RunSecondRound( bits_cut_no, validator ) )
+				// 	return get_found();
 
-				// if( rec.RunSecondRound( position, x1x2.second ) ) return get_found();
+				// show_rejects();
+				// ============================
+
+				Reconstructor rec( k_size, plot_id, bits_cut_no, position, x1x2.second, valid_lp1 );
+				if( valid_lp1 == 0 )
+					rec.setLeftLinePoint( ReadLinePointFull( file, 0, x1x2.first ) );
+
+				auto get_found = [this, &x1x2, &line_point, &position, &rec](){
+					x1x2.second += rec.match_data.matched_right_idx;
+					line_point =  Encoding::SquareToLinePoint( x1x2.first, x1x2.second );
+					LPCache.AddLinePoint( k_size, plot_id, 0, x1x2.first, rec.match_data.matched_left );
+					LPCache.AddLinePoint( k_size, plot_id, 0, x1x2.second, rec.match_data.matched_right );
+					return LPCache.AddLinePoint( k_size, plot_id, 1, position, line_point );
+				};
+
+
+				while( rec.isNeedMoreLinePoints() ){
+					uint16_t pos_in_park = (x1x2.second + rec.processed_lps_count)% kEntriesPerPark;
+					auto pReader = GetParkReader( file, 0, x1x2.second + rec.processed_lps_count, std::max( 2, pos_in_park + 1 ) );
+
+					for( rec.addRightLinePoint( pReader.NextLinePoint( pos_in_park ) );
+							 rec.isNeedMoreLinePoints() && pReader.HasNextInStub(); )
+						rec.addRightLinePoint( pReader.NextLinePoint() );
+
+					if( rec.Run() ) return get_found();
+
+					if( pReader.overdraft_size > 0 && rec.isNeedMoreLinePoints() ){
+						// read overdraft and check its points
+						ReadFileWrapper disk_file( &file );
+						disk_file.Read( pReader.overdraft_pos, pReader.stubs_overdraft_buf(), pReader.overdraft_size );
+
+						while( rec.isNeedMoreLinePoints() && pReader.HasNext() )
+							rec.addRightLinePoint( pReader.NextLinePoint() );
+
+						if( rec.Run() )  return get_found();
+					}
+				}
+
+				if( rec.RunSecondRound() ) return get_found();
 #else
 
 

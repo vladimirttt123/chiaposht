@@ -668,21 +668,21 @@ struct Table2MatchData{
 
 
 	bool AddBulk( LinePointInfo &left_LP, uint16_t first_idx, std::vector<uint128_t> src_line_points,
-								uint8_t removed_bits_no, uint64_t table2_pos, uint64_t table1_start_pos,
+								uint8_t removed_bits_no, std::vector<uint16_t> &rejects,
 								LinePointMatcher &pvalidator, uint32_t threads_no = THREADS_PER_LP ){
 		std::atomic_uint_fast16_t next_point_idx = 0;
 
-		auto thread_func = [this, &next_point_idx, &table1_start_pos, &table2_pos, &pvalidator, &src_line_points, &removed_bits_no, &first_idx](){
+		auto thread_func = [this, &next_point_idx, &rejects, &pvalidator, &src_line_points, &removed_bits_no, &first_idx](){
 			LinePointMatcher validator( pvalidator.k_size, pvalidator.plot_id );
 
-			for( uint16_t i = next_point_idx.fetch_add(1, std::memory_order_relaxed);
+			for( uint32_t i = next_point_idx.fetch_add(1, std::memory_order_relaxed);
 					 matched_left == 0/*not found yet*/ && i < src_line_points.size();
 					 i = next_point_idx.fetch_add(1, std::memory_order_relaxed) ){
 				if( (i+1) < src_line_points.size() && src_line_points[i] == src_line_points[i+1] ) continue; // equally cut points evaluated in the same thread
 				auto restored_lp = RestoreLinePoint( src_line_points[i], removed_bits_no, validator );
-				//if( CheckRestored( restored_lp, x1x2.second + i, position, false ) ){
+
 				if( restored_lp == 0 ){
-					std::cout << "WARNING!!! Cannot restore line point at pos " << (table1_start_pos+i) << " from table2 pos " << table2_pos << " - SKIPPING" << std::endl;
+					rejects.push_back( i + first_idx );
 				}else {
 					AddRight( i + first_idx, restored_lp, validator );
 					if( i > 0 && src_line_points[i-1] == src_line_points[i] )
@@ -695,15 +695,12 @@ struct Table2MatchData{
 		// check if we need to restore left line point
 		std::unique_ptr<std::thread,ThreadDeleter> lp1_thread;
 		if( left.size == 0 && left_LP.orig_line_point != 0 ) {
-			lp1_thread.reset( new std::thread( [ this, &table2_pos, &left_LP, &pvalidator, &removed_bits_no ](){
+			lp1_thread.reset( new std::thread( [ this, &left_LP, &pvalidator, &removed_bits_no , &rejects](){
 				uint128_t lp = RestoreLinePoint( left_LP.orig_line_point, removed_bits_no, pvalidator );
 				for( uint i = 0; i < left_LP.skip_points; i++ )
 					lp = FindNextLinePoint( lp + 1, removed_bits_no, pvalidator );
-				if( lp == 0 ) {
-					std::cout << "WARNING!!! Cannot restore left line point at pos " << left_LP.position << " from table2 pos "
-										<< table2_pos << " - SKIPPING" << std::endl;
-				}
-				AddLeft( lp, pvalidator );
+				if( lp == 0 ) rejects.push_back(-1);
+				else AddLeft( lp, pvalidator );
 			} ) );
 		}
 		{
@@ -716,8 +713,7 @@ struct Table2MatchData{
 		return matched_left != 0;
 	}
 
-	bool RunSecondRound( uint8_t removed_bits_no, uint64_t table2_pos, uint64_t table1_start_pos,
-											LinePointMatcher &validator, uint32_t threads_no = THREADS_PER_LP ){
+	bool RunSecondRound( uint8_t removed_bits_no, LinePointMatcher &validator, uint32_t threads_no = THREADS_PER_LP ){
 
 		// check more left points
 		for( uint128_t lp = FindNextLinePoint( left.points[0].LinePoint() + 1, removed_bits_no, validator );

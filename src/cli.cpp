@@ -273,14 +273,14 @@ int main(int argc, char *argv[]) try {
         }
         delete[] proof_bytes;
     } else if (operation == "check") {
-			// if( wait_connections ){
-			// 	std::cout << "Wait for connections" << std::endl;
-			// 	TCompress::Server srv(60001);
-			// 	while( TCompress::RManager.getClientsCount() < wait_connections )
-			// 		std::this_thread::sleep_for( 1s );
+			if( wait_connections ){
+				std::cout << "Wait for connections" << std::endl;
+				TCompress::Server srv(60001, [](int32_t socket){TCompress::RManager.AddRemoteSource(socket);});
+				while( TCompress::RManager.getClientsCount() < wait_connections )
+					std::this_thread::sleep_for( 1s );
 
-			// 	std::cout << "Clients connected " << TCompress::RManager.getClientsCount() << std::endl;
-			// }
+				std::cout << "Clients connected " << TCompress::RManager.getClientsCount() << std::endl;
+			}
 
         InitDecompressorQueueDefault();
 
@@ -309,7 +309,6 @@ int main(int argc, char *argv[]) try {
 
             vector<unsigned char> hash(picosha2::k_digest_size);
             picosha2::hash256(hash_input.begin(), hash_input.end(), hash.begin(), hash.end());
-
 
 						Timer q_time;
 						vector<LargeBits> qualities = prover.GetQualitiesForChallenge(hash.data());
@@ -359,13 +358,13 @@ int main(int argc, char *argv[]) try {
 			}
 			TCompress::Compressor plot_compress( argv[3] );
 			plot_compress.CompressTo( filename , std::stoi(argv[2]), compress_io_optimitzation );
-		// } else if( operation == "connect" ){
-		// 	if( argc < 3 ) {
-		// 		std::cout << "not enough parameters. use\n\tconnect ip port" << std::endl;
-		// 		return -1;
-		// 	}
-		// 	auto ip = inet_addr( argv[2] );
-		// 	TCompress::StartClient( ip, port );
+		} else if( operation == "connect" ){
+			if( argc < 3 ) {
+				std::cout << "not enough parameters. use\n\tconnect ip port" << std::endl;
+				return -1;
+			}
+			auto ip = inet_addr( argv[2] );
+			TCompress::StartClient( ip, port );
 		}	else {
 				cout << "Invalid operation '" << operation << "'. Use create/prove/verify/check/compress" << endl;
     }
