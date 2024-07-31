@@ -374,7 +374,7 @@ public:
 				}
 				// check more right points - it could be long process and seems need threads!!!
 				for( uint32_t size = match_data.right.size, i = 0; i < size; i++ )
-					for( uint128_t lp = FindNextLinePoint( match_data.left.points[i].LinePoint() + 1, bits_cut_no, validator );
+					for( uint128_t lp = FindNextLinePoint( match_data.right.points[i].LinePoint() + 1, bits_cut_no, validator );
 							 lp != 0; lp = FindNextLinePoint( lp + 1, bits_cut_no, validator ) ){
 						match_data.AddRight( match_data.right.points[i].orig_idx, lp, validator );
 						if( match_data.matched_left != 0 ) return return_found();// return if match found

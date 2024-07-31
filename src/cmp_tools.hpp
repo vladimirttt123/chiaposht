@@ -724,7 +724,7 @@ struct Table2MatchData{
 		// TODO make by threads
 		// check more right points - it could be long process and seems need threads!!!
 		for( uint32_t size = right.size, i = 0; i < size; i++ )
-			for( uint128_t lp = FindNextLinePoint( left.points[i].LinePoint() + 1, removed_bits_no, validator );
+			for( uint128_t lp = FindNextLinePoint( right.points[i].LinePoint() + 1, removed_bits_no, validator );
 					 lp != 0; lp = FindNextLinePoint( lp + 1, removed_bits_no, validator ) ){
 				AddRight( right.points[i].orig_idx, lp, validator );
 				if( matched_left != 0 ) return true;// return if match found

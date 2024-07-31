@@ -171,8 +171,9 @@ void StartClient( uint32_t addr, uint16_t port, uint32_t threads_no = THREADS_PE
 			BufValuesReader buf_reader( buf + 38, size - 35 );
 
 			if( buf[0] == NET_REQUEST_RESTORE ){ // restore
+				Timer req_timer;
 				std::cout << "Resotre request for k: " << (int)k_size << ", plot_id: " << Util::HexStr( plot_id, 32 )
-									<< ", removed_bits: " << (int)removed_bits_no << std::endl;
+									<< ", removed_bits: " << (int)removed_bits_no << std::flush;
 
 				const uint32_t lp_size = k_size*2 - removed_bits_no;
 
@@ -190,21 +191,24 @@ void StartClient( uint32_t addr, uint16_t port, uint32_t threads_no = THREADS_PE
 				}
 
 				uint16_t line_points_count = (uint16_t)buf_reader.Next( 16 );
+				std::cout << ", points_no: " << line_points_count;
+
 				std::vector<uint128_t> line_points(line_points_count);
 				for( uint32_t i = 0; i < line_points_count; i++ )
 					line_points[i] = buf_reader.Next( lp_size );
 
 				std::vector<uint16_t> rejects;
 				uint16_t res_size;
-				ParkBits bits;
+				LargeBits bits;
 
 				if( mdata.AddBulk( left_lp, 0, line_points, removed_bits_no, rejects, validator, threads_no ) ){
-					res_size = 34;
+					std::cout << " -> restored" << std::flush;
 					buf[0] = NET_RESTORED; // restored
 					bits.AppendValue( mdata.matched_left, k_size*2 );
 					bits.AppendValue( mdata.matched_right_idx, 16 );
 					bits.AppendValue( mdata.matched_right, k_size*2 );
 				}else {
+					std::cout << " -> not restored" << std::flush;
 					buf[0] = NET_NOT_RESTORED; // not restored
 
 					bits.AppendValue( mdata.right.size + 1, 16 ); // number of points to return
@@ -227,6 +231,8 @@ void StartClient( uint32_t addr, uint16_t port, uint32_t threads_no = THREADS_PE
 				buf[1] = res_size>>8; // size - high
 				buf[2] = res_size; // size - low
 				sendData( clientSocket, buf, res_size + 3 );
+
+				req_timer.PrintElapsed( ", served in " );
 			} else if( buf[0] == NET_REQUEST_SECOND_ROUND ){ // Second round
 
 			}

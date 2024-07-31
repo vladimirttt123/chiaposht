@@ -108,6 +108,7 @@ int main(int argc, char *argv[]) try {
 		uint32_t compress_io_optimitzation = 0;
 		uint32_t wait_connections = 0;
 		uint16_t port;
+		bool client_reconnect = false;
 
     options.allow_unrecognised_options().add_options()(
             "k, size", "Plot size", cxxopts::value<uint8_t>(k))(
@@ -130,15 +131,17 @@ int main(int argc, char *argv[]) try {
         cxxopts::value<bool>(parallel_read)->default_value("true"))(
 				"initial_challenge", "The challenge to start with for check operation",
 				cxxopts::value<uint32_t>(initial_challenge) )(
-				"wait_connections", "Open server and wait for connections before start to check. Used for debug.",
-				cxxopts::value<uint32_t>(wait_connections)->default_value("0") )(
-				"port", "Port to use for network communications.",
-				cxxopts::value<uint16_t>(port)->default_value("60001") )(
 				"compress_io_optimize", "Optimization compressed file to IO requests number. "
 																"The higher number the less IO request for proofs. "
 																"Valid values are 0 to 10.",
 				cxxopts::value<uint32_t>(compress_io_optimitzation)->default_value("0"))(
-        "help", "Print help");
+				"wait_connections", "Open server and wait for connections before start to check. Used for debug.",
+				cxxopts::value<uint32_t>(wait_connections)->default_value("0") )(
+				"port", "Port to use for network communications.",
+				cxxopts::value<uint16_t>(port)->default_value("60001") )(
+				"reconnect", "is client should try to reconnect in case of lost connection",
+				cxxopts::value<bool>(client_reconnect)->default_value("false") )(
+				"help", "Print help");
 
     auto result = options.parse(argc, argv);
 
@@ -273,13 +276,14 @@ int main(int argc, char *argv[]) try {
         }
         delete[] proof_bytes;
     } else if (operation == "check") {
+			std::unique_ptr<TCompress::Server> server;
 			if( wait_connections ){
 				std::cout << "Wait for connections" << std::endl;
-				TCompress::Server srv(60001, [](int32_t socket){TCompress::RManager.AddRemoteSource(socket);});
+				server.reset( new TCompress::Server( port, [](int32_t socket){TCompress::RManager.AddRemoteSource(socket);}) );
 				while( TCompress::RManager.getClientsCount() < wait_connections )
 					std::this_thread::sleep_for( 1s );
 
-				std::cout << "Clients connected " << TCompress::RManager.getClientsCount() << std::endl;
+				std::cout << "Clients connected: " << TCompress::RManager.getClientsCount() << std::endl;
 			}
 
         InitDecompressorQueueDefault();
@@ -364,7 +368,10 @@ int main(int argc, char *argv[]) try {
 				return -1;
 			}
 			auto ip = inet_addr( argv[2] );
-			TCompress::StartClient( ip, port );
+			do{
+				try{ TCompress::StartClient( ip, port ); } catch(...){}
+				std::this_thread::sleep_for( 1s );
+			}while(client_reconnect);
 		}	else {
 				cout << "Invalid operation '" << operation << "'. Use create/prove/verify/check/compress" << endl;
     }

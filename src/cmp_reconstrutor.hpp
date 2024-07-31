@@ -16,7 +16,6 @@ using namespace std::chrono_literals; // for operator""min;
 namespace TCompress{
 
 
-
 class ReconstructorsManager{
 	std::atomic_int32_t free_locals_count;
 	std::mutex mut;
@@ -33,6 +32,7 @@ public:
 
 		inline bool isLocal() const { return socket < 0; }
 		inline void setBadConnection() {
+			std::cout << "Connection broken" << std::endl;
 			bad_connection = true;
 			try{ close( socket ); } catch(...){}
 		}
@@ -129,7 +129,7 @@ struct Reconstructor{
 			buf[3] = k_size;
 			buf[4] = removed_bits_no;
 			memcpy( buf+5, plot_id, 32 );
-			ParkBits bits;
+			LargeBits bits;
 			if( match_data.left.size ){
 				bits.AppendValue( 255, 8 ); // uncompressed left line point
 				bits.AppendValue( match_data.left.points[0].LinePoint(), k_size*2 );
@@ -161,9 +161,9 @@ struct Reconstructor{
 			BufValuesReader r( buf+3, rsize );
 			if( buf[0] == NET_RESTORED ){
 				match_data.matched_left = r.Next( k_size*2 );
-				match_data.matched_right_idx = (uint16_t)r.Next(16);
+				match_data.matched_right_idx = (uint16_t)r.Next(16) + processed_lps_count;
 				match_data.matched_right = r.Next( k_size*2 );
-				// TODO check is it really match
+				// TODO: validate - check is it really match for reals sent points
 			} else if( buf[0] == NET_NOT_RESTORED ){
 				uint16_t num_points = (uint16_t)r.Next(16);
 				uint16_t idx = (uint16_t)r.Next(16);
@@ -175,8 +175,9 @@ struct Reconstructor{
 				uint128_t lp = r.Next(k_size*2);
 				match_data.left.Add( idx, lp, validator.CalculateYs( lp ) );
 				for( uint16_t i = 0; i < num_points; i++ ){
-					idx = (uint16_t)r.Next(16);
+					idx = (uint16_t)r.Next(16) + processed_lps_count;
 					lp = r.Next( k_size*2 );
+					// TODO: validate i.e. check is it real restore
 					match_data.right.Add( idx, lp, validator.CalculateYs(lp) );
 				}
 
@@ -186,6 +187,9 @@ struct Reconstructor{
 				return Run(); // recursion to try another source
 			}
 			// TODO read rejects
+			uint16_t rejects_no = (uint16_t)r.Next(16);
+			for( uint16_t i = 0; i < rejects_no; i++ )
+				rejects.push_back( (uint16_t)r.Next(16) + processed_lps_count );
 		}
 
 		processed_lps_count += to_process_lp.size();
@@ -195,7 +199,7 @@ struct Reconstructor{
 	}
 
 	bool RunSecondRound(){
-		// TODO add remote posibility
+		// TODO add remote posibility may be with slpit for multiple clients
 		return match_data.RunSecondRound( removed_bits_no, validator );
 	}
 
