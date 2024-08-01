@@ -4,6 +4,8 @@
 #include <sys/socket.h>
 #include <fcntl.h>
 #include <thread>
+#include <chrono>
+using namespace std::chrono_literals; // for operator""min;
 
 #include "cmp_tools.hpp"
 #include "util.hpp"
@@ -14,13 +16,35 @@ const uint32_t PROTOCOL_VER = 0x00020001;
 const inline uint8_t NET_PING = 1, NET_PING_RESPONSE = 2, NET_REQUEST_RESTORE = 3,
 		NET_RESTORED = 4, NET_NOT_RESTORED = 5, NET_REQUEST_SECOND_ROUND = 6;
 
-void getData( int32_t socket, uint8_t * buf, int32_t size, uint32_t timeoutMs = -1 ){
+void getData( int32_t socket, uint8_t * buf, int32_t size, int32_t timeoutMs = -1 ){
 	assert( size > 0 );
-	int res = recv( socket, buf, size, MSG_WAITALL ); // TODO timeout
-	if( res != size ){
-		close( socket );
-		throw std::runtime_error( "Cannot fully send data " + std::to_string(res) + " of " + std::to_string( size )
-														 + " error " + std::to_string(errno) + " - " + ::strerror(errno)  );
+
+	auto err = [&socket, &size]( int res ){
+		try{ close( socket ); } catch(...) {}
+		std::cout << "Cannot fully get data " + std::to_string(res) + " of " + std::to_string( size )
+										 + " error " + std::to_string(errno) + " - " + ::strerror(errno) << std::endl;
+		throw std::runtime_error( "Cannot fully get data " + std::to_string(res) + " of " + std::to_string( size )
+															 + " error " + std::to_string(errno) + " - " + ::strerror(errno)  );
+		};
+	if( timeoutMs < 0 ){
+		int res = recv( socket, buf, size, MSG_WAITALL ); // TODO timeout
+		if( res != size ) err(res);
+		return;
+	}
+
+	std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
+	for( int32_t got = 0; got != size; ){
+		int res = recv( socket, buf + got, size - got, MSG_DONTWAIT );
+		if( res < 0 && errno != EAGAIN && errno != EWOULDBLOCK )
+			err(res);
+		if( res > 0 )	got += res;
+		if( got != size ){
+			std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
+			if( std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count() > timeoutMs )
+				err( got );
+
+			std::this_thread::sleep_for(10ms);
+		}
 	}
 }
 
@@ -28,7 +52,7 @@ void sendData( int32_t socket, uint8_t *buf, int32_t size, uint32_t timeoutMs = 
 	assert( size > 0);
 	int res = send( socket, buf, size, 0 );
 	if( res != size ){
-		close( socket );
+		try{ close( socket ); } catch(...){};
 		throw std::runtime_error( "Incorrect size send try to send " + std::to_string(size) + " bytes result " + std::to_string(res)
 														 + " error " + std::to_string(errno) + " - " + ::strerror(errno) );
 	}

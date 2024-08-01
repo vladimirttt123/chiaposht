@@ -670,6 +670,19 @@ struct Table2MatchData{
 	bool AddBulk( LinePointInfo &left_LP, uint16_t first_idx, std::vector<uint128_t> src_line_points,
 								uint8_t removed_bits_no, std::vector<uint16_t> &rejects,
 								LinePointMatcher &pvalidator, uint32_t threads_no = THREADS_PER_LP ){
+		// check if we need to restore left line point
+		std::unique_ptr<std::thread,ThreadDeleter> lp1_thread;
+		if( left.size == 0 && left_LP.orig_line_point != 0 ) {
+			lp1_thread.reset( new std::thread( [ this, &left_LP, &pvalidator, &removed_bits_no , &rejects](){
+				uint128_t lp = RestoreLinePoint( left_LP.orig_line_point, removed_bits_no, pvalidator );
+				for( uint i = 0; i < left_LP.skip_points; i++ )
+					lp = FindNextLinePoint( lp + 1, removed_bits_no, pvalidator );
+				if( lp == 0 ) rejects.push_back(-1);
+				else AddLeft( lp, pvalidator );
+			} ) );
+		}
+
+		// run right side
 		std::atomic_uint_fast16_t next_point_idx = 0;
 
 		auto thread_func = [this, &next_point_idx, &rejects, &pvalidator, &src_line_points, &removed_bits_no, &first_idx](){
@@ -692,17 +705,8 @@ struct Table2MatchData{
 			};
 		};
 
-		// check if we need to restore left line point
-		std::unique_ptr<std::thread,ThreadDeleter> lp1_thread;
-		if( left.size == 0 && left_LP.orig_line_point != 0 ) {
-			lp1_thread.reset( new std::thread( [ this, &left_LP, &pvalidator, &removed_bits_no , &rejects](){
-				uint128_t lp = RestoreLinePoint( left_LP.orig_line_point, removed_bits_no, pvalidator );
-				for( uint i = 0; i < left_LP.skip_points; i++ )
-					lp = FindNextLinePoint( lp + 1, removed_bits_no, pvalidator );
-				if( lp == 0 ) rejects.push_back(-1);
-				else AddLeft( lp, pvalidator );
-			} ) );
-		}
+
+
 		{	// Run threads for right side.
 			threads_no = std::max( 1U, threads_no );// fix threads count
 			std::unique_ptr<std::thread, ThreadDeleter> threads[threads_no];
@@ -744,13 +748,6 @@ struct Table2MatchData{
 			for( uint32_t i = 0; i < threads_no; i++ )
 				threads[i].reset( new std::thread( thread_func ) );
 		}
-		// for( uint32_t size = right.size, i = 0; i < size; i++ )
-		// 	for( uint128_t lp = FindNextLinePoint( right.points[i].LinePoint() + 1, removed_bits_no, validator );
-		// 			 lp != 0; lp = FindNextLinePoint( lp + 1, removed_bits_no, validator ) ){
-		// 		AddRight( right.points[i].orig_idx, lp, validator );
-		// 		if( matched_left != 0 )
-		// 			return true;// return if match found
-		// 	}
 
 		return matched_left != 0;
 	}

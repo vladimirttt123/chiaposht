@@ -15,6 +15,8 @@ using namespace std::chrono_literals; // for operator""min;
 
 namespace TCompress{
 
+// client should be quick enough to provide respoinse in this time
+const int32_t CLIENT_TIMEOUT_MS = 1500;
 
 class ReconstructorsManager{
 	std::atomic_int32_t free_locals_count;
@@ -150,9 +152,9 @@ struct Reconstructor{
 			uint16_t rsize;
 			try{
 				sendData( rSrc.socket, buf, buf_size  + 3 );
-				getData( rSrc.socket, buf, 3, 1000 );
+				getData( rSrc.socket, buf, 3, CLIENT_TIMEOUT_MS ); // get header
 				rsize = (((uint16_t)buf[1])<<8) + buf[2];
-				getData( rSrc.socket, buf + 3, rsize );
+				getData( rSrc.socket, buf + 3, rsize, CLIENT_TIMEOUT_MS ); // get packet
 			} catch(...){
 				rSrc.setBadConnection();
 				return Run(); // recursion to try another source
