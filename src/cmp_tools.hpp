@@ -703,10 +703,11 @@ struct Table2MatchData{
 				else AddLeft( lp, pvalidator );
 			} ) );
 		}
-		{
-			std::unique_ptr<std::thread, ThreadDeleter> threads[THREADS_PER_LP];
+		{	// Run threads for right side.
+			threads_no = std::max( 1U, threads_no );// fix threads count
+			std::unique_ptr<std::thread, ThreadDeleter> threads[threads_no];
 
-			for( uint32_t i = 0; i < THREADS_PER_LP; i++ )
+			for( uint32_t i = 0; i < threads_no; i++ )
 				threads[i].reset( new std::thread( thread_func ) );
 		}
 
@@ -721,14 +722,35 @@ struct Table2MatchData{
 			AddLeft( lp, validator );
 			if( matched_left != 0 ) return true;// return if match found
 		}
-		// TODO make by threads
 		// check more right points - it could be long process and seems need threads!!!
-		for( uint32_t size = right.size, i = 0; i < size; i++ )
-			for( uint128_t lp = FindNextLinePoint( right.points[i].LinePoint() + 1, removed_bits_no, validator );
-					 lp != 0; lp = FindNextLinePoint( lp + 1, removed_bits_no, validator ) ){
-				AddRight( right.points[i].orig_idx, lp, validator );
-				if( matched_left != 0 ) return true;// return if match found
+		const uint16_t rsize = right.size;
+		std::atomic_uint_fast16_t ridx = 0;
+		auto thread_func = [this, &ridx, &rsize, &removed_bits_no, &validator](){
+			LinePointMatcher lvalidator( validator.k_size, validator.plot_id );
+
+			for( uint16_t i; ( ( i = ridx.fetch_add( 1, std::memory_order::relaxed ) ) < rsize ); ){
+				for( uint128_t lp = FindNextLinePoint( right.points[i].LinePoint() + 1, removed_bits_no, lvalidator );
+						 matched_left == 0 && lp != 0; lp = FindNextLinePoint( lp + 1, removed_bits_no, lvalidator ) ){
+					AddRight( right.points[i].orig_idx, lp, lvalidator );
+					if( matched_left != 0 ) return;// return if match found it prevents one FindNext call
+				}
 			}
+		};
+
+		threads_no = std::max( 1U, threads_no );// fix threads count
+		{ // this block to finish threads before end of function because used deleter
+			std::unique_ptr<std::thread, ThreadDeleter> threads[threads_no];
+
+			for( uint32_t i = 0; i < threads_no; i++ )
+				threads[i].reset( new std::thread( thread_func ) );
+		}
+		// for( uint32_t size = right.size, i = 0; i < size; i++ )
+		// 	for( uint128_t lp = FindNextLinePoint( right.points[i].LinePoint() + 1, removed_bits_no, validator );
+		// 			 lp != 0; lp = FindNextLinePoint( lp + 1, removed_bits_no, validator ) ){
+		// 		AddRight( right.points[i].orig_idx, lp, validator );
+		// 		if( matched_left != 0 )
+		// 			return true;// return if match found
+		// 	}
 
 		return matched_left != 0;
 	}

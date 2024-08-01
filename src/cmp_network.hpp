@@ -41,7 +41,7 @@ struct BufValuesReader{
 	BufValuesReader( const uint8_t *buf, uint32_t buf_zie ) : buf(buf), buf_size(buf_zie){}
 
 	uint128_t Next( uint8_t bits_num ){
-		uint128_t val = Util::SliceInt64FromBytes( buf + next_bit/8, next_bit%8, bits_num);
+		uint128_t val = Util::SliceInt128FromBytes( buf + next_bit/8, next_bit%8, bits_num);
 		next_bit += bits_num;
 		if( (next_bit+7)/8 > buf_size )
 			throw std::runtime_error( "Read data over buffer size" );
