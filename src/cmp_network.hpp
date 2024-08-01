@@ -40,8 +40,11 @@ void getData( int32_t socket, uint8_t * buf, int32_t size, int32_t timeoutMs = -
 		if( res > 0 )	got += res;
 		if( got != size ){
 			std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
-			if( std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count() > timeoutMs )
-				err( got );
+			if( std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count() > timeoutMs ){
+				std::cout << "Remove slow connection" << std::endl;
+				throw std::runtime_error( "Slow connection. get data " + std::to_string(res) + " of " + std::to_string( size )
+																 + " error " + std::to_string(errno) + " - " + ::strerror(errno)  );
+			}
 
 			std::this_thread::sleep_for(10ms);
 		}
@@ -153,7 +156,7 @@ public:
 
 
 void StartClient( uint32_t addr, uint16_t port, uint32_t threads_no = THREADS_PER_LP ){
-	int clientSocket = socket(AF_INET, SOCK_STREAM, 0);
+	int clientSocket = socket( AF_INET, SOCK_STREAM, 0 );
 
 	// specifying address
 	sockaddr_in serverAddress;
@@ -161,10 +164,16 @@ void StartClient( uint32_t addr, uint16_t port, uint32_t threads_no = THREADS_PE
 	serverAddress.sin_port = htons(port);
 	serverAddress.sin_addr.s_addr = addr;
 
+	auto err = [&clientSocket]( const std::string &msg ){
+		try{ close(clientSocket); } catch (...) {};
+		throw std::runtime_error( msg );
+	};
+
 	// sending connection request
 	auto cres = connect(clientSocket, (struct sockaddr*)&serverAddress, sizeof(serverAddress));
 	if( cres < 0 )
-		throw std::runtime_error( "Cannot connect to server " + std::to_string( cres ) );
+		err( "Cannot connect to server result " + std::to_string( cres )
+														 + " errno " + std::to_string(errno) + " - " + ::strerror(errno) );
 
 	std::cout << "Connected to server with result " << cres << std::endl;
 	// sending protocol version
@@ -173,7 +182,7 @@ void StartClient( uint32_t addr, uint16_t port, uint32_t threads_no = THREADS_PE
 	uint8_t buf[0xffff];
 	getData( clientSocket, buf, 4 );
 	if( memcmp( &PROTOCOL_VER, buf, 4 ) != 0 )
-		throw std::runtime_error( "Incorrect protocol version from server " + Util::HexStr( buf, 4 )
+		err( "Incorrect protocol version from server " + Util::HexStr( buf, 4 )
 														 + " while expected " + Util::HexStr( (uint8_t*)&PROTOCOL_VER, 4 ) );
 
 	while( true ){
@@ -185,10 +194,9 @@ void StartClient( uint32_t addr, uint16_t port, uint32_t threads_no = THREADS_PE
 		} else {
 			const uint16_t size = (((uint16_t)buf[1])<<8) + buf[2];
 
-			if( size < 34 || size > 65000 ) { // k + cut + plot_id = 34 bytes at least
-				close( clientSocket );
-				throw std::runtime_error( "Incorrect request size " + std::to_string(size) );
-			}
+			if( size < 34 || size > 65000 )  // k + cut + plot_id = 34 bytes at least
+				err( "Incorrect request size " + std::to_string(size) );
+
 			getData( clientSocket, buf+3, size );
 			uint8_t k_size = buf[3], removed_bits_no = buf[4], plot_id[32];
 			memcpy( plot_id, buf+5, 32 );

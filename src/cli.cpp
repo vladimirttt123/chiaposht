@@ -364,14 +364,27 @@ int main(int argc, char *argv[]) try {
 			plot_compress.CompressTo( filename , std::stoi(argv[2]), compress_io_optimitzation );
 		} else if( operation == "connect" ){
 			if( argc < 3 ) {
-				std::cout << "not enough parameters. use\n\tconnect ip port" << std::endl;
+				std::cout << "not enough parameters. use\n\tconnect ip" << std::endl;
 				return -1;
 			}
-			auto ip = inet_addr( argv[2] );
-			do{
-				try{ TCompress::StartClient( ip, port ); } catch(...){}
-				std::this_thread::sleep_for( 1s );
-			}while(client_reconnect);
+			std::vector<std::unique_ptr<std::thread,TCompress::ThreadDeleter>> clients;
+			for( int i = 2; i < argc; i++ ){
+				if( argv[i][0] != '-' ){
+					std::cout << "Start connection to " << argv[i] << std::endl;
+					clients.emplace_back( new std::thread( [&client_reconnect, &port, i, &argv](){
+						auto ip = inet_addr( argv[i] );
+						do{
+							try{ TCompress::StartClient( ip, port ); }
+							catch (const std::exception &e){
+								std::cout << i << " - " << argv[i] << e.what() << std::endl;
+							}
+							catch(...){}
+							std::this_thread::sleep_for( 2s );
+						}while(client_reconnect);
+						std::cout << i << " - " << argv[i] << "Finish client for " << argv[i] << std::endl;
+					} ) );
+				}
+			}
 		}	else {
 				cout << "Invalid operation '" << operation << "'. Use create/prove/verify/check/compress" << endl;
     }
