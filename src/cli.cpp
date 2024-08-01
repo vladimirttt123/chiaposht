@@ -364,13 +364,13 @@ int main(int argc, char *argv[]) try {
 			plot_compress.CompressTo( filename , std::stoi(argv[2]), compress_io_optimitzation );
 		} else if( operation == "connect" ){
 			if( argc < 3 ) {
-				std::cout << "not enough parameters. use\n\tconnect ip" << std::endl;
+				std::cout << "not enough parameters. use\n\tconnect ip [ip..]" << std::endl;
 				return -1;
 			}
 			std::vector<std::unique_ptr<std::thread,TCompress::ThreadDeleter>> clients;
 			for( int i = 2; i < argc; i++ ){
 				if( argv[i][0] != '-' ){
-					std::cout << "Start connection to " << argv[i] << std::endl;
+					std::cout << "Start connection to " << i << " - " << argv[i] << std::endl;
 					clients.emplace_back( new std::thread( [&client_reconnect, &port, i, &argv](){
 						auto ip = inet_addr( argv[i] );
 						do{
@@ -381,7 +381,7 @@ int main(int argc, char *argv[]) try {
 							catch(...){}
 							std::this_thread::sleep_for( 2s );
 						}while(client_reconnect);
-						std::cout << i << " - " << argv[i] << "Finish client for " << argv[i] << std::endl;
+						std::cout << i << " - " << argv[i] << "Finish connection to " << i << " - " << argv[i] << std::endl;
 					} ) );
 				}
 			}

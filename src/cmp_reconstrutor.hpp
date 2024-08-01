@@ -188,10 +188,10 @@ struct Reconstructor{
 				rSrc.setBadConnection();
 				return Run(); // recursion to try another source
 			}
-			// TODO read rejects
-			uint16_t rejects_no = (uint16_t)r.Next(16);
+			// read rejects
+			uint16_t rejects_no = (uint16_t)r.Next(12);
 			for( uint16_t i = 0; i < rejects_no; i++ )
-				rejects.push_back( (uint16_t)r.Next(16) + processed_lps_count );
+				rejects.push_back( (uint16_t)r.Next(12) + processed_lps_count );
 		}
 
 		processed_lps_count += to_process_lp.size();

@@ -223,7 +223,9 @@ void StartClient( uint32_t addr, uint16_t port, uint32_t threads_no = THREADS_PE
 				}
 
 				uint16_t line_points_count = (uint16_t)buf_reader.Next( 16 );
-				std::cout << ", points_no: " << line_points_count;
+				std::cout << ", points_no: " << line_points_count << std::endl;
+				if( line_points_count > 4095 )
+					err( "Too many line points " + std::to_string( line_points_count ) );
 
 				std::vector<uint128_t> line_points(line_points_count);
 				for( uint32_t i = 0; i < line_points_count; i++ )
@@ -240,7 +242,7 @@ void StartClient( uint32_t addr, uint16_t port, uint32_t threads_no = THREADS_PE
 					bits.AppendValue( mdata.matched_right_idx, 16 );
 					bits.AppendValue( mdata.matched_right, k_size*2 );
 				}else {
-					std::cout << " -> not restored" << std::flush;
+					std::cout << " -> calculated" << std::flush;
 					buf[0] = NET_NOT_RESTORED; // not restored
 
 					bits.AppendValue( mdata.right.size + 1, 16 ); // number of points to return
@@ -254,17 +256,18 @@ void StartClient( uint32_t addr, uint16_t port, uint32_t threads_no = THREADS_PE
 				}
 
 				// append rejects
-				bits.AppendValue( rejects.size(), 16 );
-				memcpy( buf + res_size + 3, rejects.data(), rejects.size()*sizeof(uint16_t) );
+				bits.AppendValue( rejects.size(), 12 );
+				for( uint16_t i = 0; i < rejects.size(); i++ )
+					bits.AppendValue( rejects[i], 12 );
 
 				bits.ToBytes( buf + 3 );
-				res_size = (bits.GetSize()+7)/8 + rejects.size()*sizeof(uint16_t);
+				res_size = (bits.GetSize()+7)/8;
 
 				buf[1] = res_size>>8; // size - high
 				buf[2] = res_size; // size - low
 				sendData( clientSocket, buf, res_size + 3 );
 
-				req_timer.PrintElapsed( ", served in " );
+				req_timer.PrintElapsed( " in " );
 			} else if( buf[0] == NET_REQUEST_SECOND_ROUND ){ // Second round
 
 			}
