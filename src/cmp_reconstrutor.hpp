@@ -71,12 +71,11 @@ public:
 		clients.push_back( clientSocket );
 	}
 
-	inline void StartServer( uint16_t port = DEFAULT_SERVER_PORT, bool restart = false ){
+	inline void StartServer( uint16_t port, bool restart = false ){
 #ifdef TCOMPERESS_WITH_NETWORK
 		std::lock_guard<std::mutex> lk(mut);
 		if( !defaultServer || restart )
 			defaultServer.reset( new Server( port, *this ) );
-
 #endif // TCOMPERESS_WITH_NETWORK
 	}
 
@@ -100,8 +99,10 @@ public:
 		}
 	}
 
+#ifdef TCOMPERESS_WITH_NETWORK
 private:
 	std::unique_ptr<Server<ReconstructorsManager>> defaultServer;
+#endif 	// TCOMPERESS_WITH_NETWORK
 };
 
 ReconstructorsManager RManager(2);

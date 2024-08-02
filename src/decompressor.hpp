@@ -83,7 +83,7 @@ public:
 		// this is not a good place for starting default server.
 		// but do not know where to start. it should be started
 		// in case of library and not started in case of executable.
-		RManager.StartServer();
+		RManager.StartServer( DEFAULT_SERVER_PORT );
 #endif // TCOMPERESS_WITH_NETWORK
 
 		k_size = k;
