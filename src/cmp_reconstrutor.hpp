@@ -2,9 +2,6 @@
 #define SRC_CPP_CMP_RECONSTRUCTOR_HPP_
 
 #include <vector>
-#include <thread>
-#include <chrono>
-using namespace std::chrono_literals; // for operator""min;
 
 #include "util.hpp"
 #include "pos_constants.hpp"
@@ -23,7 +20,17 @@ class ReconstructorsManager{
 	std::mutex mut;
 	std::vector<int> clients;
 
+
+
+
 public:
+
+	struct ClientError : public std::exception {
+		std::string s;
+		ClientError(std::string ss) : s(ss) {}
+		~ClientError() throw() {}  // Updated
+		const char* what() const throw() { return s.c_str(); }
+	};
 
 	struct SourceDataLocker {
 		const int32_t socket = -1;
@@ -141,69 +148,63 @@ struct Reconstructor{
 #ifndef TCOMPERESS_WITH_NETWORK
 			throw std::runtime_error( "Network is unsupported" );
 #else
-			// // Prepare buffer to send
-			uint8_t buf[0xffff];
-			LargeBits bits;
+			try{
+				// // Prepare buffer to send
+				uint8_t buf[0xffff];
+				LargeBits bits;
 
-			if( match_data.left.size ){
-				bits.AppendValue( 255, 8 ); // uncompressed left line point
-				bits.AppendValue( match_data.left.points[0].LinePoint(), k_size*2 );
-			} else {
-				bits.AppendValue( left_lp.skip_points, 8 );
-				bits.AppendValue( left_lp.orig_line_point, k_size*2 - removed_bits_no );
-			}
-
-			bits.AppendValue( to_process_lp.size(), 16 );
-			for( uint32_t i = 0; i < to_process_lp.size(); i++ )
-				bits.AppendValue( to_process_lp[i], k_size*2 - removed_bits_no );
-
-
-			int32_t dres = SendGet( rSrc.socket, NET_REQUEST_RESTORE, buf, bits );
-			if( dres < 0 ){
-				rSrc.setBadConnection();
-				return Run(); // recursion to try another source
-			}
-
-			BufValuesReader r( buf+3, (uint32_t)dres );
-			if( buf[0] == NET_RESTORED ){
-				if( !processMatchedResponse( r, processed_lps_count ) ) {
-					rSrc.setBadConnection();
-					return Run();
+				if( match_data.left.size ){
+					bits.AppendValue( 255, 8 ); // uncompressed left line point
+					bits.AppendValue( match_data.left.points[0].LinePoint(), k_size*2 );
+				} else {
+					bits.AppendValue( left_lp.skip_points, 8 );
+					bits.AppendValue( left_lp.orig_line_point, k_size*2 - removed_bits_no );
 				}
-			} else if( buf[0] == NET_NOT_RESTORED ){
-				uint16_t num_points = (uint16_t)r.Next(16);
-				uint16_t idx = (uint16_t)r.Next(16);
-				if( idx != (uint16_t)-1 ){
-					std::cerr << "Incorrect left point index " << idx << std::endl;
-					rSrc.setBadConnection();
-					return Run();
-				}
-				uint128_t lp = r.Next(k_size*2);
-				if( match_data.left.size == 0 )
-					match_data.left.Add( idx, lp, validator.CalculateYs( lp ) );
-				else {
-					if( match_data.left.points[0].LinePoint() != lp ){
-						std::cerr << "Incorrect left line point from client" << std::endl;
-						rSrc.setBadConnection();
-						return Run();
+
+				bits.AppendValue( to_process_lp.size(), 16 );
+				for( uint32_t i = 0; i < to_process_lp.size(); i++ )
+					bits.AppendValue( to_process_lp[i], k_size*2 - removed_bits_no );
+
+
+				int32_t dres = SendGet( rSrc.socket, NET_REQUEST_RESTORE, buf, bits );
+				if( dres < 0 ) throw ReconstructorsManager::ClientError ( "send/recieve" );
+
+				BufValuesReader r( buf+3, (uint32_t)dres );
+				if( buf[0] == NET_RESTORED ){
+					processMatchedResponse( r, processed_lps_count );
+				} else if( buf[0] == NET_NOT_RESTORED ){
+					uint16_t num_points = (uint16_t)r.Next(16);
+					uint16_t idx = (uint16_t)r.Next(16);
+					if( idx != (uint16_t)-1 )
+						throw ReconstructorsManager::ClientError( "Incorrect left point index " + std::to_string( idx ) );
+
+					uint128_t lp = r.Next(k_size*2);
+					if( match_data.left.size == 0 ){
+						match_data.left.Add( idx, checkRestore( left_lp.orig_line_point, lp ), validator.CalculateYs( lp ) );
 					}
-				}
-				for( uint16_t i = 0; i < num_points; i++ ){
-					idx = (uint16_t)r.Next(16) + processed_lps_count;
-					lp = r.Next( k_size*2 );
-					// TODO: validate i.e. check is it real restore
-					match_data.right.Add( idx, lp, validator.CalculateYs(lp) );
-				}
+					else {
+						if( match_data.left.points[0].LinePoint() != lp )
+							throw ReconstructorsManager::ClientError( "Incorrect left line point");
+					}
+					for( uint16_t i = 0; i < num_points; i++ ){
+						idx = (uint16_t)r.Next(16);
+						lp = r.Next( k_size*2 );
+						match_data.right.Add( idx + processed_lps_count, checkRestore( to_process_lp[idx], lp ), validator.CalculateYs(lp) );
+					}
 
-			} else {
-				std::cerr << "Incorrect client response type " << (int)buf[0] << std::endl;
+				} else
+					throw ReconstructorsManager::ClientError( "Incorrect client response type " + std::to_string( (int)buf[0] ) );
+
+				// excption from here and below could broke restore because restore data already processed and in
+				// read rejects
+				uint16_t rejects_no = (uint16_t)r.Next(12);
+				for( uint16_t i = 0; i < rejects_no; i++ )
+					rejects.push_back( (uint16_t)r.Next(12) + processed_lps_count );
+			} catch( ReconstructorsManager::ClientError &er) {
+				std::cout << er.what() << std::endl;
 				rSrc.setBadConnection();
 				return Run(); // recursion to try another source
 			}
-			// read rejects
-			uint16_t rejects_no = (uint16_t)r.Next(12);
-			for( uint16_t i = 0; i < rejects_no; i++ )
-				rejects.push_back( (uint16_t)r.Next(12) + processed_lps_count );
 #endif // TCOMPERESS_WITH_NETWORK
 		}
 
@@ -221,10 +222,11 @@ struct Reconstructor{
 		auto rSrc  = RManager.getSource();
 		if( rSrc.isLocal() )
 			return match_data.RunSecondRound( removed_bits_no, validator );
-		else {
+
 #ifndef TCOMPERESS_WITH_NETWORK
-			throw std::runtime_error( "Network is unsupported" );
+		throw std::runtime_error( "Network is unsupported" );
 #else
+		try{
 			uint8_t buf[0xffff];
 			LargeBits bits;
 
@@ -238,24 +240,22 @@ struct Reconstructor{
 			}
 
 			int32_t dres = SendGet( rSrc.socket, NET_REQUEST_SECOND_ROUND, buf, bits );
-			if( dres < 0 ){
-				rSrc.setBadConnection();
-				return RunSecondRound(); // recursion to try another source
-			}
+			if( dres < 0 ) throw ReconstructorsManager::ClientError ( "send/recieve" );
 
 			if( buf[0] == NET_NOT_RESTORED )
 				return false; // TODO validation, but it need recompute in this case
 			if( buf[0] == NET_RESTORED ) {
 				BufValuesReader r( buf+3, (uint32_t)dres );
-				if( processMatchedResponse( r, 0 ) ) return true;
-				rSrc.setBadConnection();
-				return RunSecondRound();
-			}
-			std::cout << "Incorrect respoinse type" << std::endl;
+				processMatchedResponse( r, 0 );
+				return true;
+			} else
+				throw ReconstructorsManager::ClientError ( "Incorrect client response type " + std::to_string( (int)buf[0] ) );
+		} catch( ReconstructorsManager::ClientError &er) {
+			std::cout << er.what() << std::endl;
 			rSrc.setBadConnection();
-			return RunSecondRound();
-#endif //TCOMPERESS_WITH_NETWORK
+			return Run(); // recursion to try another source
 		}
+#endif //TCOMPERESS_WITH_NETWORK
 	}
 
 	~Reconstructor(){
@@ -289,18 +289,26 @@ private:
 		return rsize;
 	}
 
-	bool processMatchedResponse( BufValuesReader &r, uint16_t idx_fix ){
-		try{
-			match_data.matched_left = r.Next( k_size*2 );
-			match_data.matched_right_idx = (uint16_t)r.Next(16) + idx_fix;
-			match_data.matched_right = r.Next( k_size*2 );
-			// TODO: validate - check is it really match for reals sent points
+	void processMatchedResponse( BufValuesReader &r, uint16_t idx_fix ){
+		// validate - check is it really match for reals sent points
+		Table2MatchData mdata;
+		mdata.AddLeft( checkRestore( left_lp.orig_line_point, r.Next( k_size*2 ) ), validator );
+		idx_fix += (uint16_t)r.Next(16);
+		mdata.AddRight( idx_fix, r.Next( k_size*2 ), validator ); // TODO check restore here? (need to find point with same index
+		if( mdata.matched_left == 0 ) throw ReconstructorsManager::ClientError ( "Incorrect restore" );
+		// copy validated
+		match_data.matched_left = mdata.matched_left;
+		match_data.matched_right_idx = mdata.matched_right_idx ;
+		match_data.matched_right = mdata.matched_right;
+	}
 
-			return true;
-		}
-		catch(...){
-			return false;
-		}
+	inline uint128_t checkRestore( uint128_t cut, uint128_t full ){
+		if( cut != (full>>removed_bits_no) )
+			throw ReconstructorsManager::ClientError ( "Incorrect line point cut" );
+		if( FindNextLinePoint( full, removed_bits_no, validator) != full )
+			throw ReconstructorsManager::ClientError ( "Incorrect line point retore" );
+
+		return full;
 	}
 #endif //TCOMPERESS_WITH_NETWORK
 };
