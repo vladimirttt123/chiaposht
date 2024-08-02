@@ -79,6 +79,13 @@ public:
 
 	// read the static data from header of compressed plot
 	void init( ReadFileWrapper& disk_file, uint16_t memo_size, uint8_t k, const uint8_t *plot_id ){
+#ifdef TCOMPERESS_WITH_NETWORK
+		// this is not a good place for starting default server.
+		// but do not know where to start. it should be started
+		// in case of library and not started in case of executable.
+		RManager.StartServer();
+#endif // TCOMPERESS_WITH_NETWORK
+
 		k_size = k;
 		memcpy( this->plot_id, plot_id, 32 );
 

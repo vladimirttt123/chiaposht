@@ -17,6 +17,10 @@ if (${THREADS_PER_LINE_POINT})
 	add_compile_definitions("-DTHREADS_PER_LINE_POINT=${THREADS_PER_LINE_POINT}")
 endif()
 
+if (${TCOMPRESS_SERVER_PORT})
+	add_compile_definitions("-DTCOMPRESS_SERVER_PORT=${TCOMPRESS_SERVER_PORT}")
+endif()
+
 # CMake 3.14+
 include(FetchContent)
 

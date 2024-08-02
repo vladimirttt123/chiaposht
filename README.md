@@ -72,7 +72,42 @@ Than replace and run chia back as usual. The new library should support all exis
 * CPU only compression/decompression
 * No computation on remote server (could be added in future)
 
-### Analyze
+### Remote Compute
+There is an experimental capability for remote or more precise distributed compute.
+In order to enable it the source should be compiled with option of defualt server port
+```bash
+mkdir -p build && cd build
+cmake -DTCOMPRESS_SERVER_PORT=60001 ..
+cmake --build . -- -j 6
+```
+Such compilation will start listening this port and build *ProofOfSpace* executable
+with capability of remote compute. Than on remote powerfull PCs it is possible to 
+start to server compute like
+```bash
+./ProofOfSpace connect <server1 ip> [<server2 ip> ...] 
+```
+Than any proof lookup on harvester will send requests to remote to help with evaluations.
+The implementation is limited to IPv4 only.
+Althogh connection is not encrypted no confidentional information passed over it, but 
+you need to firewall the port in case it opened to unsecure network to prevent any deny of service 
+created by fake clients.
+
+Because protocol of connection is very simple to utilize more the compute node it is good
+idea to connect twice to server like if you harvester run on ip 192.168.1.5 to run
+```bash
+./ProofOfSpace connect 192.168.1.5 192.168.1.5
+```
+than client will open 2 connections to same harvester and it will better utilize compute resouces of it.
+
+It is possible to connect many PCs to one harvester and any compute node to multiple harvesters.
+In any case it it not pure remote compute some computations still performed on harvester
+althogh it preefers remote compute. 
+
+If compute node does not response due to any compute or network problems within 1.5 seconds it removed
+and computation passed to it computed once again. The bad clients removed, but not banned 
+it means it could immideatly reconnect.
+
+### Analyze of Compression
 
 Any compression level adds 1 IO request per table park. 
 Practically it means double of IO requests without adding thougutput.

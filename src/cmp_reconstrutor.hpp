@@ -16,7 +16,7 @@ using namespace std::chrono_literals; // for operator""min;
 namespace TCompress{
 
 // client should be quick enough to provide respoinse in this time
-const int32_t CLIENT_TIMEOUT_MS = 1500;
+uint32_t CLIENT_TIMEOUT_MS = 1500;
 
 class ReconstructorsManager{
 	std::atomic_int32_t free_locals_count;
@@ -64,7 +64,17 @@ public:
 		clients.push_back( clientSocket );
 	}
 
+	inline void StartServer( uint16_t port = DEFAULT_SERVER_PORT, bool restart = false ){
+#ifdef TCOMPERESS_WITH_NETWORK
+		std::lock_guard<std::mutex> lk(mut);
+		if( !defaultServer || restart )
+			defaultServer.reset( new Server( port, *this ) );
+
+#endif // TCOMPERESS_WITH_NETWORK
+	}
+
 	SourceDataLocker getSource(){
+
 		while( true ){
 			{
 				std::lock_guard<std::mutex> lk(mut);
@@ -82,6 +92,9 @@ public:
 			//std::this_thread::sleep_for( 10ns ); // TODO implement by atomic wait with exists resources amount but than need to upgrade C++ version
 		}
 	}
+
+private:
+	std::unique_ptr<Server<ReconstructorsManager>> defaultServer;
 };
 
 ReconstructorsManager RManager(2);
@@ -125,13 +138,13 @@ struct Reconstructor{
 			if( match_data.AddBulk( left_lp, processed_lps_count, to_process_lp, removed_bits_no, rejects, validator ) )
 				return true;
 		} else {
+#ifndef TCOMPERESS_WITH_NETWORK
+			throw std::runtime_error( "Network is unsupported" );
+#else
 			// // Prepare buffer to send
 			uint8_t buf[0xffff];
-			buf[0] = NET_REQUEST_RESTORE; // request for restore
-			buf[3] = k_size;
-			buf[4] = removed_bits_no;
-			memcpy( buf+5, plot_id, 32 );
 			LargeBits bits;
+
 			if( match_data.left.size ){
 				bits.AppendValue( 255, 8 ); // uncompressed left line point
 				bits.AppendValue( match_data.left.points[0].LinePoint(), k_size*2 );
@@ -144,28 +157,19 @@ struct Reconstructor{
 			for( uint32_t i = 0; i < to_process_lp.size(); i++ )
 				bits.AppendValue( to_process_lp[i], k_size*2 - removed_bits_no );
 
-			uint16_t buf_size = 34 + (bits.GetSize()+7)/8;
-			bits.ToBytes( buf + 37 );
-			buf[1] = buf_size >> 8;
-			buf[2] = buf_size;
 
-			uint16_t rsize;
-			try{
-				sendData( rSrc.socket, buf, buf_size  + 3 );
-				getData( rSrc.socket, buf, 3, CLIENT_TIMEOUT_MS ); // get header
-				rsize = (((uint16_t)buf[1])<<8) + buf[2];
-				getData( rSrc.socket, buf + 3, rsize, CLIENT_TIMEOUT_MS ); // get packet
-			} catch(...){
+			int32_t dres = SendGet( rSrc.socket, NET_REQUEST_RESTORE, buf, bits );
+			if( dres < 0 ){
 				rSrc.setBadConnection();
 				return Run(); // recursion to try another source
 			}
 
-			BufValuesReader r( buf+3, rsize );
+			BufValuesReader r( buf+3, (uint32_t)dres );
 			if( buf[0] == NET_RESTORED ){
-				match_data.matched_left = r.Next( k_size*2 );
-				match_data.matched_right_idx = (uint16_t)r.Next(16) + processed_lps_count;
-				match_data.matched_right = r.Next( k_size*2 );
-				// TODO: validate - check is it really match for reals sent points
+				if( !processMatchedResponse( r, processed_lps_count ) ) {
+					rSrc.setBadConnection();
+					return Run();
+				}
 			} else if( buf[0] == NET_NOT_RESTORED ){
 				uint16_t num_points = (uint16_t)r.Next(16);
 				uint16_t idx = (uint16_t)r.Next(16);
@@ -175,7 +179,15 @@ struct Reconstructor{
 					return Run();
 				}
 				uint128_t lp = r.Next(k_size*2);
-				match_data.left.Add( idx, lp, validator.CalculateYs( lp ) );
+				if( match_data.left.size == 0 )
+					match_data.left.Add( idx, lp, validator.CalculateYs( lp ) );
+				else {
+					if( match_data.left.points[0].LinePoint() != lp ){
+						std::cerr << "Incorrect left line point from client" << std::endl;
+						rSrc.setBadConnection();
+						return Run();
+					}
+				}
 				for( uint16_t i = 0; i < num_points; i++ ){
 					idx = (uint16_t)r.Next(16) + processed_lps_count;
 					lp = r.Next( k_size*2 );
@@ -192,6 +204,7 @@ struct Reconstructor{
 			uint16_t rejects_no = (uint16_t)r.Next(12);
 			for( uint16_t i = 0; i < rejects_no; i++ )
 				rejects.push_back( (uint16_t)r.Next(12) + processed_lps_count );
+#endif // TCOMPERESS_WITH_NETWORK
 		}
 
 		processed_lps_count += to_process_lp.size();
@@ -201,14 +214,89 @@ struct Reconstructor{
 	}
 
 	bool RunSecondRound(){
+		assert( match_data.left.size == 1 );
+		assert( match_data.right.size > 0 );
+
 		// TODO add remote posibility may be with slpit for multiple clients
-		return match_data.RunSecondRound( removed_bits_no, validator );
+		auto rSrc  = RManager.getSource();
+		if( rSrc.isLocal() )
+			return match_data.RunSecondRound( removed_bits_no, validator );
+		else {
+#ifndef TCOMPERESS_WITH_NETWORK
+			throw std::runtime_error( "Network is unsupported" );
+#else
+			uint8_t buf[0xffff];
+			LargeBits bits;
+
+			bits.AppendValue( -1, 16 ); // left point index
+			bits.AppendValue( match_data.left.points[0].LinePoint(), k_size*2 );
+
+			bits.AppendValue( match_data.right.size, 16 );
+			for( uint16_t i = 0; i < match_data.right.size; i++ ){
+				bits.AppendValue( match_data.right.points[i].orig_idx, 16 );
+				bits.AppendValue( match_data.right.points[i].LinePoint(), k_size*2 );
+			}
+
+			int32_t dres = SendGet( rSrc.socket, NET_REQUEST_SECOND_ROUND, buf, bits );
+			if( dres < 0 ){
+				rSrc.setBadConnection();
+				return RunSecondRound(); // recursion to try another source
+			}
+
+			if( buf[0] == NET_NOT_RESTORED ) return false;
+			if( buf[0] == NET_RESTORED ) {
+				BufValuesReader r( buf+3, (uint32_t)dres );
+				if( processMatchedResponse( r, 0 ) ) return true;
+				rSrc.setBadConnection();
+				return RunSecondRound();
+			}
+			std::cout << "Incorrect respoinse type" << std::endl;
+			rSrc.setBadConnection();
+			return RunSecondRound();
+#endif //TCOMPERESS_WITH_NETWORK
+		}
 	}
 
 	~Reconstructor(){
 		// TODO show rejected
 	}
 
+private:
+#ifdef TCOMPERESS_WITH_NETWORK
+
+	int32_t SendGet( int32_t socket, uint8_t req_type, uint8_t *buf, LargeBits &bits ){
+		buf[0] = req_type; // request for restore
+		buf[3] = k_size;
+		buf[4] = removed_bits_no;
+		memcpy( buf+5, plot_id, 32 );
+
+		uint16_t buf_size = 34 + (bits.GetSize()+7)/8;
+		bits.ToBytes( buf + 37 );
+		buf[1] = buf_size >> 8;
+		buf[2] = buf_size;
+
+		uint16_t rsize;
+		try{
+			sendData( socket, buf, buf_size  + 3 );
+			getData( socket, buf, 3, CLIENT_TIMEOUT_MS ); // get header
+			rsize = (((uint16_t)buf[1])<<8) + buf[2];
+			getData( socket, buf + 3, rsize, CLIENT_TIMEOUT_MS ); // get packet
+		} catch(...){
+			return -1;
+		}
+
+		return rsize;
+	}
+
+	bool processMatchedResponse( BufValuesReader &r, uint16_t idx_fix ){
+		match_data.matched_left = r.Next( k_size*2 );
+		match_data.matched_right_idx = (uint16_t)r.Next(16) + idx_fix;
+		match_data.matched_right = r.Next( k_size*2 );
+		// TODO: validate - check is it really match for reals sent points
+
+		return true;
+	}
+#endif //TCOMPERESS_WITH_NETWORK
 };
 
 }

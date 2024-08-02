@@ -27,6 +27,7 @@ using namespace std::chrono;
 #include "prover_disk.hpp"
 #include "verifier.hpp"
 #include "compressor.hpp"
+#include "cmp_network.hpp"
 
 using std::string;
 using std::vector;
@@ -106,9 +107,11 @@ int main(int argc, char *argv[]) try {
     uint32_t buffmegabytes = 0;
 		uint32_t initial_challenge = 0;
 		uint32_t compress_io_optimitzation = 0;
+#ifdef TCOMPERESS_WITH_NETWORK
 		uint32_t wait_connections = 0;
 		uint16_t port;
 		bool client_reconnect = false;
+#endif // TCOMPERESS_WITH_NETWORK
 
     options.allow_unrecognised_options().add_options()(
             "k, size", "Plot size", cxxopts::value<uint8_t>(k))(
@@ -135,14 +138,21 @@ int main(int argc, char *argv[]) try {
 																"The higher number the less IO request for proofs. "
 																"Valid values are 0 to 10.",
 				cxxopts::value<uint32_t>(compress_io_optimitzation)->default_value("0"))(
+#ifdef TCOMPERESS_WITH_NETWORK
 				"wait_connections", "Open server and wait for connections before start to check. Used for debug.",
 				cxxopts::value<uint32_t>(wait_connections)->default_value("0") )(
+				"client_timeout", "Sets client timeout in ms. Used for debug.",
+				cxxopts::value<uint32_t>(TCompress::CLIENT_TIMEOUT_MS)->default_value("1500") )(
 				"port", "Port to use for network communications.",
-				cxxopts::value<uint16_t>(port)->default_value("60001") )(
+				cxxopts::value<uint16_t>(port)->default_value(std::to_string(TCompress::DEFAULT_SERVER_PORT)) )(
 				"reconnect", "is client should try to reconnect in case of lost connection",
 				cxxopts::value<bool>(client_reconnect)->default_value("false") )(
+#endif // TCOMPERESS_WITH_NETWORK
 				"help", "Print help");
 
+#ifdef TCOMPERESS_WITH_NETWORK
+		TCompress::RManager.StartServer( 0 ); // 0 port will not start any server
+#endif // TCOMPERESS_WITH_NETWORK
     auto result = options.parse(argc, argv);
 
     if (result.count("help") || argc < 2) {
@@ -276,15 +286,16 @@ int main(int argc, char *argv[]) try {
         }
         delete[] proof_bytes;
     } else if (operation == "check") {
-			std::unique_ptr<TCompress::Server> server;
+#ifdef TCOMPERESS_WITH_NETWORK
 			if( wait_connections ){
 				std::cout << "Wait for connections" << std::endl;
-				server.reset( new TCompress::Server( port, [](int32_t socket){TCompress::RManager.AddRemoteSource(socket);}) );
+				TCompress::RManager.StartServer( port, true );
 				while( TCompress::RManager.getClientsCount() < wait_connections )
 					std::this_thread::sleep_for( 1s );
 
 				std::cout << "Clients connected: " << TCompress::RManager.getClientsCount() << std::endl;
 			}
+#endif // TCOMPERESS_WITH_NETWORK
 
         InitDecompressorQueueDefault();
 
@@ -362,6 +373,7 @@ int main(int argc, char *argv[]) try {
 			}
 			TCompress::Compressor plot_compress( argv[3] );
 			plot_compress.CompressTo( filename , std::stoi(argv[2]), compress_io_optimitzation );
+#ifdef TCOMPERESS_WITH_NETWORK
 		} else if( operation == "connect" ){
 			if( argc < 3 ) {
 				std::cout << "not enough parameters. use\n\tconnect ip [ip..]" << std::endl;
@@ -385,6 +397,7 @@ int main(int argc, char *argv[]) try {
 					} ) );
 				}
 			}
+#endif // TCOMPERESS_WITH_NETWORK
 		}	else {
 				cout << "Invalid operation '" << operation << "'. Use create/prove/verify/check/compress" << endl;
     }
