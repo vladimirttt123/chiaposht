@@ -230,7 +230,7 @@ void StartClient( uint32_t addr, uint16_t port, uint32_t threads_no = THREADS_PE
 			getData( clientSocket, buf+3, size );
 			uint8_t k_size = buf[3], removed_bits_no = buf[4], plot_id[32];
 			memcpy( plot_id, buf+5, 32 );
-			BufValuesReader r( buf + 38, size - 35 );
+			BufValuesReader buf_r( buf + 37, size - 34 );
 
 			Table2MatchData mdata;
 			LinePointMatcher validator( k_size, plot_id );
@@ -242,24 +242,22 @@ void StartClient( uint32_t addr, uint16_t port, uint32_t threads_no = THREADS_PE
 				const uint32_t lp_size = k_size*2 - removed_bits_no;
 
 				LinePointInfo left_lp;
-				if( buf[37] == 255 ){
-					left_lp.full_line_point = r.Next( k_size*2 );
+				left_lp.skip_points = buf_r.Next(8);
+				if( left_lp.skip_points == 255 ){
+					left_lp.full_line_point = buf_r.Next( k_size*2 );
 					mdata.left.Add( -1, left_lp.full_line_point, validator.CalculateYs(left_lp.full_line_point) );
+				} else {
+					left_lp.orig_line_point = buf_r.Next( lp_size );
 				}
 
-				if( buf[37] < 255 ){
-					left_lp.skip_points = buf[37];
-					left_lp.orig_line_point = r.Next( lp_size );
-				}
-
-				uint16_t line_points_count = (uint16_t)r.Next( 16 );
+				uint16_t line_points_count = (uint16_t)buf_r.Next( 16 );
 				std::cout << ", points_no: " << line_points_count << std::endl;
 				if( line_points_count > 4095 )
 					err( "Too many line points " + std::to_string( line_points_count ) );
 
 				std::vector<uint128_t> line_points(line_points_count);
 				for( uint32_t i = 0; i < line_points_count; i++ )
-					line_points[i] = r.Next( lp_size );
+					line_points[i] = buf_r.Next( lp_size );
 
 				std::vector<uint16_t> rejects;
 				uint16_t res_size;
@@ -300,19 +298,20 @@ void StartClient( uint32_t addr, uint16_t port, uint32_t threads_no = THREADS_PE
 				req_timer.PrintElapsed( " in " );
 			} else if( buf[0] == NET_REQUEST_SECOND_ROUND ){ // Second round
 				Timer req_timer;
-				std::cout << "Second round request k: " << k_size << ", plot_id: " << Util::HexStr( plot_id, 32 ) << std::endl;
-				uint16_t idx = (uint16_t)r.Next(16);
+				std::cout << "Second round request k: " << (int)k_size << ", plot_id: " << Util::HexStr( plot_id, 32 )
+									<< ", removed_bits: " << (int)removed_bits_no << std::endl;
+				uint16_t idx = (uint16_t)buf_r.Next(16);
 				if( idx != (uint16_t)-1 )
 					throw std::runtime_error( "Incorrect left line point index" );
 
 				Table2MatchData mdata;
 				LinePointMatcher validator( k_size, plot_id );
 
-				uint128_t lp = r.Next( k_size * 2);
+				uint128_t lp = buf_r.Next( k_size * 2);
 				mdata.left.Add( idx, lp, validator.CalculateYs(lp) );
-				for( int32_t rcount = (uint16_t)r.Next(16); rcount >= 0; rcount-- ){
-					idx = (uint16_t)r.Next(16);
-					lp = r.Next( k_size*2 );
+				for( int32_t rcount = (uint16_t)buf_r.Next(16); rcount > 0; rcount-- ){
+					idx = (uint16_t)buf_r.Next(16);
+					lp = buf_r.Next( k_size*2 );
 					mdata.right.Add( idx, lp, validator.CalculateYs(lp));
 				}
 
@@ -324,6 +323,7 @@ void StartClient( uint32_t addr, uint16_t port, uint32_t threads_no = THREADS_PE
 					bits.AppendValue( mdata.matched_right_idx, 16 );
 					bits.AppendValue( mdata.matched_right, k_size*2 );
 					uint16_t res_size = (bits.GetSize()+7)/8;
+					bits.ToBytes( buf + 3 );
 
 					buf[1] = res_size>>8; // size - high
 					buf[2] = res_size; // size - low

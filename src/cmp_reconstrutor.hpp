@@ -243,7 +243,8 @@ struct Reconstructor{
 				return RunSecondRound(); // recursion to try another source
 			}
 
-			if( buf[0] == NET_NOT_RESTORED ) return false;
+			if( buf[0] == NET_NOT_RESTORED )
+				return false; // TODO validation, but it need recompute in this case
 			if( buf[0] == NET_RESTORED ) {
 				BufValuesReader r( buf+3, (uint32_t)dres );
 				if( processMatchedResponse( r, 0 ) ) return true;
@@ -289,12 +290,17 @@ private:
 	}
 
 	bool processMatchedResponse( BufValuesReader &r, uint16_t idx_fix ){
-		match_data.matched_left = r.Next( k_size*2 );
-		match_data.matched_right_idx = (uint16_t)r.Next(16) + idx_fix;
-		match_data.matched_right = r.Next( k_size*2 );
-		// TODO: validate - check is it really match for reals sent points
+		try{
+			match_data.matched_left = r.Next( k_size*2 );
+			match_data.matched_right_idx = (uint16_t)r.Next(16) + idx_fix;
+			match_data.matched_right = r.Next( k_size*2 );
+			// TODO: validate - check is it really match for reals sent points
 
-		return true;
+			return true;
+		}
+		catch(...){
+			return false;
+		}
 	}
 #endif //TCOMPERESS_WITH_NETWORK
 };
