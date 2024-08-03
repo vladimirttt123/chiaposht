@@ -216,7 +216,7 @@ void StartClient( uint32_t addr, uint16_t port, uint32_t threads_no = THREADS_PE
 														 + " while expected " + Util::HexStr( (uint8_t*)&PROTOCOL_VER, 4 ) );
 
 	while( true ){
-		getData( clientSocket, buf, 3 );
+		getData( clientSocket, buf, 3, 40*60*1000 /*40 minutes*/ );
 
 		if( buf[0] == NET_PING ){ // ping request
 			buf[0] = NET_PING_RESPONSE; // ping response
