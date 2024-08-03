@@ -12,16 +12,11 @@
 
 namespace TCompress{
 
-// client should be quick enough to provide respoinse in this time
-uint32_t CLIENT_TIMEOUT_MS = 1500;
 
 class ReconstructorsManager{
 	std::atomic_int32_t free_locals_count;
 	std::mutex mut;
 	std::vector<int> clients;
-
-
-
 
 public:
 

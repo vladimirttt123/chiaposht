@@ -103,7 +103,7 @@ It is possible to connect many PCs to one harvester and any compute node to mult
 In any case it it not pure remote compute some computations still performed on harvester
 althogh it preefers remote compute. 
 
-If compute node does not response due to any compute or network problems within 1.5 seconds it removed
+If compute node does not response due to any compute or network problems within 2 seconds it removed
 and computation passed to it computed once again. The bad clients removed, but not banned 
 it means it could immideatly reconnect.
 

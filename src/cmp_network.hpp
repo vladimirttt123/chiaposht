@@ -25,6 +25,9 @@ namespace TCompress{
 const uint32_t DEFAULT_SERVER_PORT = TCOMPRESS_SERVER_PORT;
 #endif
 
+// client should be quick enough to provide respoinse in this time
+uint32_t CLIENT_TIMEOUT_MS = 2000;
+
 const uint32_t PROTOCOL_VER = 0x00020001;
 const inline uint8_t NET_PING = 1, NET_PING_RESPONSE = 2, NET_REQUEST_RESTORE = 3,
 		NET_RESTORED = 4, NET_NOT_RESTORED = 5, NET_REQUEST_SECOND_ROUND = 6;
