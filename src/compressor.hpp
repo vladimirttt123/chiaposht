@@ -32,46 +32,35 @@ struct TooSmallMinDeltasException : public std::exception {
 struct OriginalTableInfo{
 public:
 	const uint64_t table_pointer, table_size;
-	const uint8_t k, line_point_size;
+	const uint8_t k, line_point_size_bits, line_point_size;
 	const uint64_t delta_size, single_stub_size_bits, stubs_size, park_size, parks_count;
-	const uint64_t new_line_point_size, new_single_stub_size_bits, new_stubs_size;
+	const uint64_t new_line_point_size_bits, new_line_point_size, new_single_stub_size_bits, new_stubs_size;
 	const uint64_t single_stub_mask;
 
 	uint64_t new_table_size = 0;
 	std::unique_ptr<DeltasStorage> new_deltas;
 
-	OriginalTableInfo( uint8_t k, uint8_t table_no, uint64_t table_pointer, uint64_t table_size, uint32_t stubs_bits_to_remove = 0 )
+	OriginalTableInfo( uint8_t k, uint8_t table_no, uint64_t table_pointer, uint64_t table_size,
+										uint32_t stubs_bits_to_remove = 0, const Decompressor * decompressor = nullptr )
 			: table_pointer(table_pointer), table_size(table_size), k(k)
-			, line_point_size( EntrySizes::CalculateLinePointSize(k) )
+			, line_point_size_bits( k*2 - RemovedBitsNumber(table_no, decompressor) )
+			, line_point_size( ( line_point_size_bits  + 7 )/8 )
 			, delta_size( EntrySizes::CalculateMaxDeltasSize( k, table_no ) )
-			, single_stub_size_bits( k - kStubMinusBits )
-			, stubs_size( EntrySizes::CalculateStubsSize( k ) )
+			, single_stub_size_bits( k - kStubMinusBits - RemovedBitsNumber(table_no, decompressor) )
+			, stubs_size( (single_stub_size_bits*(kEntriesPerPark-1)+7)/8 )
 			, park_size( EntrySizes::CalculateParkSize( k, table_no ) )
-			, parks_count( table_size / park_size )
-			, new_line_point_size( (2*k-stubs_bits_to_remove+7)/8 )
+			, parks_count( decompressor ? decompressor->getParksCount( table_no - 1 ) : table_size / park_size )
+			, new_line_point_size_bits( line_point_size_bits-stubs_bits_to_remove )
+			, new_line_point_size( (new_line_point_size_bits+7)/8 )
 			, new_single_stub_size_bits( single_stub_size_bits - stubs_bits_to_remove )
 			, new_stubs_size( Util::ByteAlign((kEntriesPerPark - 1) * ( new_single_stub_size_bits )) / 8 )
 			, single_stub_mask( ((uint64_t)-1)>>(64-single_stub_size_bits))
 			, new_deltas( new DeltasStorage( parks_count ) )
 	{}
 
-	OriginalTableInfo( uint8_t k, uint8_t table_no, uint64_t table_pointer, uint64_t table_size, const Decompressor * decompressor )
-			: table_pointer(table_pointer), table_size(table_size), k(k)
-			, line_point_size( (k*2 - RemovedBitsNumber(table_no, decompressor)  + 7 )/8 )
-			, delta_size( EntrySizes::CalculateMaxDeltasSize( k, table_no ) )
-			, single_stub_size_bits( k - kStubMinusBits - RemovedBitsNumber(table_no, decompressor) )
-			, stubs_size( (single_stub_size_bits*(kEntriesPerPark-1)+7)/8 )
-			, park_size( EntrySizes::CalculateParkSize( k, table_no ) )
-			, parks_count( decompressor->getParksCount( table_no - 1 ) )
-			, new_line_point_size( line_point_size )
-			, new_single_stub_size_bits( single_stub_size_bits )
-			, new_stubs_size( stubs_size )
-			, single_stub_mask( ((uint64_t)-1)>>(64-single_stub_size_bits))
-			, new_deltas( new DeltasStorage( parks_count ) )
-	{}
-
 private:
 	static uint8_t RemovedBitsNumber( uint8_t table_no, const Decompressor * decompressor ){
+		if( decompressor == nullptr ) return 0;
 		switch(table_no){
 		case 1: return decompressor->GetNumberOfRemovedBits();
 		case 2: return decompressor->isTable2Cutted()?11:0;
@@ -275,15 +264,19 @@ public:
 		if( std::filesystem::exists(filename) )
 			throw std::invalid_argument( "output file exists please delete manually: " + filename );
 
-		uint8_t bits_to_cut = cmp_level_to_bits_cut( level );
-		bool cut_table2 = bits_to_cut > 18;
 		const int16_t io_p = std::min( 10, (int32_t) io_optimized );
+		const uint8_t remove_bits_by_level = cmp_level_to_bits_cut( level ); // this is total bits to cut
+		bool cut_table2 = remove_bits_by_level > 18; // if more than 18 bits to cut than 11 of it from table 2
+		uint8_t removed_bits_table1 = remove_bits_by_level - ( cut_table2 ? 11 : 0 ); // remove 11 bits for table 2 cut
+		uint8_t bits_to_cut = removed_bits_table1;
 
-		if( decompressor ){
-			bits_to_cut = decompressor->GetNumberOfRemovedBits();
-			cut_table2 = decompressor->isTable2Cutted();
-		} else {
-			if( cut_table2 ) bits_to_cut -= 11;
+		if( decompressor ){ // fix number of removed bits by compressed data
+			cut_table2 = decompressor->isTable2Cutted(); // leave the same as in compressed
+			if( !cut_table2 || removed_bits_table1 < decompressor->GetNumberOfRemovedBits() ){ // TODO for level 0
+				bits_to_cut = 0; // do not remove additional bits
+				removed_bits_table1 = decompressor->GetNumberOfRemovedBits(); // leave the same as in compressed
+			}
+			else bits_to_cut = removed_bits_table1 - decompressor->GetNumberOfRemovedBits(); // add more bits to cut
 		}
 		std::cout << "Start to " << ( decompressor?"realign" : ( "compress with level " + std::to_string( (int)level ) ) )
 							<< " (" << (cut_table2?"table2 + ":"") << (int)bits_to_cut
@@ -303,7 +296,7 @@ public:
 		header[59] = memo_size;
 		memcpy( header + 60, memo, memo_size );
 		// next 80 bytes is new tables pointers
-		header[140+memo_size] = bits_to_cut | (cut_table2?0x80:0) | 0x40/*flag of improved align*/; // compression level
+		header[140+memo_size] = removed_bits_table1 | (cut_table2?0x80:0) | 0x40/*flag of improved align*/; // compression level
 
 		uint64_t *new_table_pointers = (uint64_t*)(header+60+memo_size);
 		new_table_pointers[0] = header_size;
@@ -324,13 +317,22 @@ public:
 		Timer total_timer;
 		FileDisk output_file( filename );
 
+		auto change_table = [this, &min_deltas_sizes, &new_table_pointers, &output_file, &bits_to_cut, &cut_table2]( uint32_t i ){
+			if( decompressor ){
+				if( i > 1 || bits_to_cut == 0 )
+					return RealignTable( i, &output_file, new_table_pointers[i-1], min_deltas_sizes[i-1] );
+				return CompressTable( i, &output_file, new_table_pointers[i-1], bits_to_cut, min_deltas_sizes[i-1] );
+			}
+
+			return ( ((i == 1 && bits_to_cut > 0 ) || (i==2 && cut_table2) ) ?
+											CompressTable( i, &output_file, new_table_pointers[i-1], i==1 ? bits_to_cut : 11, min_deltas_sizes[i-1] )
+										: CompactTable( i, &output_file, new_table_pointers[i-1], min_deltas_sizes[i-1] ) );
+		};
+
 		for( uint32_t i = 1; i < 7; i++ ){
 			std::cout << "Table " << i << ": " << std::flush;
 
-			auto tinfo = decompressor ? RealignTable( i, &output_file, new_table_pointers[i-1], min_deltas_sizes[i-1] ) :
-											 ( ((i == 1 && bits_to_cut > 0 ) || (i==2 && cut_table2) ) ?
-															CompressTable( i, &output_file, new_table_pointers[i-1], i==1 ? bits_to_cut : 11, min_deltas_sizes[i-1] )
-														: CompactTable( i, &output_file, new_table_pointers[i-1], min_deltas_sizes[i-1] ) );
+			auto tinfo = change_table( i );
 			new_table_pointers[i] = new_table_pointers[i-1] + tinfo.new_table_size;
 
 			if( tinfo.parks_count > 0xffffffffUL ) throw std::runtime_error("too many parks");
@@ -419,7 +421,7 @@ private:
 	// 1. Line Point
 	// 2. Deltas
 	// 3. Begginig of stubs
-	// 4. 2 byes from with restored position and size of overdraft.
+	// 4. 3 bytes from witch restored position and size of overdraft.
 	OriginalTableInfo CompactTable( int table_no, FileDisk * output_file, uint64_t output_position, uint16_t min_deltas_sizes ){
 		std::cout << " compacting       " << std::flush;
 
@@ -435,7 +437,7 @@ private:
 			progress.ShowNext( i );
 
 			disk_file.Read( buf, tinfo.park_size );
-			writer.WriteNext( buf/*line_point+stubs*/, buf+lps_size+2/*deltas_sizes*/, parseDeltasSize( buf+lps_size ) );
+			writer.WriteNext( buf/*line_point+stubs*/, buf+lps_size+2/*deltas_sizes*/, parseDeltasSize( buf+lps_size, table_no ) );
 		}
 
 		tinfo.new_table_size = writer.getWrittenSize();
@@ -449,7 +451,7 @@ private:
 		assert( decompressor );
 		std::cout << " realign " << std::flush;
 
-		OriginalTableInfo tinfo( k_size, table_no, table_pointers[table_no-1], table_pointers[table_no] - table_pointers[table_no-1], decompressor.get() );
+		OriginalTableInfo tinfo( k_size, table_no, table_pointers[table_no-1], table_pointers[table_no] - table_pointers[table_no-1], 0, decompressor.get() );
 		TableWriter writer( output_file, output_position, min_deltas_sizes, tinfo.parks_count, tinfo.line_point_size, tinfo.stubs_size, tinfo.new_deltas.get() );
 
 		ProgressCounter progress( tinfo.parks_count );
@@ -466,11 +468,27 @@ private:
 		return tinfo;
 	}
 
-	inline uint16_t parseDeltasSize( uint8_t *buf ){
+	inline uint16_t parseDeltasSize( uint8_t *buf, uint8_t table_no ){
 		uint16_t deltas_size = ( ((uint16_t)buf[0]) | (((uint16_t)buf[1])<<8) );
-		if( deltas_size&0x8000 && deltas_size&0x7fff )
-			throw std::runtime_error( "Uncompressed deltas does not supported" );
-		return deltas_size & 0x7fff;
+		if( deltas_size&0x8000 ) {
+			deltas_size &= 0x7fff;
+			if( !deltas_size ) return 0;
+			if( deltas_size > 2)
+				throw std::runtime_error( "Unsupported case of not compressed deltas" );
+
+			// this could be only on last park
+			// the ANS does not encode such lengthes than we add artifitially one or 2 entries just to compress them
+			// this additional entries would never be mentioned from higer table and than shouldn't do any harm.
+			std::vector<uint8_t> deltas;
+			deltas.push_back( buf[0] );
+			deltas.push_back( buf[1] );
+			deltas.push_back( 0 );
+			uint32_t new_size = Encoding::ANSEncodeDeltas( deltas, kRValues[table_no-1], buf );
+			if( new_size == 0 || new_size > EntrySizes::CalculateMaxDeltasSize( 32/*this func not depends on this*/, table_no ) )
+				throw std::runtime_error( "Unsupported case of uncompressed deltas with short length" );
+			deltas_size = new_size;
+		}
+		return deltas_size;
 	}
 
 	uint64_t CompactC3Table( FileDisk * output_file, uint64_t output_position, uint64_t &total_saved, uint16_t min_deltas_sizes ){
@@ -516,34 +534,36 @@ private:
 		std::cout << " compressing (" << bits_to_remove << ") " << std::flush;
 
 		OriginalTableInfo tinfo( k_size, table_no, table_pointers[table_no-1],
-														table_pointers[table_no] - table_pointers[table_no-1], bits_to_remove );
+														table_pointers[table_no] - table_pointers[table_no-1], bits_to_remove, decompressor.get() );
 		if( bits_to_remove > tinfo.single_stub_size_bits )
-			throw std::runtime_error( "Compression is too high Table 1 stub has " + std::to_string(tinfo.single_stub_size_bits)
+			throw std::runtime_error( "Compression is too high Table stub has " + std::to_string(tinfo.single_stub_size_bits)
 															 + " and compression need to remove " + std::to_string(bits_to_remove ) );
 
 		const double R = kRValues[table_no-1];
 		const auto max_deltas_size = EntrySizes::CalculateMaxDeltasSize( k_size, table_no );
-		TableWriter writer( output_file, output_position, min_deltas_size, tinfo.parks_count, tinfo.new_line_point_size, tinfo.new_stubs_size, tinfo.new_deltas.get() );
+		TableWriter writer( output_file, output_position, min_deltas_size, tinfo.parks_count,
+											 tinfo.new_line_point_size, tinfo.new_stubs_size, tinfo.new_deltas.get() );
 
 		uint8_t read_buf[tinfo.park_size+7],
 				new_stubs_buf[ tinfo.new_stubs_size + tinfo.line_point_size + 7/* safe distance*/],
 				new_compressed_deltas_buf[kEntriesPerPark];
 		ProgressCounter progress( tinfo.parks_count );
 
-		disk_file.Seek( table_pointers[table_no-1] ); // seek to start of the table
+		if( !decompressor )
+			disk_file.Seek( table_pointers[table_no-1] ); // seek to start of the table
 		for( uint64_t i = 0; i < tinfo.parks_count; i++ ){
 			progress.ShowNext( i );
 
-			disk_file.Read( read_buf, tinfo.park_size ); // read the original park
-
-			ParkReader park( read_buf, k_size*2, tinfo.single_stub_size_bits, max_deltas_size, table_no );
+			if( !decompressor ) disk_file.Read( read_buf, tinfo.park_size ); // read the original park
+			ParkReader park = decompressor ? decompressor->GetParkReader( disk_file,  table_no-1, i*kEntriesPerPark, kEntriesPerPark )
+																		 : ParkReader( read_buf, k_size*2, tinfo.single_stub_size_bits, max_deltas_size, table_no );
 
 
 			ParkBits park_stubs_bits;
 			std::vector<uint8_t> park_deltas;
 			bool deltas_changed = false;
 			uint128_t line_point = park.NextLinePoint() >> bits_to_remove;
-			Bits line_point_bits( line_point, k_size*2-bits_to_remove );
+			Bits line_point_bits( line_point, tinfo.new_line_point_size_bits );
 			line_point_bits.ToBytes( new_stubs_buf ); // save cutted check point line point
 
 			// Restore each line point and repack it new type of stubs
