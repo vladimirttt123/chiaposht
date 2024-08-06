@@ -382,15 +382,17 @@ int main(int argc, char *argv[]) try {
 			std::vector<std::unique_ptr<std::thread,TCompress::ThreadDeleter>> clients;
 			for( int i = 2; i < argc; i++ ){
 				if( argv[i][0] != '-' ){
-					std::cout << "Start connection to " << i << " - " << argv[i] << std::endl;
+					std::clog << "Start connection to " << i << " - " << argv[i] << std::endl;
 					clients.emplace_back( new std::thread( [&client_reconnect, &port, i, &argv](){
 						auto ip = inet_addr( argv[i] );
 						do{
 							try{ TCompress::StartClient( ip, port ); }
 							catch (const std::exception &e){
-								std::cout << i << " - " << argv[i] << e.what() << std::endl;
+								std::cerr << i << " - " << argv[i] << e.what() << std::endl;
 							}
-							catch(...){}
+							catch(...){
+								std::cerr << i << " - " << argv[i] << " some exception - disconnected";
+							}
 							std::this_thread::sleep_for( 2s );
 						}while(client_reconnect);
 						std::cout << i << " - " << argv[i] << "Finish connection to " << i << " - " << argv[i] << std::endl;

@@ -208,7 +208,9 @@ void StartClient( uint32_t addr, uint16_t port, uint32_t threads_no = THREADS_PE
 		err( "Cannot connect to server result " + std::to_string( cres )
 														 + " errno " + std::to_string(errno) + " - " + ::strerror(errno) );
 
-	std::cout << "Connected to server with result " << cres << std::endl;
+	std::clog << "Connected to server "<< (addr&0xff) << "." << ((addr>>8)&0xff)
+						<< "." << ((addr>>16)&0xff) <<"." << (addr>>24)
+						<< ":" << port << " with result " << cres << std::endl;
 	// sending protocol version
 	sendData( clientSocket, (uint8_t*)&PROTOCOL_VER, 4 );
 
@@ -217,18 +219,25 @@ void StartClient( uint32_t addr, uint16_t port, uint32_t threads_no = THREADS_PE
 	if( memcmp( &PROTOCOL_VER, buf, 4 ) != 0 )
 		err( "Incorrect protocol version from server " + Util::HexStr( buf, 4 )
 														 + " while expected " + Util::HexStr( (uint8_t*)&PROTOCOL_VER, 4 ) );
+	// variables for logging
+	uint64_t requests = 0, total_received = 0, total_send = 0;
 
 	while( true ){
 		getData( clientSocket, buf, 3, 40*60*1000 /*40 minutes*/ );
 
+		requests++;
+
 		if( buf[0] == NET_PING ){ // ping request
 			buf[0] = NET_PING_RESPONSE; // ping response
 			sendData( clientSocket, buf, 3 );
+			total_send += 3ULL; // for log
 		} else {
 			const uint16_t size = (((uint16_t)buf[1])<<8) + buf[2];
 
 			if( size < 34 || size > 65000 )  // k + cut + plot_id = 34 bytes at least
 				err( "Incorrect request size " + std::to_string(size) );
+
+			total_received += size + 3ULL;
 
 			getData( clientSocket, buf+3, size );
 			uint8_t k_size = buf[3], removed_bits_no = buf[4], plot_id[32];
@@ -298,6 +307,8 @@ void StartClient( uint32_t addr, uint16_t port, uint32_t threads_no = THREADS_PE
 				buf[2] = res_size; // size - low
 				sendData( clientSocket, buf, res_size + 3 );
 
+				total_send += res_size + 3ULL; // for log
+
 				req_timer.PrintElapsed( " in " );
 			} else if( buf[0] == NET_REQUEST_SECOND_ROUND ){ // Second round
 				Timer req_timer;
@@ -331,6 +342,7 @@ void StartClient( uint32_t addr, uint16_t port, uint32_t threads_no = THREADS_PE
 					buf[1] = res_size>>8; // size - high
 					buf[2] = res_size; // size - low
 					sendData( clientSocket, buf, res_size + 3 );
+					total_send += res_size + 3ULL; // for log
 
 				}else
 				{
@@ -338,9 +350,14 @@ void StartClient( uint32_t addr, uint16_t port, uint32_t threads_no = THREADS_PE
 					buf[1] = 0;
 					buf[2] = 0;
 					sendData( clientSocket, buf, 3 );
+					total_send += 3ULL; // for log
 				}
 				req_timer.PrintElapsed( " in " );
 			}
+
+			if( (requests&0xfff) == 0 )
+				std::clog << "\t requests: " << requests << ", total_received: " << total_received
+									<< ", total_sent: " << total_send << ", " << Timer::GetNow();
 		}
 	}
 	// closing socket
