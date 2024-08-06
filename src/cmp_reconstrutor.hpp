@@ -110,7 +110,7 @@ struct Reconstructor{
 	const uint64_t table2_pos, table1_init_pos;
 	LinePointInfo left_lp;
 	Table2MatchData match_data;
-	uint16_t processed_lps_count = 0;
+	uint16_t first_right_lp_index = 0;
 	std::vector<uint128_t> to_process_lp;
 	LinePointMatcher validator;
 	std::vector<uint16_t> rejects;
@@ -129,8 +129,10 @@ struct Reconstructor{
 		left_lp = left_line_point;
 	}
 
-	inline bool isNeedMoreLinePoints() const { return (to_process_lp.size()+processed_lps_count) < kEntriesPerPark; }
-	inline void addRightLinePoint( uint128_t line_point ){ to_process_lp.push_back(line_point);	}
+	inline uint16_t addRightLinePoint( uint128_t line_point ){
+		to_process_lp.push_back(line_point);
+		return to_process_lp.size();
+	}
 
 	// Running line point restore by provided data
 	bool Run(){
@@ -138,7 +140,7 @@ struct Reconstructor{
 
 		auto rSrc  = RManager.getSource();
 		if( rSrc.isLocal() ){
-			if( match_data.AddBulk( left_lp, processed_lps_count, to_process_lp, removed_bits_no, rejects, validator ) )
+			if( match_data.AddBulk( left_lp, first_right_lp_index, to_process_lp, removed_bits_no, rejects, validator ) )
 				return true;
 		} else {
 #ifndef TCOMPERESS_WITH_NETWORK
@@ -167,7 +169,7 @@ struct Reconstructor{
 
 				BufValuesReader r( buf+3, (uint32_t)dres );
 				if( buf[0] == NET_RESTORED ){
-					processMatchedResponse( r, processed_lps_count );
+					processMatchedResponse( r, first_right_lp_index );
 				} else if( buf[0] == NET_NOT_RESTORED ){
 					uint16_t num_points = (uint16_t)r.Next(16);
 					uint16_t idx = (uint16_t)r.Next(16);
@@ -185,7 +187,7 @@ struct Reconstructor{
 					for( uint16_t i = 0; i < num_points; i++ ){
 						idx = (uint16_t)r.Next(16);
 						lp = r.Next( k_size*2 );
-						match_data.right.Add( idx + processed_lps_count, checkRestore( to_process_lp[idx], lp ), validator.CalculateYs(lp) );
+						match_data.right.Add( idx + first_right_lp_index, checkRestore( to_process_lp[idx], lp ), validator.CalculateYs(lp) );
 					}
 
 				} else
@@ -195,7 +197,7 @@ struct Reconstructor{
 				// read rejects
 				uint16_t rejects_no = (uint16_t)r.Next(12);
 				for( uint16_t i = 0; i < rejects_no; i++ )
-					rejects.push_back( (uint16_t)r.Next(12) + processed_lps_count );
+					rejects.push_back( (uint16_t)r.Next(12) + first_right_lp_index );
 			} catch( ReconstructorsManager::ClientError &er) {
 				std::cout << er.what() << std::endl;
 				rSrc.setBadConnection();
@@ -204,7 +206,6 @@ struct Reconstructor{
 #endif // TCOMPERESS_WITH_NETWORK
 		}
 
-		processed_lps_count += to_process_lp.size();
 		to_process_lp.clear();
 
 		return match_data.matched_left != 0;
