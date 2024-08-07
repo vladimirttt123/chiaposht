@@ -274,11 +274,15 @@ private:
 		buf[2] = buf_size;
 
 		uint16_t rsize;
+		uint32_t timeout = CLIENT_TIMEOUT_BASE_MS;
+		if( removed_bits_no > 10 ) // TODO: add line points count to this function
+			timeout += std::min( CLIENT_TIMEOUT_BASE_MS, CLIENT_TIMEOUT_ADD_PER_CUT_BIT << (removed_bits_no-10) );
+
 		try{
 			sendData( socket, buf, buf_size  + 3 );
-			getData( socket, buf, 3, CLIENT_TIMEOUT_MS ); // get header
+			getData( socket, buf, 3, timeout ); // get header
 			rsize = (((uint16_t)buf[1])<<8) + buf[2];
-			getData( socket, buf + 3, rsize, CLIENT_TIMEOUT_MS ); // get packet
+			getData( socket, buf + 3, rsize, timeout ); // get packet
 		} catch(...){
 			return -1;
 		}

@@ -142,7 +142,7 @@ int main(int argc, char *argv[]) try {
 				"wait_connections", "Open server and wait for connections before start to check. Used for debug.",
 				cxxopts::value<uint32_t>(wait_connections)->default_value("0") )(
 				"client_timeout", "Sets client timeout in ms. Used for debug.",
-				cxxopts::value<uint32_t>(TCompress::CLIENT_TIMEOUT_MS)->default_value("2000") )(
+				cxxopts::value<uint32_t>(TCompress::CLIENT_TIMEOUT_BASE_MS)->default_value("2000") )(
 				"port", "Port to use for network communications.",
 				cxxopts::value<uint16_t>(port)->default_value(std::to_string(TCompress::DEFAULT_SERVER_PORT)) )(
 				"reconnect", "is client should try to reconnect in case of lost connection",
