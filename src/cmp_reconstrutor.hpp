@@ -284,7 +284,9 @@ private:
 
 		try{
 			sendData( socket, buf, buf_size  + 3 );
-			getData( socket, buf, 3, timeout ); // get header
+			do{ getData( socket, buf, 3, timeout ); // get header
+			} while( buf[0] == NET_PING_RESPONSE || buf[0] == NET_PING ); // skip all pings
+
 			rsize = (((uint16_t)buf[1])<<8) + buf[2];
 			getData( socket, buf + 3, rsize, timeout ); // get packet
 		} catch(...){

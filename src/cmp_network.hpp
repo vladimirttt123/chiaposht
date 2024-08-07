@@ -30,8 +30,8 @@ uint32_t CLIENT_TIMEOUT_BASE_MS = 2000;
 uint32_t CLIENT_TIMEOUT_ADD_PER_CUT_BIT = 1;
 
 const uint32_t PROTOCOL_VER = 0x00020001;
-const inline uint8_t NET_PING = 1, NET_PING_RESPONSE = 2, NET_REQUEST_RESTORE = 3,
-		NET_RESTORED = 4, NET_NOT_RESTORED = 5, NET_REQUEST_SECOND_ROUND = 6;
+const inline uint8_t NET_PING = 1, NET_PING_RESPONSE = 2 /* this packet should be always skipped */
+		, NET_REQUEST_RESTORE = 3, NET_RESTORED = 4, NET_NOT_RESTORED = 5, NET_REQUEST_SECOND_ROUND = 6;
 
 void getData( int32_t socket, uint8_t * buf, int32_t size, int32_t timeoutMs = -1 ){
 	assert( size > 0 );
@@ -50,6 +50,8 @@ void getData( int32_t socket, uint8_t * buf, int32_t size, int32_t timeoutMs = -
 	}
 
 	std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
+	std::chrono::steady_clock::time_point connCheck = std::chrono::steady_clock::now();
+
 	for( int32_t got = 0; got != size; ){
 		int res = recv( socket, buf + got, size - got, MSG_DONTWAIT );
 		if( res < 0 && errno != EAGAIN && errno != EWOULDBLOCK )
@@ -59,9 +61,19 @@ void getData( int32_t socket, uint8_t * buf, int32_t size, int32_t timeoutMs = -
 			std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
 			auto responseTimeMs = std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count();
 			if( responseTimeMs > timeoutMs ){
-				std::cout << "Remove slow connection. Response time: " << responseTimeMs << "ms" << std::endl;
+				std::cerr << "Remove slow connection. Response time: " << responseTimeMs << "ms" << std::endl;
 				throw std::runtime_error( "Slow connection. get data " + std::to_string(res) + " of " + std::to_string( size )
 																 + " error " + std::to_string(errno) + " - " + ::strerror(errno)  );
+			}
+
+			auto sinceLastCheck = std::chrono::duration_cast<std::chrono::seconds>(end - connCheck).count();
+			if( sinceLastCheck > 60 ){
+				uint8_t buf[3] = {NET_PING_RESPONSE, 0, 0};
+				int send_res = send( socket, buf, 3, MSG_NOSIGNAL );
+				if( send_res < 0 && errno != EAGAIN && errno != EWOULDBLOCK )
+					err(res);
+
+				connCheck = std::chrono::steady_clock::now();
 			}
 
 			std::this_thread::sleep_for(10ms);
@@ -98,17 +110,16 @@ private:
 
 template <typename T>
 class Server{
+	const uint16_t port;
 	int serverSocket = -1;
-	std::thread *accepting_thread;
+	std::thread *accepting_thread = nullptr, *starting_thread = nullptr;
 	bool accepting = true;
 	T& accepter;
 
-public:
-	Server( uint16_t port, T& accepter ) :accepter(accepter){
-		if( port == 0 ) return;
-
+	bool try_to_listen(){
+		if( !accepting || accepting_thread ) return true;
 		// creating socket
-		serverSocket = socket( AF_INET, SOCK_STREAM, 0);
+		serverSocket = socket( AF_INET, SOCK_STREAM, 0 );
 
 		// specifying the address
 		sockaddr_in serverAddress;
@@ -119,71 +130,90 @@ public:
 		// binding socket.
 		int status = bind( serverSocket, (struct sockaddr*)&serverAddress, sizeof(serverAddress) );
 		if( status < 0 ){
-			std::cout << "Server: cannot bind socket on port " << port << " with " << status
+			std::cerr << "Server: cannot bind socket on port " << port << " with " << status
 								<< ", errno " << errno << " - " << ::strerror(errno) << std::endl;
 			try{ close(serverSocket); } catch(...){}
-			return;
+			return false;
 		}
 		// listening to the assigned socket
 		status = listen( serverSocket, 5 /*backlog size*/ );
 		if( status < 0 ){
-			std::cout << "Server: cannot start listen on port " << port << " with " << status
+			std::cerr << "Server: cannot start listen on port " << port << " with " << status
 								<< ", errno " << errno << " - " << ::strerror(errno) << std::endl;
 			try{ close(serverSocket); } catch(...){}
-			return;
+			return false;
 		}
 
 		status = fcntl( serverSocket, F_SETFL, fcntl(serverSocket, F_GETFL, 0) | O_NONBLOCK);
 
 		if( status < 0 )
-			std::cerr << "Server: cannot set socket to non-blocking mode: " << status << std::endl;
+			std::clog << "Server: cannot set socket to non-blocking mode: " << status << std::endl;
 
 
-		accepting_thread = new std::thread( [this, port](){
-			std::cout<< "Server accepting on " << port << std::endl;
-			while( accepting ){
-				try{
-					// accepting connection request
-					int clientSocket = accept( serverSocket, nullptr, nullptr );
-					if( accepting ) {
-						if( clientSocket < 0 ){
-							if( !( errno == EAGAIN || errno == EWOULDBLOCK ) )
-								std::cerr << "ERROR on accept remote connection " << clientSocket << " errno " << errno << std::endl;
-							std::this_thread::sleep_for( 1s ); // possible to change accepting to atomic and wait 1 sec or for change
+		accepting_thread = new std::thread( [this](){listener();});
+
+		return true;
+	}
+
+	void listener(){
+		std::cout<< "Server accepting on " << port << std::endl;
+		while( accepting ){
+			try{
+				// accepting connection request
+				int clientSocket = accept( serverSocket, nullptr, nullptr );
+				if( accepting ) {
+					if( clientSocket < 0 ){
+						if( !( errno == EAGAIN || errno == EWOULDBLOCK ) )
+							std::cerr << "ERROR on accept remote connection " << clientSocket << " errno " << errno << std::endl;
+						std::this_thread::sleep_for( 1s ); // possible to change accepting to atomic and wait 1 sec or for change
+					}
+					else{
+						std::cout << "Connection achieved" << std::endl;
+						uint8_t buf[4];
+						sendData( clientSocket, (uint8_t*)&PROTOCOL_VER, 4 );
+						getData( clientSocket, buf, 4, 1000 );
+						if( memcmp( &PROTOCOL_VER, buf, 4 ) == 0 ){
+							std::cout << "Connection accpeted" << std::endl;
+							this->accepter.AddRemoteSource( clientSocket );
 						}
 						else{
-							std::cout << "Connection achieved" << std::endl;
-							uint8_t buf[4];
-							sendData( clientSocket, (uint8_t*)&PROTOCOL_VER, 4 );
-							getData( clientSocket, buf, 4, 1000 );
-							if( memcmp( &PROTOCOL_VER, buf, 4 ) == 0 ){
-								std::cout << "Connection accpeted" << std::endl;
-								this->accepter.AddRemoteSource( clientSocket );
-							}
-							else{
-								std::cerr << "ERROR protocol agreement with client";
-								close( clientSocket );
-							}
+							std::cerr << "ERROR protocol agreement with client";
+							close( clientSocket );
 						}
 					}
-				}catch(...){
-					std::cerr << "Exception on accept remote conection" << std::endl;
 				}
+			}catch(...){
+				std::cerr << "Exception on accept remote conection" << std::endl;
 			}
-			std::cout << "Server Stopped" << std::endl;
-		});
+		}
+		std::cout << "Server Stopped on port " << port << std::endl;
+	}
+
+public:
+	Server( uint16_t port, T& accepter ) : port(port), accepter(accepter) {
+		if( port == 0 ) return;
+
+		starting_thread = new std::thread( [this](){
+			while( !try_to_listen() )
+				std::this_thread::sleep_for(60s);
+		} );
 	}
 
 	~Server(){
 		accepting = false;
 		// closing the socket.
-		close(serverSocket);
+		try{ close(serverSocket); } catch(...){};
 
 		if( accepting_thread ){
 			std::cout << "Server stop accepting" << std::endl;
 			accepting_thread->join();
 
 			delete accepting_thread;
+		}
+
+		if( starting_thread ){
+			starting_thread->join();
+			delete starting_thread;
 		}
 	}
 };
@@ -216,31 +246,35 @@ void StartClient( uint32_t addr, uint16_t port, uint32_t threads_no = THREADS_PE
 	sendData( clientSocket, (uint8_t*)&PROTOCOL_VER, 4 );
 
 	uint8_t buf[0xffff];
-	getData( clientSocket, buf, 4 );
+	getData( clientSocket, buf, 4, 4000 );
 	if( memcmp( &PROTOCOL_VER, buf, 4 ) != 0 )
 		err( "Incorrect protocol version from server " + Util::HexStr( buf, 4 )
 														 + " while expected " + Util::HexStr( (uint8_t*)&PROTOCOL_VER, 4 ) );
 	// variables for logging
 	uint64_t requests = 0, total_received = 0, total_send = 0;
+	std::chrono::steady_clock::time_point startLog = std::chrono::steady_clock::now();
 
 	while( true ){
 		getData( clientSocket, buf, 3, 40*60*1000 /*40 minutes*/ );
 
 		requests++;
+		total_received += 3ULL;
 
 		if( buf[0] == NET_PING ){ // ping request
 			buf[0] = NET_PING_RESPONSE; // ping response
 			sendData( clientSocket, buf, 3 );
 			total_send += 3ULL; // for log
-		} else {
+		} else if( buf[0] == NET_PING_RESPONSE ){
+			// skip the packet
+		}	else {
 			const uint16_t size = (((uint16_t)buf[1])<<8) + buf[2];
 
 			if( size < 34 || size > 65000 )  // k + cut + plot_id = 34 bytes at least
 				err( "Incorrect request size " + std::to_string(size) );
 
-			total_received += size + 3ULL;
+			total_received += size;
 
-			getData( clientSocket, buf+3, size );
+			getData( clientSocket, buf+3, size, 1000 );
 			uint8_t k_size = buf[3], removed_bits_no = buf[4], plot_id[32];
 			memcpy( plot_id, buf+5, 32 );
 			BufValuesReader buf_r( buf + 37, size - 34 );
@@ -356,9 +390,14 @@ void StartClient( uint32_t addr, uint16_t port, uint32_t threads_no = THREADS_PE
 				req_timer.PrintElapsed( " in " );
 			}
 
-			if( (requests&0xfff) == 0 )
+			std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
+			auto sinceLastLog = std::chrono::duration_cast<std::chrono::minutes>(end - startLog).count();
+
+			if( sinceLastLog > 14 ){
+				startLog = end;
 				std::clog << "\t requests: " << requests << ", total_received: " << total_received
 									<< ", total_sent: " << total_send << ", " << Timer::GetNow();
+			}
 		}
 	}
 	// closing socket
