@@ -100,7 +100,11 @@ private:
 #endif 	// TCOMPERESS_WITH_NETWORK
 };
 
+#ifdef TCOMPRESS_LOCAL_CLIENTS
+ReconstructorsManager RManager(TCOMPRESS_LOCAL_CLIENTS);
+#else // TCOMPRESS_LOCAL_CLIENTS
 ReconstructorsManager RManager(2);
+#endif
 
 // --------------------------------------------------------
 // Class to run point reconstructions locally and remotely

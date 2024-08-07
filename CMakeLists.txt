@@ -21,6 +21,11 @@ if (${TCOMPRESS_SERVER_PORT})
 	add_compile_definitions("-DTCOMPRESS_SERVER_PORT=${TCOMPRESS_SERVER_PORT}")
 endif()
 
+if (${TCOMPRESS_LOCAL_CLIENTS})
+	add_compile_definitions("-DTCOMPRESS_LOCAL_CLIENTS=${TCOMPRESS_LOCAL_CLIENTS}")
+endif()
+
+
 # CMake 3.14+
 include(FetchContent)
 
