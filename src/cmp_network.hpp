@@ -39,7 +39,7 @@ void getData( int32_t socket, uint8_t * buf, int32_t size, int32_t timeoutMs = -
 	auto err = [&socket, &size]( int res ){
 		try{ close( socket ); } catch(...) {}
 		std::cout << "Cannot fully get data " + std::to_string(res) + " of " + std::to_string( size )
-										 + " error " + std::to_string(errno) + " - " + ::strerror(errno) << std::endl;
+										 + " error " + std::to_string(errno) + " - " + ::strerror(errno) << Timer::GetNow();
 		throw std::runtime_error( "Cannot fully get data " + std::to_string(res) + " of " + std::to_string( size )
 															 + " error " + std::to_string(errno) + " - " + ::strerror(errno)  );
 		};
@@ -61,7 +61,7 @@ void getData( int32_t socket, uint8_t * buf, int32_t size, int32_t timeoutMs = -
 			std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
 			auto responseTimeMs = std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count();
 			if( responseTimeMs > timeoutMs ){
-				std::cerr << "Remove slow connection. Response time: " << responseTimeMs << "ms" << std::endl;
+				std::cerr << "Remove slow connection. Response time: " << responseTimeMs << "ms " << Timer::GetNow();
 				throw std::runtime_error( "Slow connection. get data " + std::to_string(res) + " of " + std::to_string( size )
 																 + " error " + std::to_string(errno) + " - " + ::strerror(errno)  );
 			}
@@ -241,7 +241,7 @@ void StartClient( uint32_t addr, uint16_t port, uint32_t threads_no = THREADS_PE
 
 	std::clog << "Connected to server "<< (addr&0xff) << "." << ((addr>>8)&0xff)
 						<< "." << ((addr>>16)&0xff) <<"." << (addr>>24)
-						<< ":" << port << " with result " << cres << std::endl;
+						<< ":" << port << " with result " << cres << " " << Timer::GetNow();
 	// sending protocol version
 	sendData( clientSocket, (uint8_t*)&PROTOCOL_VER, 4 );
 
@@ -283,8 +283,8 @@ void StartClient( uint32_t addr, uint16_t port, uint32_t threads_no = THREADS_PE
 			LinePointMatcher validator( k_size, plot_id );
 			if( buf[0] == NET_REQUEST_RESTORE ){ // restore
 				Timer req_timer;
-				std::cout << "Resotre request for k: " << (int)k_size << ", plot_id: " << Util::HexStr( plot_id, 32 )
-									<< ", removed_bits: " << (int)removed_bits_no << std::flush;
+				std::cout << "Resotre k: " << (int)k_size << ", plot_id: ..." << Util::HexStr( plot_id + 22, 10 )
+									<< ", bits: " << (int)removed_bits_no << std::flush;
 
 				const uint32_t lp_size = k_size*2 - removed_bits_no;
 
