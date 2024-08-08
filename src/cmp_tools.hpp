@@ -688,24 +688,25 @@ struct Table2MatchData{
 		auto thread_func = [this, &next_point_idx, &rejects, &pvalidator, &src_line_points, &removed_bits_no, &first_idx](){
 			LinePointMatcher validator( pvalidator.k_size, pvalidator.plot_id );
 
-			for( uint32_t i = next_point_idx.fetch_add(1, std::memory_order_relaxed);
+			for( uint32_t i = next_point_idx.fetch_add( 1, std::memory_order_relaxed );
 					 matched_left == 0/*not found yet*/ && i < src_line_points.size();
-					 i = next_point_idx.fetch_add(1, std::memory_order_relaxed) ){
-				if( (i+1) < src_line_points.size() && src_line_points[i] == src_line_points[i+1] ) continue; // equally cut points evaluated in the same thread
-				auto restored_lp = RestoreLinePoint( src_line_points[i], removed_bits_no, validator );
+					 i = next_point_idx.fetch_add( 1, std::memory_order_relaxed ) ){
+				if( i > 0 && src_line_points[i] == src_line_points[i-1] )
+					continue; // equally cut points evaluated in the same thread
 
-				if( restored_lp == 0 ){
-					rejects.push_back( i + first_idx );
-				}else {
-					AddRight( i + first_idx, restored_lp, validator );
-					if( i > 0 && src_line_points[i-1] == src_line_points[i] )
-						while(  matched_left == 0/*not found yet*/ && (restored_lp = FindNextLinePoint( restored_lp+1, removed_bits_no, validator) ) )
-							AddRight( --i, restored_lp, validator );
+				uint128_t restored_lp;
+				for( uint32_t j = i; j < src_line_points.size() && src_line_points[j] == src_line_points[i]
+														 && matched_left == 0/*not found yet*/; j++ ){
+					restored_lp = i == j ? RestoreLinePoint( src_line_points[i], removed_bits_no, validator ) :
+														(restored_lp?FindNextLinePoint( restored_lp+1, removed_bits_no, validator) : 0 );
+					if( restored_lp == 0 )
+						rejects.push_back( j + first_idx );
+					else {
+						AddRight( j + first_idx, restored_lp, validator );
+					}
 				}
 			};
 		};
-
-
 
 		{	// Run threads for right side.
 			threads_no = std::max( 1U, threads_no );// fix threads count

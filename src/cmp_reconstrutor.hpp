@@ -155,43 +155,57 @@ struct Reconstructor{
 				uint8_t buf[0xffff];
 				LargeBits bits;
 
+				const uint8_t cut_lp_size = k_size*2 - removed_bits_no,
+						diff_lp_size = k_size + 8 - kStubMinusBits - removed_bits_no;
+
 				if( match_data.left.size ){
 					bits.AppendValue( 255, 8 ); // uncompressed left line point
 					bits.AppendValue( match_data.left.points[0].LinePoint(), k_size*2 );
 				} else {
 					bits.AppendValue( left_lp.skip_points, 8 );
-					bits.AppendValue( left_lp.orig_line_point, k_size*2 - removed_bits_no );
+					bits.AppendValue( left_lp.orig_line_point, cut_lp_size );
 				}
 
 				bits.AppendValue( to_process_lp.size(), 16 );
-				for( uint32_t i = 0; i < to_process_lp.size(); i++ )
-					bits.AppendValue( to_process_lp[i], k_size*2 - removed_bits_no );
+				bits.AppendValue( to_process_lp[0], cut_lp_size ); // full first right line point
+				for( uint32_t i = 1; i < to_process_lp.size(); i++ ){
+					assert( to_process_lp[i] >= to_process_lp[i-1] );
+					uint128_t diff = to_process_lp[i] - to_process_lp[i-1];
+
+					assert( (diff>>diff_lp_size) == 0 );
+					bits.AppendValue( diff, diff_lp_size );
+				}
 
 
 				int32_t dres = SendGet( rSrc.socket, NET_REQUEST_RESTORE, buf, bits );
 				if( dres < 0 ) throw ReconstructorsManager::ClientError ( "send/recieve" );
 
 				BufValuesReader r( buf+3, (uint32_t)dres );
+				std::vector<uint16_t> inline_rejects;
+
 				if( buf[0] == NET_RESTORED ){
 					processMatchedResponse( r, first_right_lp_index );
 				} else if( buf[0] == NET_NOT_RESTORED ){
-					uint16_t num_points = (uint16_t)r.Next(16);
-					uint16_t idx = (uint16_t)r.Next(16);
-					if( idx != (uint16_t)-1 )
-						throw ReconstructorsManager::ClientError( "Incorrect left point index " + std::to_string( idx ) );
 
-					uint128_t lp = r.Next(k_size*2);
+					uint128_t lp = chkRestore( left_lp.orig_line_point, r.Next(removed_bits_no) ); // left line point restore
 					if( match_data.left.size == 0 ){
-						match_data.left.Add( idx, checkRestore( left_lp.orig_line_point, lp ), validator.CalculateYs( lp ) );
+						match_data.left.Add( -1, lp, validator.CalculateYs( lp ) );
 					}
 					else {
 						if( match_data.left.points[0].LinePoint() != lp )
 							throw ReconstructorsManager::ClientError( "Incorrect left line point");
 					}
+
+					uint16_t num_points = (uint16_t)r.Next(12);
+					if( num_points != to_process_lp.size() )
+						throw ReconstructorsManager::ClientError( "Incorrect number of right line points returned");
+
 					for( uint16_t i = 0; i < num_points; i++ ){
-						idx = (uint16_t)r.Next(16);
-						lp = r.Next( k_size*2 );
-						match_data.right.Add( idx + first_right_lp_index, checkRestore( to_process_lp[idx], lp ), validator.CalculateYs(lp) );
+						lp = chkRestore( to_process_lp[i], r.Next( removed_bits_no ) );
+						if( lp == 0 ) // TODO: 0 - means reject - check it is really provided as rejects.
+							inline_rejects.push_back(i);
+						else
+							match_data.right.Add( i + first_right_lp_index, lp, validator.CalculateYs(lp) );
 					}
 
 				} else
@@ -307,6 +321,17 @@ private:
 		match_data.matched_left = mdata.matched_left;
 		match_data.matched_right_idx = mdata.matched_right_idx ;
 		match_data.matched_right = mdata.matched_right;
+	}
+
+	inline uint128_t chkRestore( uint128_t cut, uint64_t removed ){
+		cut = (cut<<removed_bits_no) | (uint128_t)removed;
+		// TODO replace FindNextLinePoint - bacause incorrect point could bring a lot of work.
+		if( FindNextLinePoint( cut, removed_bits_no, validator) != cut ){
+			if( removed == 0 ) return 0; // seems reject
+			throw ReconstructorsManager::ClientError ( "Incorrect line point retore" );
+		}
+
+		return cut;
 	}
 
 	inline uint128_t checkRestore( uint128_t cut, uint128_t full ){

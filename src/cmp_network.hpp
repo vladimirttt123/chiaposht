@@ -29,7 +29,7 @@ const uint32_t DEFAULT_SERVER_PORT = TCOMPRESS_SERVER_PORT;
 uint32_t CLIENT_TIMEOUT_BASE_MS = 2000;
 uint32_t CLIENT_TIMEOUT_ADD_PER_CUT_BIT = 1;
 
-const uint32_t PROTOCOL_VER = 0x00020001;
+const uint32_t PROTOCOL_VER = 0x00020002;
 const inline uint8_t NET_PING = 1, NET_PING_RESPONSE = 2 /* this packet should be always skipped */
 		, NET_REQUEST_RESTORE = 3, NET_RESTORED = 4, NET_NOT_RESTORED = 5, NET_REQUEST_SECOND_ROUND = 6;
 
@@ -286,8 +286,10 @@ void StartClient( uint32_t addr, uint16_t port, uint32_t threads_no = THREADS_PE
 				std::cout << "Resotre k: " << (int)k_size << ", plot_id: ..." << Util::HexStr( plot_id + 22, 10 )
 									<< ", bits: " << (int)removed_bits_no << std::flush;
 
-				const uint32_t lp_size = k_size*2 - removed_bits_no;
+				const uint32_t lp_size = k_size*2 - removed_bits_no,
+						diff_lp_size = k_size + 8 - kStubMinusBits - removed_bits_no;
 
+				//read left line point
 				LinePointInfo left_lp;
 				left_lp.skip_points = buf_r.Next(8);
 				if( left_lp.skip_points == 255 ){
@@ -297,14 +299,15 @@ void StartClient( uint32_t addr, uint16_t port, uint32_t threads_no = THREADS_PE
 					left_lp.orig_line_point = buf_r.Next( lp_size );
 				}
 
-				uint16_t line_points_count = (uint16_t)buf_r.Next( 16 );
-				std::cout << ", points_no: " << line_points_count << std::endl;
+				const uint16_t line_points_count = (uint16_t)buf_r.Next( 16 );
+				std::cout << ", points: " << line_points_count << std::endl;
 				if( line_points_count > 4095 )
 					err( "Too many line points " + std::to_string( line_points_count ) );
 
 				std::vector<uint128_t> line_points(line_points_count);
-				for( uint32_t i = 0; i < line_points_count; i++ )
-					line_points[i] = buf_r.Next( lp_size );
+				line_points[0] = buf_r.Next( lp_size );
+				for( uint32_t i = 1; i < line_points_count; i++ )
+					line_points[i] = line_points[i-1] + buf_r.Next( diff_lp_size );
 
 				std::vector<uint16_t> rejects;
 				uint16_t res_size;
@@ -320,18 +323,26 @@ void StartClient( uint32_t addr, uint16_t port, uint32_t threads_no = THREADS_PE
 					std::cout << " -> calculated";
 					buf[0] = NET_NOT_RESTORED; // not restored
 
-					bits.AppendValue( mdata.right.size + 1, 16 ); // number of points to return
-					bits.AppendValue( -1, 16 ); // left line point
-					bits.AppendValue( mdata.left.points[0].LinePoint(), k_size*2 );
+					const uint64_t removed_mask = (1ULL<<removed_bits_no)-1;
+					// left line point
+					bits.AppendValue( mdata.left.points[0].LinePoint()&removed_mask, removed_bits_no );
+					assert( line_points_count >= mdata.right.size );
 
-					for( uint32_t i = 0; i < mdata.right.size; i++ ){
-						bits.AppendValue( mdata.right.points[i].orig_idx, 16 );
-						bits.AppendValue( mdata.right.points[i].LinePoint(), k_size*2 );
+					bits.AppendValue( line_points_count , 12 ); // number of points to return
+					uint64_t returns[line_points_count];
+					memset( returns, 0, sizeof(uint64_t)*(uint64_t)line_points_count );
+					for( uint32_t i = 0; i < line_points_count; i++ ){ // restore order
+						assert( returns[mdata.right.points[i].orig_idx] == 0 ); // every index should be mentioned only once
+						returns[mdata.right.points[i].orig_idx] = mdata.right.points[i].LinePoint() & removed_mask;
 					}
+
+					for( uint32_t i = 0; i < line_points_count; i++ )
+						bits.AppendValue( returns[i], removed_bits_no );
 				}
 
 				// append rejects
 				bits.AppendValue( rejects.size(), 12 );
+				std::sort ( rejects.begin(), rejects.end() ); // sort rejects befor process
 				for( uint16_t i = 0; i < rejects.size(); i++ )
 					bits.AppendValue( rejects[i], 12 );
 
