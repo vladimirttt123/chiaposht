@@ -103,7 +103,7 @@ int main(int argc, char *argv[]) try {
     string id = "022fb42c08c12de3a6af053880199806532e79515f94e83461612101f9412f9e";
     bool nobitfield = false;
     bool show_progress = false;
-    bool parallel_read = true;
+		bool parallel_read = true, no_parallel_read = false;
     uint32_t buffmegabytes = 0;
 		uint32_t initial_challenge = 0;
 		uint32_t compress_io_optimitzation = 0;
@@ -130,8 +130,8 @@ int main(int argc, char *argv[]) try {
         cxxopts::value<uint32_t>(buffmegabytes))(
         "p, progress", "Display progress percentage during plotting",
         cxxopts::value<bool>(show_progress))(
-        "parallel_read", "Set to false to use sequential reads",
-        cxxopts::value<bool>(parallel_read)->default_value("true"))(
+				"no_parallel_read", "Set to false to use sequential reads",
+				cxxopts::value<bool>(no_parallel_read)->default_value("false"))(
 				"initial_challenge", "The challenge to start with for check operation",
 				cxxopts::value<uint32_t>(initial_challenge) )(
 				"compress_io_optimize", "Optimization compressed file to IO requests number. "
@@ -154,6 +154,7 @@ int main(int argc, char *argv[]) try {
 		TCompress::RManager.StartServer( 0 ); // 0 port will not start any server
 #endif // TCOMPERESS_WITH_NETWORK
     auto result = options.parse(argc, argv);
+		if( no_parallel_read ) parallel_read = false;
 
     if (result.count("help") || argc < 2) {
         HelpAndQuit(options);
@@ -315,7 +316,12 @@ int main(int argc, char *argv[]) try {
         k = prover.GetSize();
 
 				std::unique_ptr<TCompress::Decompressor> tdec( TCompress::Decompressor::CheckForCompressed( filename, prover.GetMemo().size(), prover.GetSize(), prover.GetId().data() ) );
-				if( tdec ) tdec->ShowInfo();
+
+				std::cout << "file: " << filename << std::endl;
+				std::cout << "plot_id: " << Util::HexStr( prover.GetId().data(), prover.GetId().size() ) << std::endl;
+				std::cout << "memo: " << Util::HexStr( prover.GetMemo().data(), prover.GetMemo().size() ) << std::endl;
+
+				if( tdec ) tdec->ShowInfo( false );
 
         for (uint32_t num = 0; num < iterations; num++) {
 
