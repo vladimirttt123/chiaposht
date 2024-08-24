@@ -108,7 +108,7 @@ int main(int argc, char *argv[]) try {
 		uint32_t initial_challenge = 0;
 		uint32_t compress_io_optimitzation = 0;
 #ifdef TCOMPERESS_WITH_NETWORK
-		uint32_t wait_connections = -1;
+		int32_t wait_connections = -1;
 		uint16_t port;
 		bool client_reconnect = false;
 #endif // TCOMPERESS_WITH_NETWORK
@@ -140,7 +140,7 @@ int main(int argc, char *argv[]) try {
 				cxxopts::value<uint32_t>(compress_io_optimitzation)->default_value("0"))(
 #ifdef TCOMPERESS_WITH_NETWORK
 				"wait_connections", "if non negarive then open server and wait for connections before start to check. Used for debug.",
-				cxxopts::value<uint32_t>(wait_connections)->default_value("-1") )(
+				cxxopts::value<int32_t>(wait_connections)->default_value("-1") )(
 				"client_timeout", "Sets client timeout in ms. Used for debug.",
 				cxxopts::value<uint32_t>(TCompress::CLIENT_TIMEOUT_BASE_MS)->default_value("2000") )(
 				"port", "Port to use for network communications.",
