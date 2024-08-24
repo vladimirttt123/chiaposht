@@ -694,7 +694,7 @@ struct Table2MatchData{
 				if( i > 0 && src_line_points[i] == src_line_points[i-1] )
 					continue; // equally cut points evaluated in the same thread
 
-				uint128_t restored_lp;
+				uint128_t restored_lp = 0;
 				for( uint32_t j = i; j < src_line_points.size() && src_line_points[j] == src_line_points[i]
 														 && matched_left == 0/*not found yet*/; j++ ){
 					restored_lp = i == j ? RestoreLinePoint( src_line_points[i], removed_bits_no, validator ) :
