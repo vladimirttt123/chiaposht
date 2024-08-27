@@ -178,7 +178,7 @@ struct Reconstructor{
 
 
 				int32_t dres = SendGet( rSrc.socket, NET_REQUEST_RESTORE, buf, bits );
-				if( dres < 0 ) throw ReconstructorsManager::ClientError ( "send/recieve" );
+				if( dres < 0 ) throw ReconstructorsManager::ClientError ( "send/recieve " + std::to_string(dres) );
 
 				BufValuesReader r( buf+3, (uint32_t)dres );
 				std::vector<uint16_t> inline_rejects;
@@ -255,7 +255,7 @@ struct Reconstructor{
 			}
 
 			int32_t dres = SendGet( rSrc.socket, NET_REQUEST_SECOND_ROUND, buf, bits );
-			if( dres < 0 ) throw ReconstructorsManager::ClientError ( "send/recieve" );
+			if( dres < 0 ) throw ReconstructorsManager::ClientError ( "Second round - send/recieve " + std::to_string(dres) );
 
 			if( buf[0] == NET_NOT_RESTORED )
 				return false; // TODO validation, but it need recompute in this case
@@ -268,9 +268,11 @@ struct Reconstructor{
 		} catch( ReconstructorsManager::ClientError &er) {
 			std::cout << er.what() << std::endl;
 			rSrc.setBadConnection();
-			return Run(); // recursion to try another source
+			return RunSecondRound(); // recursion to try another source
 		}
 #endif //TCOMPERESS_WITH_NETWORK
+
+		return match_data.matched_left != 0;
 	}
 
 	~Reconstructor(){

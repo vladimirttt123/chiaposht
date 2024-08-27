@@ -70,7 +70,6 @@ Than replace and run chia back as usual. The new library should support all exis
 ### Limitations
 * The maximum bits to cut by this method is k+8 (11 from table 2 and k-3 from table 1).
 * CPU only compression/decompression
-* No computation on remote server (could be added in future)
 
 ### Remote Compute
 There is an experimental capability for remote or more precise distributed compute.
@@ -138,6 +137,12 @@ look ups a day with 36 quality look ups it is around 4 proof look ups i.e. 8-10 
 of CPU usage a day for decompression. It means that around 1000 plots will fill CPU for 10%.
 With plots of huge size like k37+ such CPU could support a very big farm.
 
+This method of compression restores almost all proofs. 
+I checked more than 500k challenges on more than 2000 plots with different sizes
+from k32 to k38 with different compression levels from 17 to 20 and only
+single proof wasn't restored. (It is possible to improve implementation
+to restore even this proof).
+
 ### Trableshooting
 If compressed plots do not work, enable support of compressed plots in chia config file.
 
@@ -145,8 +150,8 @@ I do not have compressed plots of other type than I havn't check of other compre
 will work after replacing the library but since the branch is fork of original chiapos with
 very minimal changes in original code I hope it will work.
 
-The version of chia client I checked on is 2.3.1. I think it should work also for 2.3 
-and sure will not work for less than 2.1.
+The versions of chia client I checked on is 2.3.1 and 2.4.3. 
+I think it should work also for 2.2 and sure will not work for less than 2.1.
 
 ### Donate
 If you thinks this compression is helpfull for you please consider to donate. My chia wallet is
